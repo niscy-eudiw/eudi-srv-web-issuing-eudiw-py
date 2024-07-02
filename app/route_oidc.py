@@ -318,9 +318,9 @@ def authorizationv2(
 
     if code_challenge and code_challenge_method:
         url = url + "&code_challenge="
-        +code_challenge
+        +str(code_challenge)
         +"&code_challenge_method="
-        +code_challenge_method
+        +str(code_challenge_method)
 
     payload = {}
     headers = {}
