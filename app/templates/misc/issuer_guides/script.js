@@ -25,4 +25,8 @@ function previousSlide() {
     showSlide(currentSlide);
 }
 
+function goHome() {
+    window.location.href = 'https://issuer.eudiw.dev/';
+}
+
 showSlide(currentSlide);
