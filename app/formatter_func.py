@@ -216,7 +216,7 @@ def sdjwtFormatter(PID, country):
         # "nbf": iat,
         "exp": exp,
         "status": "validation status URL",
-        "type": doctype,
+        "vct":"urn:"+ doctype,
     }
 
     evidence = pid_data["evidence"][0]
@@ -297,6 +297,7 @@ def sdjwtFormatter(PID, country):
 
     ### Produce SD-JWT and SVC for selected example
     SDJWTIssuer.unsafe_randomness = False
+    SDJWTIssuer.SD_JWT_HEADER="vc+sd-jwt"
     sdjwt_at_issuer = SDJWTIssuer(
         claims,
         keys["issuer_key"],
@@ -319,6 +320,9 @@ def DATA_sd_jwt(PID):
     Data = {}
 
     for i in PID:
+        if i == "birth_date":
+            i="birthdate"
+        
         data = {SDObj(value=i): PID[i]}
 
         Data.update(data)
