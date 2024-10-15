@@ -318,15 +318,44 @@ def sdjwtFormatter(PID, country):
 
 def DATA_sd_jwt(PID):
     Data = {}
-
+    age_over_or_equal={}
+    place_of_birth={}
+    address_dict={}
     for i in PID:
-        if i == "birth_date":
-            i="birthdate"
-        
-        data = {SDObj(value=i): PID[i]}
+        if i in cfgservice.Registered_claims:
 
-        Data.update(data)
+            i = cfgservice.Registered_claims.get(i)
 
+            if "age_over_or_equal" in i:
+                subAge=i.split(".")
+                age_over_or_equal.update({subAge[1]:PID[i]})
+
+            elif "place_of_birth" in i:
+                place_Birth=i.split(".")
+                place_of_birth.update({place_Birth[1]:PID[i]})
+
+            elif "address" in i:
+                address=i.split(".")
+                address_dict.update({address[1]:PID[i]})
+
+            else:
+                data = {SDObj(value=i): PID[i]}
+                Data.update(data)
+        else:
+
+            data = {SDObj(value=i): PID[i]}
+            Data.update(data)
+
+    if age_over_or_equal:
+            data = {SDObj(value="age_over_or_equal"): age_over_or_equal}
+            Data.update(data)
+    if place_of_birth:
+            data = {SDObj(value="place_of_birth"): place_of_birth}
+            Data.update(data)
+    if address_dict:
+            data = {SDObj(value="address"): address_dict}
+            Data.update(data)        
+            
     return Data
 
 
