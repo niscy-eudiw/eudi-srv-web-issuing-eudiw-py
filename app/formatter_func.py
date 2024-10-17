@@ -326,7 +326,7 @@ def DATA_sd_jwt(PID):
 
             r = cfgservice.Registered_claims.get(i)
 
-            if "age_over_or_equal" in r:
+            if "age_equal_or_over" in r:
                 subAge=r.split(".")
                 age_over_or_equal.update({subAge[1]:PID[i]})
 
