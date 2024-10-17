@@ -324,22 +324,22 @@ def DATA_sd_jwt(PID):
     for i in PID:
         if i in cfgservice.Registered_claims:
 
-            i = cfgservice.Registered_claims.get(i)
+            r = cfgservice.Registered_claims.get(i)
 
-            if "age_over_or_equal" in i:
-                subAge=i.split(".")
+            if "age_over_or_equal" in r:
+                subAge=r.split(".")
                 age_over_or_equal.update({subAge[1]:PID[i]})
 
-            elif "place_of_birth" in i:
-                place_Birth=i.split(".")
+            elif "place_of_birth" in r:
+                place_Birth=r.split(".")
                 place_of_birth.update({place_Birth[1]:PID[i]})
 
-            elif "address" in i:
-                address=i.split(".")
+            elif "address" in r:
+                address=r.split(".")
                 address_dict.update({address[1]:PID[i]})
 
             else:
-                data = {SDObj(value=i): PID[i]}
+                data = {SDObj(value=r): PID[i]}
                 Data.update(data)
         else:
 
