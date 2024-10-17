@@ -347,7 +347,7 @@ def DATA_sd_jwt(PID):
             Data.update(data)
 
     if age_over_or_equal:
-            data = {SDObj(value="age_over_or_equal"): age_over_or_equal}
+            data = {SDObj(value="age_equal_or_over"): age_over_or_equal}
             Data.update(data)
     if place_of_birth:
             data = {SDObj(value="place_of_birth"): place_of_birth}
