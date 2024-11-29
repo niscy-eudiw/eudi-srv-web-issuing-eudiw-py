@@ -230,7 +230,7 @@ def sdjwtFormatter(PID, country):
     device_key = PID["device_publickey"]
 
     claims = {
-        "iss": "https://credential-issuer.example.com",
+        "iss": "https://issuer.eudiw.dev",
         #"jti": jti,
         "iat": iat,
         # "nbf": iat,
@@ -385,7 +385,7 @@ def recursive(dict):
 def DatestringFormatter(date):
     date_objectiat = datetime.datetime.strptime(date, "%Y-%m-%d")
 
-    datefinal = int(date_objectiat.timestamp() / (24 * 60 * 60))
+    datefinal = int(date_objectiat.timestamp())
 
     return datefinal
 
