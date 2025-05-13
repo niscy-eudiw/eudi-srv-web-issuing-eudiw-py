@@ -43,7 +43,7 @@ class ConfService:
     revocation_service_url = "https://issuer.eudiw.dev/token_status_list/take"
 
     # ---------------------------------------------------------------------------
-    trusted_CAs_path = "/etc/eudiw/pid-issuer/cert/"
+    trusted_CAs_path = os.getenv("TRUSTED_CAS_PATH","/etc/eudiw/pid-issuer/cert/")
 
     # ------------------------------------------------------------------------------------------------
     # eIDAS Node base href (used in lightrequest)
@@ -411,7 +411,8 @@ class ConfService:
             "eu.europa.ec.eudi.pseudonym_over18_sd_jwt_vc",
             "eu.europa.ec.eudi.cor_mdoc",
             "eu.europa.ec.eudi.pda1_sd_jwt_vc",
-            "eu.europa.ec.eudi.ehic_sd_jwt_vc"         
+            "eu.europa.ec.eudi.ehic_sd_jwt_vc" 
+        ]        
     }
 
     # eudi_openid4vp_url = "dev.verifier-backend.eudiw.dev"

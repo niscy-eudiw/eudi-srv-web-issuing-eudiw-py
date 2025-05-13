@@ -20,11 +20,14 @@
 Configuration of service secrets
 """
 
-flask_secret_key = "secret_here"
+import os
+
+
+flask_secret_key = os.urandom(32).hex()
 
 # eIDAS secret connector request
 # Defined in eIDAS node service file specificConnector/specificCommunicationDefinitionConnector.xml,
 #                                   entry key="lightToken.connector.request.secret"
-eidasnode_lightToken_secret = "secret_here"
+eidasnode_lightToken_secret = os.getenv("EIDASNODE_LIGHT_SECRET", "secret_here")
 
-revocation_api_key = "secret_here"
+revocation_api_key = os.getenv("REVOCATION_API_KEY","secret_here")
