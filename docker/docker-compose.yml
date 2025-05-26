@@ -14,7 +14,11 @@ services:
       EIDAS_NODE_URL: "https://preprod.issuer.eudiw.dev/EidasNode/"
       DYNAMIC_PRESENTATION_URL: "https://dev.verifier-backend.eudiw.dev/ui/presentations/"
       EIDASNODE_LIGHT_SECRET:
-      REVOCATION_API_KEY: 
+      REVOCATION_API_KEY:
+      REVOCATION_SERVICE_URL: 
+      NOUNCE_KEY:
+      WALLET_TEST_URL:
+      
 
     # local path : container path
     volumes:

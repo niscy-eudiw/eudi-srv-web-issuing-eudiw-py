@@ -38,9 +38,9 @@ class ConfService:
     # service_url = "https://127.0.0.1:5000/"
     # service_url = os.getenv("SERVICE_URL","https://dev.issuer.eudiw.dev/")
 
-    wallet_test_url = "https://tester.issuer.eudiw.dev/"
+    wallet_test_url = os.getenv("WALLET_TEST_URL","https://tester.issuer.eudiw.dev/")
 
-    revocation_service_url = "https://issuer.eudiw.dev/token_status_list/take"
+    revocation_service_url = os.getenv("REVOCATION_SERVICE_URL","https://issuer.eudiw.dev/token_status_list/take")
 
     # ---------------------------------------------------------------------------
     trusted_CAs_path = os.getenv("TRUSTED_CAS_PATH","/etc/eudiw/pid-issuer/cert/")
@@ -63,7 +63,7 @@ class ConfService:
     )
 
     #Nonce endpoint
-    nonce_key = "/etc/eudiw/pid-issuer/privKey/nonce_rsa4096.pem"
+    nonce_key = os.getenv("NOUNCE_KEY","/etc/eudiw/pid-issuer/privKey/nonce_rsa4096.pem")
 
     # eIDAS node PID attributes
     eidasnode_pid_attributes = ["CurrentFamilyName", "CurrentGivenName", "DateOfBirth"]
