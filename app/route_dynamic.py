@@ -81,7 +81,7 @@ app = Flask(__name__)
 from app.data_management import form_dynamic_data
 
 # Configuração do serviço OAuth externo
-OAUTH_AUTHORIZE_URL = "http://localhost:5002/authorize" 
+OAUTH_AUTHORIZE_URL = "https://eidas.projj.eu/authorize" 
 OAUTH_TOKEN_URL = "https://oauth-service.com/token"
 OAUTH_CLIENT_SECRET = "secret"
 OAUTH_REDIRECT_URI = "http://localhost:5000/callback" 
