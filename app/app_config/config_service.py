@@ -34,11 +34,13 @@ class ConfService:
     # ------------------------------------------------------------------------------------------------
     # PID issuer service URL
     # service_url = "https://preprod.issuer.eudiw.dev:4443/"
-    service_url = os.getenv("SERVICE_URL", "https://issuer.eudiw.dev/")
-    # service_url = "https://127.0.0.1:5000/"
+    # service_url = os.getenv("SERVICE_URL", "https://issuer.eudiw.dev/")
+    # service_url = "http://127.0.0.1:5000/"
+    service_url = "https://issuer-ng.projj.eu"
     # service_url = os.getenv("SERVICE_URL","https://dev.issuer.eudiw.dev/")
 
-    wallet_test_url = "https://tester.issuer.eudiw.dev/"
+    #wallet_test_url = "http://127.0.0.1:5001/"
+    wallet_test_url = "https://wallet-tester.projj.eu"
 
     revocation_service_url = "https://issuer.eudiw.dev/token_status_list/take"
 
@@ -414,7 +416,8 @@ class ConfService:
             "eu.europa.ec.eudi.pseudonym_over18_sd_jwt_vc",
             "eu.europa.ec.eudi.cor_mdoc",
             "eu.europa.ec.eudi.pda1_sd_jwt_vc",
-            "eu.europa.ec.eudi.ehic_sd_jwt_vc"         
+            "eu.europa.ec.eudi.ehic_sd_jwt_vc"
+        ]        
     }
 
     # eudi_openid4vp_url = "dev.verifier-backend.eudiw.dev"

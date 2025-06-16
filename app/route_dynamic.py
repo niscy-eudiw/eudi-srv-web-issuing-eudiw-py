@@ -28,13 +28,14 @@ from datetime import timedelta
 import io
 import json
 import base64
+import uuid
 from formatter_func import cbor2elems
 import threading
 import schedule
 import time
 from uuid import uuid4
 from PIL import Image
-from flask import Blueprint, Flask, make_response, redirect, render_template, request, session, jsonify
+from flask import Blueprint, Flask, make_response, redirect, render_template, request, session, jsonify, url_for
 from flask_api import status
 from flask_cors import CORS
 import requests
@@ -78,6 +79,55 @@ app = Flask(__name__)
 #app.config["dynamic"] = {}
 
 from app.data_management import form_dynamic_data
+
+# Configuração do serviço OAuth externo
+OAUTH_AUTHORIZE_URL = "http://localhost:5002/authorize" 
+OAUTH_TOKEN_URL = "https://oauth-service.com/token"
+OAUTH_CLIENT_SECRET = "secret"
+OAUTH_REDIRECT_URI = "http://localhost:5000/callback" 
+
+RESOURCE_SERVER_URL = "https://oauth-service.com/data"
+
+# 1. Rota que inicia o processo de autorização
+@dynamic.route("/auth-request", methods=["GET", "POST"])
+def auth_request():
+    country = request.args.get("country")
+    OAUTH_CLIENT_ID = str(uuid.uuid4())
+    session["OAUTH_CLIENT_ID"] = OAUTH_CLIENT_ID
+    return redirect(f"{OAUTH_AUTHORIZE_URL}?response_type=code&country={country}&client_id={OAUTH_CLIENT_ID}&scope=PID")
+
+# 2. Rota que recebe o token (callback)
+@dynamic.route("/callback")
+def callback():
+    code = request.args.get("code")
+    if not code:
+        return "Authorization code not found", 400
+
+    # Trocar o code pelo token
+    response = requests.post(OAUTH_TOKEN_URL, data={
+        "grant_type": "authorization_code",
+        "code": code,
+        "redirect_uri": OAUTH_REDIRECT_URI,
+        "client_id": session["OAUTH_CLIENT_ID"],
+        "client_secret": OAUTH_CLIENT_SECRET,
+    })
+
+    token_data = response.json()
+    session['access_token'] = token_data.get("access_token")
+    return jsonify({"token": token_data})
+
+# 3. Rota que usa o token para obter os dados
+@dynamic.route("/data")
+def get_data():
+    token = session.get('access_token')
+    if not token:
+        return "Access token missing", 401
+
+    headers = {"Authorization": f"Bearer {token}"}
+    response = requests.get(RESOURCE_SERVER_URL, headers=headers)
+
+    return jsonify(response.json())
+
 
 
 @dynamic.route("/", methods=["GET", "POST"])
@@ -142,6 +192,8 @@ def Supported_Countries():
 
     form_keys = request.form.keys()
     form_country = request.form.get("country")
+    
+
 
     # if country was selected
     if (
@@ -238,6 +290,12 @@ def dynamic_R1(country):
         )
 
     elif cfgcountries.supported_countries[country]["connection_type"] == "eidasnode":
+        return redirect(url_for("dynamic.auth_request", country=country))
+
+
+
+
+
         return redirect(cfgcountries.supported_countries[country]["pid_url_oidc"])
 
     elif cfgcountries.supported_countries[country]["connection_type"] == "oauth":

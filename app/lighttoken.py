@@ -75,7 +75,6 @@ def create_request(country, loa):
         </requestedAttributes>
     </lightRequest>"""
     )
-
     # Connect to cache
     client = Client()
     client.connect("127.0.0.1", 10900)
