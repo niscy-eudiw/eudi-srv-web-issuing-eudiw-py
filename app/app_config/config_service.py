@@ -36,7 +36,7 @@ class ConfService:
     # service_url = "https://preprod.issuer.eudiw.dev:4443/"
     # service_url = os.getenv("SERVICE_URL", "https://issuer.eudiw.dev/")
     # service_url = "http://127.0.0.1:5000/"
-    service_url = "https://issuer-ng.projj.eu"
+    service_url = "https://issuer-ng.projj.eu/"
     # service_url = os.getenv("SERVICE_URL","https://dev.issuer.eudiw.dev/")
 
     #wallet_test_url = "http://127.0.0.1:5001/"
