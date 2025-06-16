@@ -581,8 +581,8 @@ class ConfService:
     # ------------------------------------------------------------------------------------------------
     # LOGS
 
-    #log_dir = "/tmp/log"
-    log_dir = "../../log"
+    log_dir = "/tmp/log"
+    # log_dir = "../../log"
     log_file_info = "logs.log"
 
     backup_count = 7
