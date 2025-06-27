@@ -16,10 +16,10 @@
 #
 ###############################################################################
 """
-The PID Issuer Web service is a component of the PID Provider backend. 
+The PID Issuer Web service is a component of the PID Provider backend.
 Its main goal is to issue the PID in cbor/mdoc (ISO 18013-5 mdoc) and SD-JWT format.
 
-This config_countries.py contains configuration data related to the countries supported by the PID Issuer. 
+This config_countries.py contains configuration data related to the countries supported by the PID Issuer.
 
 NOTE: You should only change it if you understand what you're doing.
 """
@@ -36,10 +36,10 @@ class ConfCountries:
         "EU": {
             "name": "nodeEU",
             "pid_url_oidc": cfgserv.service_url + "eidasnode/lightrequest?country=EU",
-            "pid_mdoc_privkey": "/etc/eudiw/pid-issuer/privKey/PID-DS-0001_EU.pem",
+            "pid_mdoc_privkey": cfgserv.privKey_path + "PID-DS-0001_EU.pem",
             # "pid_mdoc_privkey": 'app\certs\PID-DS-0001_EU.pem',
             "pid_mdoc_privkey_passwd": None,  # None or bytes,
-            "pid_mdoc_cert": "/etc/eudiw/pid-issuer/cert/PID-DS-0001_EU_cert.der",
+            "pid_mdoc_cert": cfgserv.trusted_CAs_path + "PID-DS-0001_EU_cert.der",
             "loa": "http://eidas.europa.eu/LoA/high",
             "supported_credentials": [
                 "eu.europa.ec.eudi.pid_mdoc",
@@ -56,11 +56,11 @@ class ConfCountries:
         formCountry: {
             "name": "FormEU",
             "pid_url": cfgserv.service_url + "pid/form",
-            "pid_mdoc_privkey": "/etc/eudiw/pid-issuer/privKey/PID-DS-0001_UT.pem",
-            # "pid_mdoc_privkey": "/etc/eudiw/pid-issuer/privKey/hackathon-DS-0001_UT.pem",
+            "pid_mdoc_privkey": cfgserv.privKey_path + "PID-DS-0001_UT.pem",
+            # "pid_mdoc_privkey": cfgserv.privKey_path + "hackathon-DS-0001_UT.pem",
             # "pid_mdoc_privkey": 'app\certs\PID-DS-0001_UT.pem',
             "pid_mdoc_privkey_passwd": None,  # None or bytes
-            "pid_mdoc_cert": "/etc/eudiw/pid-issuer/cert/PID-DS-0001_UT_cert.der",
+            "pid_mdoc_cert": cfgserv.trusted_CAs_path + "PID-DS-0001_UT_cert.der",
             # "pid_mdoc_cert": "/etc/eudiw/pid-issuer/cert/hackathon-DS-0001_UT_cert.der",
             "un_distinguishing_sign": "FC",
             "supported_credentials": [
@@ -87,16 +87,16 @@ class ConfCountries:
                 "eu.europa.ec.eudi.ehic_mdoc",
                 "eu.europa.ec.eudi.cor_mdoc",
                 "eu.europa.ec.eudi.ehic_sd_jwt_vc",
-                "eu.europa.ec.eudi.pda1_sd_jwt_vc"
+                "eu.europa.ec.eudi.pda1_sd_jwt_vc",
             ],
             "dynamic_R2": cfgserv.service_url + "dynamic/form_R2",
         },
         "PT": {
             "name": "Portugal",
-            "pid_mdoc_privkey": "/etc/eudiw/pid-issuer/privKey/PID-DS-0001_PT.pem",
+            "pid_mdoc_privkey": cfgserv.privKey_path + "PID-DS-0001_PT.pem",
             # "pid_mdoc_privkey": 'app\certs\PID-DS-0001_PT.pem',
             "pid_mdoc_privkey_passwd": None,  # None or bytes
-            "pid_mdoc_cert": "/etc/eudiw/pid-issuer/cert/PID-DS-0001_PT_cert.der",
+            "pid_mdoc_cert": cfgserv.trusted_CAs_path + "PID-DS-0001_PT_cert.der",
             "un_distinguishing_sign": "P",
             "supported_credentials": [
                 "eu.europa.ec.eudi.pid_mdoc",
@@ -114,10 +114,9 @@ class ConfCountries:
                         "given_name": "http://interop.gov.pt/MDC/Cidadao/NomeProprio",
                         "family_name": "http://interop.gov.pt/MDC/Cidadao/NomeApelido",
                         "birth_date": "http://interop.gov.pt/MDC/Cidadao/DataNascimento",
-                        #"nationality": "http://interop.gov.pt/MDC/Cidadao/Nacionalidade",
-                        #"birth_place":"http://interop.gov.pt/IMTT/Cidadao/LocalNascimento",
-                        #"nif":"http://interop.gov.pt/MDC/Cidadao/NIF"
-                        
+                        # "nationality": "http://interop.gov.pt/MDC/Cidadao/Nacionalidade",
+                        # "birth_place":"http://interop.gov.pt/IMTT/Cidadao/LocalNascimento",
+                        # "nif":"http://interop.gov.pt/MDC/Cidadao/NIF"
                     },
                     "org.iso.18013.5.1.mDL": {
                         "nif": "http://interop.gov.pt/MDC/Cidadao/NIF",
@@ -141,10 +140,10 @@ class ConfCountries:
         },
         "EE": {
             "name": "Estonia",
-            "pid_mdoc_privkey": "/etc/eudiw/pid-issuer/privKey/PID-DS-0001_EE.pem",
+            "pid_mdoc_privkey": cfgserv.privKey_path + "PID-DS-0001_EE.pem",
             # "pid_mdoc_privkey": 'app\certs\PID-DS-0001_EE.pem',
             "pid_mdoc_privkey_passwd": None,  # None or bytes
-            "pid_mdoc_cert": "/etc/eudiw/pid-issuer/cert/PID-DS-0001_EE_cert.der",
+            "pid_mdoc_cert": cfgserv.trusted_CAs_path + "PID-DS-0001_EE_cert.der",
             "supported_credentials": [
                 "eu.europa.ec.eudi.pid_mdoc",
                 "eu.europa.ec.eudi.pid_vc_sd_jwt",
@@ -177,10 +176,10 @@ class ConfCountries:
         "CZ": {
             "name": "Czechia",
             "pid_url_oidc": cfgserv.service_url + "eidasnode/lightrequest?country=CZ",
-            "pid_mdoc_privkey": "/etc/eudiw/pid-issuer/privKey/PID-DS-0001_CZ.pem",
+            "pid_mdoc_privkey": cfgserv.privKey_path + "PID-DS-0001_CZ.pem",
             # "pid_mdoc_privkey": 'app\certs\PID-DS-0001_CZ.pem',
             "pid_mdoc_privkey_passwd": None,  # None or bytes
-            "pid_mdoc_cert": "/etc/eudiw/pid-issuer/cert/PID-DS-0001_CZ_cert.der",
+            "pid_mdoc_cert": cfgserv.trusted_CAs_path + "PID-DS-0001_CZ_cert.der",
             "loa": "http://eidas.europa.eu/LoA/high",
             "supported_credentials": [
                 "eu.europa.ec.eudi.pid_mdoc",
@@ -192,9 +191,9 @@ class ConfCountries:
         "NL": {
             "name": "Netherland",
             "pid_url_oidc": cfgserv.service_url + "eidasnode/lightrequest?country=NL",
-            "pid_mdoc_privkey": "/etc/eudiw/pid-issuer/privKey/PID-DS-0001_NL.pem",
+            "pid_mdoc_privkey": cfgserv.privKey_path + "PID-DS-0001_NL.pem",
             "pid_mdoc_privkey_passwd": None,  # None or bytes
-            "pid_mdoc_cert": "/etc/eudiw/pid-issuer/cert/PID-DS-0001_NL_cert.der",
+            "pid_mdoc_cert": cfgserv.trusted_CAs_path + "PID-DS-0001_NL_cert.der",
             "loa": "http://eidas.europa.eu/LoA/high",
             "supported_credentials": [
                 "eu.europa.ec.eudi.pid_mdoc",
@@ -206,9 +205,9 @@ class ConfCountries:
         "LU": {
             "name": "Luxembourg",
             "pid_url_oidc": cfgserv.service_url + "eidasnode/lightrequest?country=LU",
-            "pid_mdoc_privkey": "/etc/eudiw/pid-issuer/privKey/PID-DS-0001_LU.pem",
+            "pid_mdoc_privkey": cfgserv.privKey_path + "PID-DS-0001_LU.pem",
             "pid_mdoc_privkey_passwd": None,  # None or bytes
-            "pid_mdoc_cert": "/etc/eudiw/pid-issuer/cert/PID-DS-0001_LU_cert.der",
+            "pid_mdoc_cert": cfgserv.trusted_CAs_path + "PID-DS-0001_LU_cert.der",
             "loa": "http://eidas.europa.eu/LoA/high",
             "supported_credentials": [
                 "eu.europa.ec.eudi.pid_mdoc",

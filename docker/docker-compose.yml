@@ -1,6 +1,6 @@
 services:
   eudiw_issuer:
-    image: ghcr.io/niscy-eudiw/eudi-srv-web-issuing-eudiw-py:latest
+    image: issuer_test:0.1
     container_name: eudiw_issuer
     ports:
       - "5000:5000"
@@ -10,6 +10,7 @@ services:
       SERVICE_URL: "http://127.0.0.1:5000/"
       #Container path
       TRUSTED_CAS_PATH: "/app/certs/CAs"
+      PRIVKEY_PATH: "/app/privKeys"
       LOG_PATH: "/app/log"
       EIDAS_NODE_URL: "https://preprod.issuer.eudiw.dev/EidasNode/"
       DYNAMIC_PRESENTATION_URL: "https://dev.verifier-backend.eudiw.dev/ui/presentations/"
@@ -22,4 +23,5 @@ services:
 
     # local path : container path
     volumes:
-      - ./CAs:/app/certs/CAs
+      - /etc/eudiw/pid-issuer/cert:/app/certs/CAs
+      - /etc/eudiw/pid-issuer/privKey:/app/privKeys
