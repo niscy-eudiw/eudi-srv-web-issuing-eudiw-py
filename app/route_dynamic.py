@@ -66,6 +66,7 @@ from misc import (
 )
 from dynamic_func import dynamic_formatter
 from . import oidc_metadata
+from authlib.integrations.flask_client import OAuth
 
 # /pid blueprint
 dynamic = Blueprint("dynamic", __name__, url_prefix="/dynamic")
@@ -83,18 +84,42 @@ from app.data_management import form_dynamic_data
 # Configuração do serviço OAuth externo
 OAUTH_AUTHORIZE_URL = "https://eidas.projj.eu/authorize" 
 OAUTH_TOKEN_URL = "https://oauth-service.com/token"
-OAUTH_CLIENT_SECRET = "secret"
-OAUTH_REDIRECT_URI = "http://localhost:5000/callback" 
+OAUTH_REDIRECT_URI = "https://eidas.projj.eu/callback" 
+
+#OAUTH_AUTHORIZE_URL = "http://127.0.0.1:5102/authorize" 
+#OAUTH_REDIRECT_URI = "http://localhost:5103/callback" 
+
+OAUTH_CLIENT_SECRET = "7hvNj8TvEJAkB5tRhrjIWSbu7ZibLGxXyrp3U4CQPXBIz0em"
+OAUTH_CLIENT_ID = "SrhoLl6KtzxkMXah2Rxngl0M"
+OAUTH_CLIENT_METADATA = {"client_name":"teste","client_uri":"http://127.0.0.1:5000/create_client","grant_types":["qwe"],"redirect_uris":["qwe"],"response_types":["qwe"],"scope":"qwe","token_endpoint_auth_method":"client_secret_basic"}
 
 RESOURCE_SERVER_URL = "https://oauth-service.com/data"
+
+oauth = OAuth(app)
+oauth.register(
+    name='custom_oauth',
+    client_id=OAUTH_CLIENT_ID,
+    client_secret=OAUTH_CLIENT_SECRET,
+    access_token_url=OAUTH_TOKEN_URL,
+    authorize_url=OAUTH_AUTHORIZE_URL,
+    client_kwargs={
+        'scope': 'PID',
+    }
+)
 
 # 1. Rota que inicia o processo de autorização
 @dynamic.route("/auth-request", methods=["GET", "POST"])
 def auth_request():
     country = request.args.get("country")
-    OAUTH_CLIENT_ID = str(uuid.uuid4())
-    session["OAUTH_CLIENT_ID"] = OAUTH_CLIENT_ID
-    return redirect(f"{OAUTH_AUTHORIZE_URL}?response_type=code&country={country}&client_id={OAUTH_CLIENT_ID}&scope=PID")
+
+    client = oauth.create_client('custom_oauth')
+
+    redirect_uri = OAUTH_REDIRECT_URI
+
+    return client.authorize_redirect(
+        redirect_uri,
+        country=country
+    )
 
 # 2. Rota que recebe o token (callback)
 @dynamic.route("/callback")
