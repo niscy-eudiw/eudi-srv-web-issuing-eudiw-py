@@ -49,6 +49,7 @@ from app_config.config_service import ConfService as cfgserv
 # Log
 from .app_config.config_service import ConfService as log
 
+#os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'
 
 oidc_metadata = {}
 oidc_metadata_clean = {}
@@ -228,8 +229,8 @@ def create_app(test_config=None):
     # create and configure the app
     app = Flask(__name__, instance_relative_config=True)
 
-    app.register_error_handler(Exception, handle_exception)
-    app.register_error_handler(404, page_not_found)
+    #app.register_error_handler(Exception, handle_exception)
+    #app.register_error_handler(404, page_not_found)
 
     @app.route("/", methods=["GET"])
     def initial_page():

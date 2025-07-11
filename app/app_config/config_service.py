@@ -611,3 +611,13 @@ class ConfService:
 
     max_time_data = 5  # maximum minutes allowed for saved information
     schedule_check = 5  # minutes, where every x time the code runs to check the time the data was created
+
+    #Oauth
+    OAUTH_AUTHORIZE_URL = "https://eidas.projj.eu/authorize" 
+    OAUTH_TOKEN_URL = "https://eidas.projj.eu/token"
+    OAUTH_REDIRECT_URI = "https://issuer-ng.projj.eu/dynamic/callback"  
+
+    OAUTH_CLIENT_ID = "---"
+    OAUTH_CLIENT_SECRET = "---"
+
+    RESOURCE_SERVER_URL = "https://eidas.projj.eu/api/me"

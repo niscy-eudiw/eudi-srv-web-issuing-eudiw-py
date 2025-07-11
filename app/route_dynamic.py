@@ -67,6 +67,7 @@ from misc import (
 from dynamic_func import dynamic_formatter
 from . import oidc_metadata
 from authlib.integrations.flask_client import OAuth
+import secrets
 
 # /pid blueprint
 dynamic = Blueprint("dynamic", __name__, url_prefix="/dynamic")
@@ -82,28 +83,16 @@ app = Flask(__name__)
 from app.data_management import form_dynamic_data
 
 # Configuração do serviço OAuth externo
-OAUTH_AUTHORIZE_URL = "https://eidas.projj.eu/authorize" 
-OAUTH_TOKEN_URL = "https://oauth-service.com/token"
-OAUTH_REDIRECT_URI = "https://eidas.projj.eu/callback" 
-
-#OAUTH_AUTHORIZE_URL = "http://127.0.0.1:5102/authorize" 
-#OAUTH_REDIRECT_URI = "http://localhost:5103/callback" 
-
-OAUTH_CLIENT_SECRET = "7hvNj8TvEJAkB5tRhrjIWSbu7ZibLGxXyrp3U4CQPXBIz0em"
-OAUTH_CLIENT_ID = "SrhoLl6KtzxkMXah2Rxngl0M"
-OAUTH_CLIENT_METADATA = {"client_name":"teste","client_uri":"http://127.0.0.1:5000/create_client","grant_types":["qwe"],"redirect_uris":["qwe"],"response_types":["qwe"],"scope":"qwe","token_endpoint_auth_method":"client_secret_basic"}
-
-RESOURCE_SERVER_URL = "https://oauth-service.com/data"
-
 oauth = OAuth(app)
 oauth.register(
     name='custom_oauth',
-    client_id=OAUTH_CLIENT_ID,
-    client_secret=OAUTH_CLIENT_SECRET,
-    access_token_url=OAUTH_TOKEN_URL,
-    authorize_url=OAUTH_AUTHORIZE_URL,
+    client_id=cfgserv.OAUTH_CLIENT_ID,
+    client_secret=cfgserv.OAUTH_CLIENT_SECRET,
+    access_token_url=cfgserv.OAUTH_TOKEN_URL,
+    authorize_url=cfgserv.OAUTH_AUTHORIZE_URL,
     client_kwargs={
         'scope': 'PID',
+        'response_type': 'code'
     }
 )
 
@@ -114,44 +103,44 @@ def auth_request():
 
     client = oauth.create_client('custom_oauth')
 
-    redirect_uri = OAUTH_REDIRECT_URI
+    redirect_uri = cfgserv.OAUTH_REDIRECT_URI
 
+    state = secrets.token_urlsafe(16)
+    session['oauth_state'] = state
+    
     return client.authorize_redirect(
         redirect_uri,
-        country=country
+        country=country,
+        state=state,
+        scope='profile'
     )
 
 # 2. Rota que recebe o token (callback)
-@dynamic.route("/callback")
+@dynamic.route("/callback", methods=["GET", "POST"])
 def callback():
-    code = request.args.get("code")
-    if not code:
-        return "Authorization code not found", 400
 
-    # Trocar o code pelo token
-    response = requests.post(OAUTH_TOKEN_URL, data={
-        "grant_type": "authorization_code",
-        "code": code,
-        "redirect_uri": OAUTH_REDIRECT_URI,
-        "client_id": session["OAUTH_CLIENT_ID"],
-        "client_secret": OAUTH_CLIENT_SECRET,
-    })
-
+    client = oauth.create_client('custom_oauth')
+    token = client.authorize_access_token()
+    
+    resp = client.get(cfgserv.RESOURCE_SERVER_URL, token=token)
+    user_info = resp.json()
+    
+    return (user_info)
+    
     token_data = response.json()
     session['access_token'] = token_data.get("access_token")
     return jsonify({"token": token_data})
 
-# 3. Rota que usa o token para obter os dados
-@dynamic.route("/data")
-def get_data():
-    token = session.get('access_token')
-    if not token:
-        return "Access token missing", 401
+# @dynamic.route("/data")
+# def get_data():
+#     token = session.get('access_token')
+#     if not token:
+#         return "Access token missing", 401
 
-    headers = {"Authorization": f"Bearer {token}"}
-    response = requests.get(RESOURCE_SERVER_URL, headers=headers)
+#     headers = {"Authorization": f"Bearer {token}"}
+#     response = requests.get(RESOURCE_SERVER_URL, headers=headers)
 
-    return jsonify(response.json())
+#     return jsonify(response.json())
 
 
 
