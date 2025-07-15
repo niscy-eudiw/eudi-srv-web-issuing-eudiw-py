@@ -100,6 +100,8 @@ oauth.register(
 @dynamic.route("/auth-request", methods=["GET", "POST"])
 def auth_request():
     country = request.args.get("country")
+    credentials_requested= request.args.get("credentials_requested")
+    metadata_url= cfgserv.oidc
 
     client = oauth.create_client('custom_oauth')
 
@@ -111,6 +113,8 @@ def auth_request():
     return client.authorize_redirect(
         redirect_uri,
         country=country,
+        credentials_requested=credentials_requested,
+        metadata_url=metadata_url,
         state=state,
         scope='profile'
     )
@@ -124,12 +128,20 @@ def callback():
     
     resp = client.get(cfgserv.RESOURCE_SERVER_URL, token=token)
     user_info = resp.json()
+    country= user_info["country"]
+    session["country"] = country
+
+    credential_response = credentialCreation(
+        credential_request=user_info["credential_request"], data=user_info, country=country
+    )
+
+    return credential_response
     
-    return (user_info)
+    #return (user_info)
     
-    token_data = response.json()
-    session['access_token'] = token_data.get("access_token")
-    return jsonify({"token": token_data})
+    # token_data = response.json()
+    # session['access_token'] = token_data.get("access_token")
+    # return jsonify({"token": token_data})
 
 # @dynamic.route("/data")
 # def get_data():
@@ -304,13 +316,7 @@ def dynamic_R1(country):
         )
 
     elif cfgcountries.supported_countries[country]["connection_type"] == "eidasnode":
-        return redirect(url_for("dynamic.auth_request", country=country))
-
-
-
-
-
-        return redirect(cfgcountries.supported_countries[country]["pid_url_oidc"])
+        return redirect(url_for("dynamic.auth_request", country=country, credentials_requested=credentials_requested))
 
     elif cfgcountries.supported_countries[country]["connection_type"] == "oauth":
         country_data = cfgcountries.supported_countries[country]["oidc_auth"].copy()
