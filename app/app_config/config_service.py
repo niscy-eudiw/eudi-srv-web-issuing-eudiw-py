@@ -128,6 +128,8 @@ class ConfService:
 
     # OIDC4VC URL for initial page
     oidc = service_url + ".well-known/openid-credential-issuer"
+
+    metadata_url= "https://dev.issuer.eudiw.dev/.well-known/openid-credential-issuer"
     # oidc = "https://preprod.issuer.eudiw.dev:4443/.well-known/openid-credential-issuer"
 
     # ------------------------------------------------------------------------------------------------

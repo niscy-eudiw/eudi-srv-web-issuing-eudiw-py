@@ -101,7 +101,7 @@ oauth.register(
 def auth_request():
     country = request.args.get("country")
     credentials_requested= request.args.get("credentials_requested")
-    metadata_url= cfgserv.oidc
+    metadata_url= cfgserv.metadata_url
 
     client = oauth.create_client('custom_oauth')
 
