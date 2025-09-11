@@ -1068,201 +1068,98 @@ def auth():
 def form_formatter(form_data: dict) -> dict:
     cleaned_data = {}
 
+    # Handle date formatting first, as it's a simple key-value replacement
     if "effective_from_date" in form_data:
         date_part = form_data["effective_from_date"].split("T")[0]
         dt = datetime.strptime(date_part, "%Y-%m-%d").replace(tzinfo=timezone.utc)
         rfc3339_string = dt.isoformat().replace("+00:00", "Z")
         form_data.update({"effective_from_date": rfc3339_string})
 
-    grouped = {}
-    for key, value in form_data.items():
-        if not value:
+    # Regex to parse keys like 'capacities[0][codes][1][code]' into a list of parts
+    key_pattern = re.compile(r'([^\[\]]+)')
+    
+    # Sort keys to ensure parent structures (e.g., capacities[0]) are processed before children (e.g., capacities[0][codes][0])
+    for key in sorted(form_data.keys()):
+        value = form_data[key]
+        
+        # Skip empty values and form control buttons
+        if not value or key in ["proceed", "Cancelled", "NumberCategories"]:
             continue
         if "option" in key and "on" in value:
             continue
-        if "[" not in key and "]" not in key:
-            grouped.update({key: value})
-        else:
-            parts = key.replace("][", "/").replace("[", "/").replace("]", "").split("/")
 
-            sub_key = ""
-            if "-" in key:
-                hyphen_parts = key.split("-")
-                base_key = hyphen_parts[0]
-                # sub_key = hyphen_parts[1]
-                if len(parts) == 3:
-                    sub_key = parts[2]
-                    index = parts[1]
-                else:
-                    sub_key = parts[1]
-                    index = 0
-
-            else:
-
-                base_key = parts[0]
-                index = int(parts[1])
-                sub_key = parts[2]
-
-            if base_key not in grouped:
-                grouped.update({base_key: [{sub_key: value}]})
-
-            else:
-
-                if len(grouped[base_key]) > int(index):
-                    grouped[base_key][int(index)].update({sub_key: value})
-                else:
-                    grouped[base_key].append({sub_key: value})
-
-    for item in grouped:
-
-        if item == "nationality" or item == "nationalities":
-            if isinstance(grouped[item], list):
-                cleaned_data[item] = [item["country_code"] for item in grouped[item]]
-                cleaned_data["nationalities"] = cleaned_data[item]
-            else:
-                cleaned_data[item] = grouped[item]
-                cleaned_data["nationalities"] = cleaned_data[item]
-
-        elif item == "capacities":
-            if isinstance(grouped[item], list):
-                cleaned_data[item] = [item["capacity_code"] for item in grouped[item]]
-                cleaned_data["capacities"] = cleaned_data[item]
-            else:
-                cleaned_data[item] = grouped[item]
-                cleaned_data["capacities"] = cleaned_data[item]
-
-        elif item == "codes":
-            if isinstance(grouped[item], list):
-                cleaned_data[item] = [item["code"] for item in grouped[item]]
-                cleaned_data["codes"] = cleaned_data[item]
-            else:
-                cleaned_data[item] = grouped[item]
-                cleaned_data["codes"] = cleaned_data[item]
-
-        elif item == "authentic_source":
-            if isinstance(grouped[item], list):
-                cleaned_data[item] = grouped[item][0]
-
-        elif item == "place_of_birth":
-            if isinstance(grouped[item], list):
-                joined_places = {}
-                for d in grouped[item]:
-                    joined_places.update(d)
-                cleaned_data[item] = joined_places
-
-        elif item == "address":
-            if isinstance(grouped[item], list):
-                joined_places = {}
-                for d in grouped[item]:
-                    joined_places.update(d)
-                cleaned_data[item] = joined_places
-            else:
-                if grouped[item] != "" and grouped[item] != "unset":
-                    cleaned_data[item] = grouped[item]
-
-        elif item == "residence_address":
-            if isinstance(grouped[item], list):
-                joined_places = {}
-                for d in grouped[item]:
-                    joined_places.update(d)
-                cleaned_data[item] = joined_places
-
-        elif item == "birth_date":
-            cleaned_data["birthdate"] = grouped[item]
-            cleaned_data[item] = grouped[item]
-
-        elif item == "age_equal_or_over" and isinstance(grouped[item], list):
-            cleaned_data[item] = grouped[item][0]
-
-        elif item == "portrait":
-            if grouped[item] == "Port1":
-                cleaned_data["portrait"] = cfgserv.portrait1
-            elif grouped[item] == "Port2":
-                cleaned_data["portrait"] = cfgserv.portrait2
-            elif grouped[item] == "Port3":
-                portrait = request.files["Image"]
-
-                img = Image.open(portrait)
-                # imgbytes = img.tobytes()
-                bio = io.BytesIO()
-                img.save(bio, format="JPEG")
-                del img
-
-                response, error_msg = validate_image(portrait)
-
-                if response == False:
-                    return authentication_error_redirect(
-                        jws_token=session["jws_token"],
-                        error="Invalid Image",
-                        error_description=error_msg,
-                    )
-                else:
-                    imgurlbase64 = base64.urlsafe_b64encode(bio.getvalue()).decode(
-                        "utf-8"
-                    )
-                    cleaned_data["portrait"] = imgurlbase64
+        parts = key_pattern.findall(key)
         
-        elif item == "image":
-            if grouped[item] == "Port1":
-                cleaned_data["image"] = cfgserv.portrait1
-            elif grouped[item] == "Port2":
-                cleaned_data["image"] = cfgserv.portrait2
-            elif grouped[item] == "Port3":
-                portrait = request.files["Image"]
-
-                img = Image.open(portrait)
-                # imgbytes = img.tobytes()
-                bio = io.BytesIO()
-                img.save(bio, format="JPEG")
-                del img
-
-                response, error_msg = validate_image(portrait)
-
-                if response == False:
-                    return authentication_error_redirect(
-                        jws_token=session["jws_token"],
-                        error="Invalid Image",
-                        error_description=error_msg,
-                    )
+        current_level = cleaned_data
+        for i, part in enumerate(parts[:-1]):
+            is_numeric_index = part.isdigit()
+            
+            if is_numeric_index:
+                idx = int(part)
+                # Ensure the list is long enough to accommodate the index
+                while len(current_level) <= idx:
+                    current_level.append({})
+                current_level = current_level[idx]
+            else: # It's a dictionary key (e.g., 'capacities', 'codes')
+                is_next_part_index = (i + 1 < len(parts)) and parts[i+1].isdigit()
+                
+                if is_next_part_index:
+                    # If the next part is an index, this key must point to a list
+                    current_level = current_level.setdefault(part, [])
                 else:
-                    imgurlbase64 = base64.urlsafe_b64encode(bio.getvalue()).decode(
-                        "utf-8"
-                    )
-                    cleaned_data["image"] = imgurlbase64
-
-        elif item == "Category1":
-            DrivingPrivileges = []
-            i = 1
-            for i in range(int(grouped["NumberCategories"])):
-                f = str(i + 1)
-                drivP = {
-                    "vehicle_category_code": grouped["Category" + f],
-                    "issue_date": grouped["IssueDate" + f],
-                    "expiry_date": grouped["ExpiryDate" + f],
-                }
-                DrivingPrivileges.append(drivP)
-
-            cleaned_data["driving_privileges"] = json.dumps(DrivingPrivileges)
-
-        elif grouped[item] == "true":
-            cleaned_data[item] = True
-
-        elif grouped[item] == "false":
-            cleaned_data[item] = False
-
+                    # Otherwise, it points to a dictionary
+                    current_level = current_level.setdefault(part, {})
+        
+        # Set the final value at the correct location
+        final_key = parts[-1]
+        if final_key.isdigit() and isinstance(current_level, list):
+             idx = int(final_key)
+             while len(current_level) <= idx:
+                 current_level.append(None)
+             current_level[idx] = value
         else:
-            if grouped[item] != "" and grouped[item] != "unset":
-                cleaned_data[item] = grouped[item]
+            current_level[final_key] = value
 
-    cleaned_data.update(
-        {
-            "issuing_country": session_manager.get_session(session["session_id"]).country,
-            "issuing_authority": cfgserv.mdl_issuing_authority,
-        }
-    )
+    # Perform any final data transformations if necessary
+    if "portrait" in cleaned_data:
+        if cleaned_data["portrait"] == "Port1":
+            cleaned_data["portrait"] = cfgserv.portrait1
+        elif cleaned_data["portrait"] == "Port2":
+            cleaned_data["portrait"] = cfgserv.portrait2
+        # Note: File upload logic for Port3 remains in the main route function
 
-    return cleaned_data
+    if "image" in cleaned_data:
+         if cleaned_data["image"] == "Port1":
+            cleaned_data["image"] = cfgserv.portrait1
+         elif cleaned_data["image"] == "Port2":
+            cleaned_data["image"] = cfgserv.portrait2
 
+    # Add issuer-filled data
+    cleaned_data.update({
+        "issuing_country": session_manager.get_session(session["session_id"]).country,
+        "issuing_authority": cfgserv.mdl_issuing_authority,
+    })
+
+    final_data = {}
+    for item, value in cleaned_data.items():
+        if item in ["portrait", "image"]:
+            if value == "Port1":
+                final_data[item] = cfgserv.portrait1
+            elif value == "Port2":
+                final_data[item] = cfgserv.portrait2
+            else:
+                # If it's not Port1 or Port2, it's the base64url string from the route handler.
+                final_data[item] = value
+        else:
+            final_data[item] = value
+    
+    # Add issuer-filled data
+    final_data.update({
+        "issuing_country": session_manager.get_session(session["session_id"]).country,
+        "issuing_authority": cfgserv.mdl_issuing_authority,
+    })
+
+    return final_data
 
 def presentation_formatter(cleaned_data: dict) -> dict:
 
@@ -1458,6 +1355,38 @@ def Dynamic_form():
 
     form_data = request.form.to_dict()
 
+    if 'Image' in request.files:
+        file = request.files['Image']
+        if file and file.filename != '':
+            # Validate the image using the helper function
+            is_valid, error_msg = validate_image(file)
+            if not is_valid:
+                # Handle the validation error appropriately
+                return authentication_error_redirect(
+                    jws_token=current_session.jws_token,
+                    error="Invalid Image",
+                    error_description=error_msg,
+                )
+
+            # Read image, convert to JPEG bytes, and then to base64url
+            img = Image.open(file.stream) # Use file.stream to avoid saving to disk
+            byte_io = io.BytesIO()
+            img.convert("RGB").save(byte_io, 'JPEG')
+            jpeg_bytes = byte_io.getvalue()
+            
+            img_base64url = base64.urlsafe_b64encode(jpeg_bytes).decode('utf-8')
+            
+            # Find which field the image belongs to (portrait, image, etc.)
+            # We determine this by checking which radio button was set to 'Port3'
+            image_field_name = None
+            for key, value in form_data.items():
+                if value == 'Port3':
+                    image_field_name = key
+                    break
+            
+            if image_field_name:
+                form_data[image_field_name] = img_base64url
+
     form_data.pop("proceed")
 
     cleaned_data = form_formatter(form_data)
@@ -1509,6 +1438,17 @@ def redirect_wallet():
             },
         )
     )
+
+@dynamic.route("/test-form", methods=["POST"])
+def test_form_submission():
+    #A temporary route to inspect form data.
+    form_data = request.form.to_dict()
+    
+    # formatter test
+    # cleaned_data = form_formatter(form_data)
+    # return jsonify(cleaned_data)
+    
+    return jsonify(form_data)
 
 
 """ @dynamic.route("/redirect_wallet", methods=["GET", "POST"])
