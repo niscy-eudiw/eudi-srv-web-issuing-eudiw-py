@@ -216,7 +216,7 @@ def formatter(data, un_distinguishing_sign, doctype, format):
     if "at_least_one_of" in attributes_req:
         attributes_req.pop("at_least_one_of")
 
-    if "driving_privileges" in attributes_req:
+    if "driving_privileges" in attributes_req and not isinstance(data.get("driving_privileges"), list):
         json_priv = json.loads(data["driving_privileges"])
         data.update({"driving_privileges": json_priv})
 

@@ -1282,7 +1282,7 @@ def presentation_formatter(cleaned_data: dict) -> dict:
                     }
                 )
 
-        if "driving_privileges" in presentation_data[credential]:
+        if "driving_privileges" in presentation_data[credential] and isinstance(presentation_data[credential]["driving_privileges"], str):
             json_priv = json.loads(presentation_data[credential]["driving_privileges"])
             presentation_data[credential].update({"driving_privileges": json_priv})
 

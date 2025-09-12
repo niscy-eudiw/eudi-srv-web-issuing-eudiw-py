@@ -23,15 +23,12 @@
 
 {# =================================================================================== #}
 {# RECURSIVE MACRO TO RENDER FORM ATTRIBUTES #}
-{# This macro is the core of the dynamic form generation. #}
 {# =================================================================================== #}
 {% macro render_attribute(name, attr, is_optional=false, name_prefix='') %}
 <div class="dynamic-attribute-row" data-attr-name="{{ name }}">
     {% set current_name = name_prefix + ('[{}]'.format(name) if name_prefix else name) %}
 
-    {# ========================================== #}
     {# Simple Input Types (string, date, number) #}
-    {# ========================================== #}
     {% if attr.type in ['string', 'full-date', 'uint'] or name == 'user_pseudonym' %}
     <div class="mb-4">
         <label class="block text-sm font-medium text-gray-700 mb-1">{{ name | replace('_', ' ') | title }}</label>
@@ -42,16 +39,13 @@
             %} {% if attr.type=='uint' %}min="0" {% endif %}>
     </div>
 
-    {# ========================================== #}
     {# Boolean (Toggle Switch) #}
-    {# ========================================== #}
     {% elif attr.type == 'bool' %}
     <div class="mb-6 flex items-center justify-between">
         <label class="font-pf text-lg font-bold text-gray-800">{{ name | replace('_', ' ') | title }}</label>
         <input type="hidden" name="{{ current_name }}" value="false">
         <label class="relative inline-flex items-center cursor-pointer">
-            <input type="checkbox" value="true" class="sr-only peer toggle-input"
-                data-target-hidden-input="{{ current_name }}">
+            <input type="checkbox" value="true" class="sr-only peer toggle-input">
             <div class="w-11 h-6 bg-gray-200 rounded-full peer-checked:bg-indigo-600"></div>
             <div
                 class="absolute top-0.5 left-[2px] w-5 h-5 bg-white rounded-full transition-transform peer-checked:translate-x-full">
@@ -59,35 +53,37 @@
         </label>
     </div>
 
-    {# ========================================== #}
     {# List Type (Recursive & Conditional Logic) #}
-    {# ========================================== #}
     {% elif attr.type == 'list' %}
     <div class="p-4 border border-gray-200 rounded-md space-y-4 mb-4 list-container" data-list-name="{{ name }}">
         <h3 class="text-lg font-semibold text-gray-800">{{ name | replace('_', ' ') | title }}</h3>
 
-        {# Wrapper for dynamically added items #}
         <div class="list-items-wrapper space-y-4">
 
-            {# This creates a distinct box for each capacity and its codes. #}
+            {# UNTOUCHED: Special handling for Seafarer 'capacities' (mdoc only). #}
             {% if name == 'capacities' %}
             <div class="list-item p-4 border rounded-md bg-gray-50 shadow-sm relative">
-                {# Render the capacity_code input directly #}
                 {{ render_attribute('capacity_code', attr.attributes.capacity_code, is_optional,
                 name_prefix=current_name + '[0]') }}
-
-                {# Render the nested list for 'codes' within the same box #}
                 {{ render_attribute('codes', attr.attributes.codes, is_optional, name_prefix=current_name + '[0]') }}
             </div>
 
-            {# ================================================================ #}
-            {# Logic for all other list types, including PDA1 choices #}
-            {# ================================================================ #}
+            {# Logic for all other list types #}
             {% else %}
             <div class="list-item border-l-4 border-gray-300 pl-4">
+
                 {% if name == 'places_of_work' %}
+                {# Prepare a unified 'options' list from either dict (mdoc) or list (sd-jwt) structure #}
+                {% if attr.attributes is mapping %}
+                {% set options = attr.attributes.items() %}
+                {% else %}
+                {% set options = [] %}
+                {% for item in attr.attributes %}{% for key, value in item.items() %}{% set _ = options.append((key,
+                value)) %}{% endfor %}{% endfor %}
+                {% endif %}
+
                 <div class="flex flex-wrap gap-2 toggle-group mb-4">
-                    {% for option_name, option_attr in attr.attributes.items() %}
+                    {% for option_name, option_attr in options %}
                     <label class="toggle-option cursor-pointer">
                         <input type="radio" name="{{ current_name }}_option" value="{{option_name}}"
                             class="sr-only peer" data-option-name="{{option_name}}" {% if loop.first %}checked{% endif
@@ -99,21 +95,30 @@
                     </label>
                     {% endfor %}
                 </div>
-                {% for option_name, option_attr in attr.attributes.items() %}
+                {% for option_name, option_attr in options %}
                 <div class="sub-container {% if not loop.first %}hidden{% endif %}" data-option-name="{{option_name}}">
                     {{ render_attribute(option_name, option_attr, is_optional, name_prefix=current_name + '[0]') }}
                 </div>
                 {% endfor %}
                 {% else %}
+                {# Fallback for other non-choice lists. This handles both structures. #}
+                {% if attr.attributes is mapping %}
                 {% for sub_name, sub_attr in attr.attributes.items() %}
                 {{ render_attribute(sub_name, sub_attr, is_optional, name_prefix=current_name + '[0]') }}
                 {% endfor %}
+                {% elif attr.attributes is sequence %}
+                {% for item in attr.attributes %}
+                {% for sub_name, sub_attr in item.items() %}
+                {{ render_attribute(sub_name, sub_attr, is_optional, name_prefix=current_name + '[0]') }}
+                {% endfor %}
+                {% endfor %}
+                {% endif %}
                 {% endif %}
             </div>
             {% endif %}
         </div>
 
-        {# Add Item Button (only shown if max cardinality is not 1) #}
+        {# Add Item Button #}
         {% if attr.get('cardinality', {}).get('max') != 1 %}
         <button type="button" class="add-item text-sm font-semibold text-indigo-600 hover:text-indigo-800"
             data-parent-name="{{ name }}" data-name-prefix="{{ current_name }}"
@@ -123,9 +128,7 @@
         {% endif %}
     </div>
 
-    {# ========================================== #}
     {# Image Upload #}
-    {# ========================================== #}
     {% elif attr.type == 'jpeg' %}
     <div class="mb-4">
         <label class="block text-lg font-semibold text-gray-800">{{ name | replace('_', ' ') | title }}</label>
@@ -161,9 +164,7 @@
         </div>
     </div>
 
-    {# ========================================== #}
     {# Driving Privileges (special case) #}
-    {# ========================================== #}
     {% elif attr.type == 'driving_privileges' %}
     <div class="p-4 border border-gray-200 rounded-md space-y-4 mb-4">
         <h3 class="text-lg font-semibold text-gray-800">Driving Privileges</h3>
@@ -307,16 +308,13 @@
                     const wrapper = listContainer.querySelector('.list-items-wrapper');
                     const newIndex = wrapper.querySelectorAll(':scope > .list-item').length;
 
-                    // The first item serves as a template for new items
                     const templateItem = wrapper.querySelector('.list-item');
                     if (!templateItem) return;
 
                     const newItem = cloneAndPrepareListItem(templateItem, newIndex, button.dataset.namePrefix);
 
-                    // Add a remove button to the new item
                     const removeBtn = document.createElement('button');
                     removeBtn.type = 'button';
-                    // FIX: Add absolute positioning and styling for the remove button on capacity boxes
                     if (listContainer.dataset.listName === 'capacities') {
                         removeBtn.className = 'remove-list-item text-xs text-red-500 hover:text-red-700 font-semibold absolute top-2 right-2';
                         removeBtn.innerHTML = '&times; Remove Capacity';
@@ -335,7 +333,7 @@
                     event.target.closest('.list-item').remove();
                 }
 
-                // --- FIX: Handle toggling choices like 'place_of_work' ---
+                // --- Handle toggling choices like 'place_of_work' ---
                 const toggleOption = event.target.closest('.toggle-option input[type="radio"]');
                 if (toggleOption) {
                     const container = toggleOption.closest('.list-item');
@@ -349,6 +347,15 @@
                         sc.querySelectorAll('input, select, button').forEach(el => el.disabled = !isSelected);
                     });
                 }
+
+                const toggleInput = event.target.closest('.toggle-input');
+                if (toggleInput) {
+                    // This finds the hidden input that came just before the label for the toggle.
+                    const hiddenInput = toggleInput.closest('label').previousElementSibling;
+                    if (hiddenInput && hiddenInput.type === 'hidden') {
+                        hiddenInput.value = toggleInput.checked ? 'true' : 'false';
+                    }
+                }
             });
 
             // Initialize choice-based sections on page load
@@ -358,7 +365,6 @@
                     checkedRadio.dispatchEvent(new Event('click', { bubbles: true }));
                 }
             });
-
 
             // =======================================================
             // Optional Attributes Modal Logic
