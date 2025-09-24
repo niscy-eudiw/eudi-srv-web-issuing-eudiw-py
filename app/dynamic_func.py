@@ -293,6 +293,9 @@ def formatter(data, un_distinguishing_sign, doctype, format):
     if "age_birth_year" in data and isinstance(data["age_birth_year"], str):
         data.update({"age_birth_year": int(data["age_birth_year"])})
 
+    if "gender" in data and isinstance(data["gender"], str) and data["gender"].isdigit():
+        data["gender"] = int(data["gender"])
+
     if "residence_address" in data and isinstance(data["residence_address"], list):
         data.update({"residence_address": data["residence_address"][0]})
 

@@ -44,10 +44,16 @@
         {% for item in value %}
         {# For each item in the list, create a slightly indented block #}
         <div class="bg-white/60 p-3 rounded-md">
+            {# Check if the item is a dictionary before trying to loop through its items #}
+            {% if item is mapping %}
             {% for sub_name, sub_value in item.items() %}
             {# Recursively call the macro to display the item's contents #}
             {{ render_attribute_display(sub_name, sub_value) }}
             {% endfor %}
+            {# If the item is not a dictionary (e.g., just a string), display it directly #}
+            {% else %}
+            <p class="font-pf text-base text-custom-gray">{{ item }}</p>
+            {% endif %}
         </div>
         {% endfor %}
     </div>

@@ -66,9 +66,14 @@ def _process_nested_attributes(conditions, parent_value_type=None):
     attr_key = parent_value_type if parent_value_type in conditions else next((k for k in conditions if k.endswith('_attributes')), None)
     
     if not attr_key:
-        return {}
+        # This handles the new 'driving_privileges' structure which contains attributes directly
+        if any(isinstance(v, dict) and 'value_type' in v for v in conditions.values()):
+            attributes_to_process = conditions
+        else:
+            return {}
+    else:
+        attributes_to_process = conditions.get(attr_key, {})
 
-    attributes_to_process = conditions.get(attr_key, {})
 
     if isinstance(attributes_to_process, list):
         # This handles structures like PDA1's places_of_work
@@ -82,7 +87,7 @@ def _process_nested_attributes(conditions, parent_value_type=None):
                 })
         return processed_list
 
-    # This handles structures like pid_mdoc's place_of_birth and nationality
+    # This handles structures like pid_mdoc's place_of_birth and mDL's driving_privileges
     for key, value in attributes_to_process.items():
         if isinstance(value, dict) and "value_type" in value:
             processed_attrs[key] = {
@@ -91,11 +96,15 @@ def _process_nested_attributes(conditions, parent_value_type=None):
                 "source": value.get("source"),
                 "filled_value": None
             }
+            # Add options for dropdowns if they exist
+            if "options" in value:
+                processed_attrs[key]["options"] = value["options"]
+
             if "issuer_conditions" in value:
                 processed_attrs[key]["type"] = "list"
                 processed_attrs[key]["cardinality"] = value["issuer_conditions"].get("cardinality")
                 # Recursive step for the next level of nesting
-                processed_attrs[key]["attributes"] = _process_nested_attributes(value["issuer_conditions"], value["value_type"])
+                processed_attrs[key]["attributes"] = _process_nested_attributes(value["issuer_conditions"], value.get("value_type"))
                 if "not_used_if" in value["issuer_conditions"]:
                      processed_attrs[key]["not_used_if"] = value["issuer_conditions"]["not_used_if"]
     return processed_attrs
