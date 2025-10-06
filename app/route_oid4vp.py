@@ -50,7 +50,6 @@ CORS(oid4vp)  # enable CORS on the blue print
 from app.data_management import oid4vp_requests, form_dynamic_data
 from . import oidc_metadata
 
-
 @oid4vp.route("/oid4vp", methods=["GET"])
 def openid4vp():
 
