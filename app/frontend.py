@@ -5,7 +5,15 @@ import urllib
 from urllib.parse import quote, urlencode
 from flask_cors import CORS
 import requests
-from flask import Blueprint, Response, request, redirect, render_template, url_for
+from flask import (
+    Blueprint,
+    Response,
+    request,
+    redirect,
+    render_template,
+    url_for,
+    jsonify,
+)
 import segno
 
 from app_config.config_service import ConfService as cfgservice
@@ -15,24 +23,94 @@ frontend = Blueprint("frontend", __name__, url_prefix="/")
 CORS(frontend)
 
 
-@frontend.route("/display_countries", methods=["GET"])
+@frontend.route("/display_countries", methods=["POST"])
 def display_countries():
-    session_id = request.args.get("session_id")
-    cfgservice.app_logger.info(f"session_id: {session_id}")
-    countries_json = request.args.get("countries")
+    cfgservice.app_logger.info(f"Testing")
 
-    cfgservice.app_logger.info(f"countries_json: {countries_json}")
+    raw_json_string = request.form.get("payload")
 
-    countries = json.loads(countries_json)
+    cfgservice.app_logger.info(f"raw_json_string: {raw_json_string}")
 
-    cfgservice.app_logger.info(f"countries: {countries}")
-    
-    return render_template(
-        "dynamic/dynamic-countries.html",
-        countries=countries,
-        session_id=session_id,
-        redirect_url= cfgservice.issuer_url
-    )
+    if raw_json_string:
+        try:
+
+            data_payload = json.loads(raw_json_string)
+            cfgservice.app_logger.info(f"data_payload: {data_payload}")
+
+        except json.JSONDecodeError:
+            return jsonify({"status": "error", "message": "Invalid JSON payload"}), 400
+
+        session_id = data_payload.get("session_id")
+        cfgservice.app_logger.info(f"session_id: {session_id}")
+        countries = data_payload.get("countries")
+        cfgservice.app_logger.info(f"countries: {countries}")
+
+        return render_template(
+            "dynamic/dynamic-countries.html",
+            countries=countries,
+            session_id=session_id,
+            redirect_url=cfgservice.issuer_url,
+        )
+
+    return jsonify({"status": "error", "message": "Payload not found"}), 400
+
+
+@frontend.route("/display_form", methods=["POST"])
+def display_form():
+    raw_json_string = request.form.get("payload")
+
+    if raw_json_string:
+        try:
+            data_payload = json.loads(raw_json_string)
+
+        except json.JSONDecodeError:
+            return jsonify({"status": "error", "message": "Invalid JSON payload"}), 400
+
+        session_id = data_payload.get("session_id")
+        cfgservice.app_logger.info(f"session_id: {session_id}")
+        mandatory_attributes = data_payload.get("mandatory_attributes")
+        cfgservice.app_logger.info(f"mandatory_attributes: {mandatory_attributes}")
+        optional_attributes = data_payload.get("optional_attributes")
+        cfgservice.app_logger.info(f"optional_attributes: {optional_attributes}")
+        redirect_url = data_payload.get("redirect_url")
+        cfgservice.app_logger.info(f"redirect_url: {redirect_url}")
+
+        return render_template(
+            "dynamic/dynamic-form.html",
+            mandatory_attributes=mandatory_attributes,
+            optional_attributes=optional_attributes,
+            redirect_url=redirect_url,
+        )
+
+    return jsonify({"status": "error", "message": "Payload not found"}), 400
+
+
+@frontend.route("/display_authorization", methods=["POST"])
+def display_authorization():
+    raw_json_string = request.form.get("payload")
+
+    if raw_json_string:
+        try:
+            data_payload = json.loads(raw_json_string)
+
+        except json.JSONDecodeError:
+            return jsonify({"status": "error", "message": "Invalid JSON payload"}), 400
+
+        session_id = data_payload.get("session_id")
+        cfgservice.app_logger.info(f"session_id: {session_id}")
+        presentation_data = data_payload.get("presentation_data")
+        cfgservice.app_logger.info(f"presentation_data: {presentation_data}")
+        redirect_url = data_payload.get("redirect_url")
+        cfgservice.app_logger.info(f"redirect_url: {redirect_url}")
+
+        return render_template(
+            "dynamic/form_authorize.html",
+            presentation_data=presentation_data,
+            user_id=session_id,
+            redirect_url=redirect_url,
+        )
+
+    return jsonify({"status": "error", "message": "Payload not found"}), 400
 
 
 @frontend.route("/credential_offer_choice", methods=["GET"])
@@ -66,9 +144,9 @@ def credential_offer():
     )
 
 
-@frontend.route("/credential_offer_choice", methods=["GET"])
+@frontend.route("/credential_offer", methods=["GET", "POST"])
 def credentialOffer():
-    
+
     credentialsSupported = oidc_metadata["credential_configurations_supported"]
 
     cfgservice.app_logger.info(f"credentialsSupported: {credentialsSupported}")
@@ -91,10 +169,13 @@ def credentialOffer():
             credentials_id = form
             credentials_id_list = json.dumps(form)
             if auth_choice == "pre_auth_code":
-                """ return redirect(
+                """return redirect(
                     url_for("preauth.preauthRed", credentials_id=credentials_id_list)
-                ) """
-                params = {"frontend_id": "12345", "credentials_id": credentials_id_list}
+                )"""
+                params = {
+                    "frontend_id": cfgservice.frontend_id,
+                    "credentials_id": credentials_id_list,
+                }
                 target_url = f"{cfgservice.issuer_url}/preauth?{urlencode(params)}"
                 return redirect(target_url)
 
@@ -113,7 +194,6 @@ def credentialOffer():
                     f"{credential_offer_URI}credential_offer?credential_offer="
                     + quote(json_string, safe=":/")
                 )
-
 
                 qrcode = segno.make(uri)
                 out = io.BytesIO()
@@ -138,5 +218,3 @@ def credentialOffer():
 
     else:
         return redirect(cfgservice.service_url + "credential_offer_choice")
-    
-
