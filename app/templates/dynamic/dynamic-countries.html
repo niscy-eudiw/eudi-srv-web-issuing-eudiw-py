@@ -42,7 +42,7 @@
                         <div class="genericErrors" id="genericErrorsDesc">
                         </div>
                         <h2>Please select your country of origin</h2>
-                       <form id="selectCountryForm" method="post" action="{{redirect_url}}dynamic/country_selected" accept-charset="UTF-8" enctype="application/x-www-form-urlencoded;charset=UTF-8" autocapitalize="off" spellcheck="false">
+                       <form id="selectCountryForm" method="post" action="{{redirect_url}}/dynamic/country_selected" accept-charset="UTF-8" enctype="application/x-www-form-urlencoded;charset=UTF-8" autocapitalize="off" spellcheck="false">
                             <h3>Test Credentials Provider</h3>
                             <p>This Credentials Provider should only be used for issuing Credentials for testing purposes.</p>
                             <div id="eidasCountries">
@@ -52,70 +52,6 @@
                                     <label for="{{ key }}" class="{{ key }} countryName">{{ value }}</label>
                                 </div>
                                 {% endfor %}
-                                <!-- <div class="flag">
-                                    <input type="radio" value="AT" id="AT" name="country" class="AT">
-                                    <label for="AT" class="AT countryName">Austria</label>
-                                </div>
-                                <div class="flag">
-                                    <input type="radio" value="BE" id="BE" name="country" class="BE">
-                                    <label for="BE" class="BE countryName">Belgium</label>
-                                </div>
-                                <div class="flag">
-                                    <input type="radio" value="HR" id="HR" name="country" class="HR">
-                                    <label for="HR" class="HR countryName">Croatia</label>
-                                </div>
-                                <div class="flag">
-                                    <input type="radio" value="CZ" id="CZ" name="country" class="CZ">
-                                    <label for="CZ" class="CZ countryName">Czechia</label>
-                                </div>
-                                <div class="flag">
-                                    <input type="radio" value="EE" id="EE" name="country" class="EE">
-                                    <label for="EE" class="EE countryName">Estonia</label>
-                                </div>
-                                <div class="flag">
-                                    <input type="radio" value="DE" id="DE" name="country" class="DE">
-                                    <label for="DE" class="DE countryName">Germany</label>
-                                </div>
-                                <div class="flag">
-                                    <input type="radio" value="IT" id="IT" name="country" class="IT">
-                                    <label for="IT" class="IT countryName">Italy</label>
-                                </div>
-                                <div class="flag">
-                                    <input type="radio" value="LV" id="LV" name="country" class="LV">
-                                    <label for="LV" class="LV countryName">Latvia</label>
-                                </div>
-                                <div class="flag">
-                                    <input type="radio" value="LT" id="LT" name="country" class="LT">
-                                    <label for="LT" class="LT countryName">Lithuania</label>
-                                </div>
-                                <div class="flag">
-                                    <input type="radio" value="LU" id="LU" name="country" class="LU">
-                                    <label for="LU" class="LU countryName">Luxembourg</label>
-                                </div>
-                                <div class="flag">
-                                    <input type="radio" value="MT" id="MT" name="country" class="MT">
-                                    <label for="MT" class="MT countryName">Malta</label>
-                                </div>
-                                <div class="flag">
-                                    <input type="radio" value="NL" id="NL" name="country" class="NL">
-                                    <label for="NL" class="NL countryName">Netherlands</label>
-                                </div>
-                                <div class="flag">
-                                    <input type="radio" value="PT" id="PT" name="country" class="PT">
-                                    <label for="PT" class="PT countryName">Portugal</label>
-                                </div>
-                                <div class="flag">
-                                    <input type="radio" value="SK" id="SK" name="country" class="SK">
-                                    <label for="SK" class="SK countryName">Slovakia</label>
-                                </div>
-                                <div class="flag">
-                                    <input type="radio" value="ES" id="ES" name="country" class="ES">
-                                    <label for="ES" class="ES countryName">Spain</label>
-                                </div>
-                                <div class="flag">
-                                    <input type="radio" value="SE" id="SE" name="country" class="SE">
-                                    <label for="SE" class="SE countryName">Sweden</label>
-                                </div> -->
                             </div>
                             <div class="clearfix"></div>
 
@@ -139,7 +75,6 @@
             </div>
         </div>
     </footer>
-    <!-- Version 9.7.1.20 - 23/03/2023 - 09:26 -->
 </body>
 
 </html>

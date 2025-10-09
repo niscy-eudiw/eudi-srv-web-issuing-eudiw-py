@@ -11,3 +11,4 @@ pillow==10.2.0
 segno==1.6.1
 qrcode-artistic==3.0.2
 gunicorn
+Flask-Session==0.8.0

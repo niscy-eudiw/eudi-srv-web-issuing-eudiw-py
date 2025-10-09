@@ -1,7 +1,12 @@
 {
+  "credential_issuer": "https://dev.issuer.eudiw.dev",
   "authorization_servers": [
     "https://dev.issuer.eudiw.dev/oidc"
   ],
+  "credential_endpoint": "https://dev.issuer.eudiw.dev/credential",
+  "nonce_endpoint":"https://dev.issuer.eudiw.dev/nonce",
+  "deferred_credential_endpoint": "https://dev.issuer.eudiw.dev/deferred_credential",
+  "notification_endpoint": "https://dev.issuer.eudiw.dev/notification",
   "batch_credential_issuance": {
       "batch_size": 100
     },
@@ -27,7 +32,7 @@
     "name": "Digital Credentials Issuer",
     "locale": "en",
     "logo": {
-        "uri": "https://issuer.eudiw.dev/ic-logo.png",
+        "uri": "https://dev.issuer.eudiw.dev/ic-logo.png",
         "alt_text": "EU Digital Identity Wallet Logo"
     }
     }

@@ -10,12 +10,11 @@ from flask import (
 
 from app_config.config_service import ConfService as cfgservice
 
+authorization_endpoint = Blueprint("authorization_endpoint", __name__, url_prefix="/")
+CORS(authorization_endpoint)
 
-authorization = Blueprint("authorization", __name__, url_prefix="/")
-CORS(authorization)
 
-
-@authorization.route("/authorization", methods=["GET", "POST"])
+@authorization_endpoint.route("/authorization", methods=["GET", "POST"])
 def authorization():
 
     headers = {

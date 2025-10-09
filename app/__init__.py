@@ -29,14 +29,11 @@ import sys
 
 sys.path.append(os.path.dirname(__file__))
 
-from app.session_manager import SessionManager
 from flask import Flask, render_template, send_from_directory
 from flask_session import Session
 from flask_cors import CORS
 from werkzeug.debug import *
 from werkzeug.exceptions import HTTPException
-from idpyoidc.server.configure import OPConfiguration
-from idpyoidc.server import Server
 from typing import Dict, Any, List, Union, cast
 
 from app_config.config_service import ConfService as cfgserv
@@ -157,14 +154,10 @@ def page_not_found(e):
 from typing import Optional
 
 
-class FlaskIssuer(Flask):
-    srv_config: Optional[OPConfiguration] = None
-    server: Optional[Server] = None
-
 
 def create_app(test_config=None):
     # create and configure the app
-    app = FlaskIssuer(__name__, instance_relative_config=True)
+    app = Flask(__name__, instance_relative_config=True)
 
     app.register_error_handler(Exception, handle_exception)
     app.register_error_handler(404, page_not_found)
@@ -202,12 +195,12 @@ def create_app(test_config=None):
 
     # register blueprint for the /pid route
     from . import (
-        preauthorization,
-        revocation,
+        frontend,
+        auth_redirect
     )
 
-    app.register_blueprint(revocation.revocation)
-    app.register_blueprint(preauthorization.preauth)
+    app.register_blueprint(frontend.frontend)
+    app.register_blueprint(auth_redirect.authorization_endpoint)
 
     # config session
     app.config["SESSION_FILE_THRESHOLD"] = 50
@@ -221,6 +214,8 @@ def create_app(test_config=None):
 
     cfgserv.app_logger.info(" - DEBUG - FLASK started")
 
+    print(app.url_map)
+    
     return app
 
 
