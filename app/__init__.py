@@ -35,45 +35,17 @@ from flask_session import Session
 from flask_cors import CORS
 from werkzeug.debug import *
 from werkzeug.exceptions import HTTPException
-from idpyoidc.configure import Configuration
-from idpyoidc.configure import create_from_config_file
 from idpyoidc.server.configure import OPConfiguration
 from idpyoidc.server import Server
-from urllib.parse import urlparse
-from pycose.keys.ec2 import EC2Key
 from typing import Dict, Any, List, Union, cast
 
-from cryptography.hazmat.backends import default_backend
-from cryptography.hazmat.primitives.asymmetric import (
-    ec,
-)
-from cryptography import x509
 from app_config.config_service import ConfService as cfgserv
 
 # Log
 
-session_manager = SessionManager(default_expiry_minutes=3600)
 oidc_metadata: Dict[str, Any] = {}
-oidc_metadata_clean: Dict[str, Any] = {}
 openid_metadata: Dict[str, Any] = {}
 oauth_metadata: Dict[str, Any] = {}
-trusted_CAs: Dict[str, Any] = {}
-
-
-def remove_keys(obj, keys_to_remove):
-    if isinstance(obj, dict):
-        new_obj = {
-            k: remove_keys(v, keys_to_remove)
-            for k, v in obj.items()
-            if k not in keys_to_remove
-        }
-        return new_obj if new_obj else None
-    elif isinstance(obj, list):
-        new_list = [remove_keys(item, keys_to_remove) for item in obj]
-        new_list = [item for item in new_list if item is not None]
-        return new_list if new_list else None
-    else:
-        return obj
 
 
 def replace_domain(
@@ -135,11 +107,6 @@ def setup_metadata():
 
     oidc_metadata["credential_configurations_supported"] = credentials_supported
 
-    oidc_metadata_clean["credential_configurations_supported"] = remove_keys(
-        copy.deepcopy(credentials_supported),
-        {"issuer_conditions", "issuer_config", "overall_issuer_conditions", "source", "selective_disclosure"},
-    )
-
     old_domain = oidc_metadata["credential_issuer"]
 
     new_domain = cfgserv.service_url[:-1]
@@ -150,94 +117,13 @@ def setup_metadata():
     oauth_metadata = cast(
         Dict[str, Any], replace_domain(oauth_metadata, old_domain, new_domain)
     )
-    oidc_metadata_clean = cast(
-        Dict[str, Any], replace_domain(oidc_metadata_clean, old_domain, new_domain)
-    )
+
     oidc_metadata = cast(
         Dict[str, Any], replace_domain(oidc_metadata, old_domain, new_domain)
     )
 
 
 setup_metadata()
-
-
-def setup_trusted_CAs():
-    global trusted_CAs
-
-    try:
-        ec_keys = {}
-        for file in os.listdir(cfgserv.trusted_CAs_path):
-            if file.endswith("pem"):
-                CA_path = os.path.join(cfgserv.trusted_CAs_path, file)
-
-                with open(CA_path) as pem_file:
-
-                    pem_data = pem_file.read()
-
-                    pem_data = pem_data.encode()
-
-                    certificate = x509.load_pem_x509_certificate(
-                        pem_data, default_backend()
-                    )
-
-                    public_key = certificate.public_key()
-
-                    issuer = certificate.issuer
-
-                    not_valid_before = certificate.not_valid_before
-
-                    not_valid_after = certificate.not_valid_after
-
-                    if isinstance(public_key, ec.EllipticCurvePublicKey):
-                        public_numbers = public_key.public_numbers()
-                        x = public_numbers.x.to_bytes(
-                            (public_numbers.x.bit_length() + 7) // 8,
-                            "big",
-                        )
-                        y = public_numbers.y.to_bytes(
-                            (public_numbers.y.bit_length() + 7) // 8,
-                            "big",
-                        )
-
-                    else:
-                        raise ValueError(
-                            "Only elliptic curve keys supported for EC2Key"
-                        )
-
-                    ec_key = EC2Key(
-                        x=x, y=y, crv=1
-                    )  # SECP256R1 curve is equivalent to P-256
-
-                    ec_keys.update(
-                        {
-                            issuer: {
-                                "certificate": certificate,
-                                "public_key": public_key,
-                                "not_valid_before": not_valid_before,
-                                "not_valid_after": not_valid_after,
-                                "ec_key": ec_key,
-                            }
-                        }
-                    )
-
-    except FileNotFoundError as e:
-        cfgserv.app_logger.exception(f"TrustedCA Error: file not found.\n {e}")
-        raise
-    except json.JSONDecodeError as e:
-        cfgserv.app_logger.exception(
-            f"TrustedCA Error: Metadata Unable to decode JSON.\n {e}"
-        )
-        raise
-    except Exception as e:
-        cfgserv.app_logger.exception(
-            f"TrustedCA Error: An unexpected error occurred.\n {e}"
-        )
-        raise
-
-    trusted_CAs = ec_keys
-
-
-setup_trusted_CAs()
 
 
 def handle_exception(e):
@@ -286,7 +172,9 @@ def create_app(test_config=None):
     @app.route("/", methods=["GET"])
     def initial_page():
         return render_template(
-            "misc/initial_page.html", oidc=cfgserv.oidc, service_url=cfgserv.service_url
+            "misc/initial_page.html",
+            oidc=f"{cfgserv.service_url}.well-known/openid-credential-issuer",
+            service_url=cfgserv.service_url,
         )
 
     @app.route("/favicon.ico")
@@ -312,28 +200,13 @@ def create_app(test_config=None):
     except OSError:
         pass
 
-    # a simple page that says hello
-    # @app.route('/hello')
-    # def hello():
-    #    return 'Hello, World!'
-
     # register blueprint for the /pid route
     from . import (
-        route_eidasnode,
-        route_formatter,
-        route_oidc,
-        route_dynamic,
-        route_oid4vp,
         preauthorization,
         revocation,
     )
 
-    app.register_blueprint(route_eidasnode.eidasnode)
-    app.register_blueprint(route_formatter.formatter)
-    app.register_blueprint(route_oidc.oidc)
     app.register_blueprint(revocation.revocation)
-    app.register_blueprint(route_oid4vp.oid4vp)
-    app.register_blueprint(route_dynamic.dynamic)
     app.register_blueprint(preauthorization.preauth)
 
     # config session
@@ -347,34 +220,6 @@ def create_app(test_config=None):
     CORS(app, supports_credentials=True)
 
     cfgserv.app_logger.info(" - DEBUG - FLASK started")
-
-    dir_path = os.path.dirname(os.path.realpath(__file__))
-
-    config = create_from_config_file(
-        Configuration,
-        entity_conf=[
-            {"class": OPConfiguration, "attr": "op", "path": ["op", "server_info"]}
-        ],
-        filename=dir_path + "/app_config/oid_config.py",
-        base_path=dir_path,
-    )
-
-    app.srv_config = config.op
-
-    if config.op is not None:
-        server = Server(config.op, cwd=dir_path)
-    else:
-        raise ValueError("config.op is None — cannot initialize Server.")
-
-    for endp in server.endpoint.values():
-        p = urlparse(endp.endpoint_path)
-        _vpath = p.path.split("/")
-        if _vpath[0] == "":
-            endp.vpath = _vpath[1:]
-        else:
-            endp.vpath = _vpath
-
-    app.server = server
 
     return app
 

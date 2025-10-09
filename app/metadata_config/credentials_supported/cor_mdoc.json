@@ -45,8 +45,6 @@
                 "given_name"
              ],
              "mandatory":true,
-             "value_type":"string",
-             "source":"user",
              "display":[
                 {
                    "name":"Given Name",
@@ -60,8 +58,6 @@
                 "family_name"
              ],
              "mandatory":true,
-             "value_type":"string",
-             "source":"user",
              "display":[
                 {
                    "name":"Family Name",
@@ -75,8 +71,6 @@
                 "birth_date"
              ],
              "mandatory":true,
-             "value_type":"full-date",
-             "source":"user",
              "display":[
                 {
                    "name":"Birth Date",
@@ -90,67 +84,12 @@
                 "residence_address"
              ],
              "mandatory":true,
-             "value_type":"residence_address_attributes",
-             "source":"user",
              "display":[
                 {
                    "name":"Resident Address",
                    "locale":"en"
                 }
-             ],
-             "issuer_conditions": {
-               "cardinality": {
-               "min": 1,
-               "max": 1
-               },
-               "residence_address_attributes":{
-               "po_box": {
-                     "mandatory": false,
-                     "value_type": "string",
-                     "source": "user"
-               },
-               "thoroughfare": {
-                     "mandatory": false,
-                     "value_type": "string",
-                     "source": "user"
-               },
-               "locator_designator": {
-                     "mandatory": false,
-                     "value_type": "string",
-                     "source": "user"
-               },
-               "locator_name": {
-                     "mandatory": false,
-                     "value_type": "string",
-                     "source": "user"
-               },
-               "post_code": {
-                     "mandatory": false,
-                     "value_type": "string",
-                     "source": "user"
-               },
-               "post_name": {
-                     "mandatory": false,
-                     "value_type": "string",
-                     "source": "user"
-               },
-               "admin_unit_L1": {
-                     "mandatory": false,
-                     "value_type": "string",
-                     "source": "user"
-               },
-               "admin_unit_L2": {
-                     "mandatory": false,
-                     "value_type": "string",
-                     "source": "user"
-               },
-               "full_address": {
-                     "mandatory": false,
-                     "value_type": "string",
-                     "source": "user"
-               }
-               }
-            }
+             ]
           },
           {
              "path":[
@@ -158,8 +97,6 @@
                 "gender"
              ],
              "mandatory":false,
-             "value_type":"uint",
-             "source":"user",
              "display":[
                 {
                    "name":"Gender",
@@ -173,8 +110,6 @@
                 "birth_place"
              ],
              "mandatory":false,
-             "value_type":"string",
-             "source":"user",
              "display":[
                 {
                    "name":"Birth Place",
@@ -188,8 +123,6 @@
                 "nationality"
              ],
              "mandatory":false,
-             "value_type":"string",
-             "source":"user",
              "display":[
                 {
                    "name":"Nationality",
@@ -203,8 +136,6 @@
                 "arrival_date"
              ],
              "mandatory":false,
-             "value_type":"full-date",
-             "source":"user",
              "display":[
                 {
                    "name":"Arrival Date",
@@ -218,7 +149,6 @@
                 "expiry_date"
              ],
              "mandatory":true,
-             "source":"issuer",
              "display":[
                 {
                    "name":"Expiry Date",
@@ -232,7 +162,6 @@
                 "issuance_date"
              ],
              "mandatory":true,
-             "source":"issuer",
              "display":[
                 {
                    "name":"Issuance Date",
@@ -246,7 +175,6 @@
                 "issuing_country"
              ],
              "mandatory":true,
-             "source":"issuer",
              "display":[
                 {
                    "name":"Issuing Country",
@@ -260,7 +188,6 @@
                 "issuing_authority"
              ],
              "mandatory":true,
-             "source":"issuer",
              "display":[
                 {
                    "name":"Issuing Authority",
@@ -269,13 +196,6 @@
              ]
           }
        ]
-      },
-       "issuer_config":{
-          "issuing_authority":"Test PID issuer",
-          "organization_id":"EUDI Wallet Reference Implementation",
-          "validity":90,
-          "organization_name":"Test PID issuer",
-          "namespace":"eu.europa.ec.eudi.cor.1"
-       }
+      }
     }
  }
