@@ -4,6 +4,7 @@ import requests
 from flask import (
     Blueprint,
     Response,
+    jsonify,
     request,
     redirect,
 )
@@ -14,42 +15,38 @@ authorization_endpoint = Blueprint("authorization_endpoint", __name__, url_prefi
 CORS(authorization_endpoint)
 
 
-@authorization_endpoint.route("/authorization", methods=["GET", "POST"])
-def authorization():
+@authorization_endpoint.route("/pushed_authorization", methods=["POST"])
+def pushed_authorization():
 
-    headers = {
-        key: value for key, value in request.headers.items() if key.lower() != "host"
-    }
+    print("\nrequest body: ", request.form.to_dict(), flush=True)
+    print("\nrequest headers: ", request.headers, flush=True)
 
-    extra_param = {"frontend_id": "my_frontend_123"}
-
-    if request.method == "GET":
-        query_params = request.args.to_dict()
-        query_params.update(extra_param)
-        new_url = f"{cfgservice.issuer_url}?{urlencode(query_params)}"
-        return redirect(new_url, code=307)
-
-    else:
-        # For non-GET, build form-encoded body with extra_param
-        content_type = request.headers.get("Content-Type", "")
-
-        if "application/x-www-form-urlencoded" in content_type:
-            form_data = request.form.to_dict()
-            form_data["frontend_id"] = "my_frontend_123"
-            resp = requests.post(cfgservice.issuer_url, headers=headers, data=form_data)
+    try:
+        if request.content_type and "application/json" in request.content_type:
+            body = request.get_json()
         else:
-            # For other POST content types, just forward raw
-            resp = requests.post(
-                cfgservice.issuer_url, headers=headers, data=request.get_data()
-            )
+            # Convert form data to dict
+            body = request.form.to_dict()
 
-    excluded_headers = ["content-encoding", "transfer-encoding", "connection"]
-    response_headers = [
-        (name, value)
-        for (name, value) in resp.headers.items()
-        if name.lower() not in excluded_headers
-    ]
+        body["frontend_id"] = cfgservice.frontend_id
 
-    return Response(
-        resp.content, status=resp.status_code, headers=dict(response_headers)
-    )
+        forward_headers = {
+            "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+            "Accept": "application/json,application/json",
+            "Accept-Charset": "UTF-8",
+            "User-Agent": request.headers.get("User-Agent", "proxy-service"),
+        }
+
+        response = requests.post(
+            f"{cfgservice.oauth_url}/pushed_authorization",
+            data=body,  # Send as form data
+            headers=forward_headers,
+            timeout=30,
+        )
+
+        return response.content, response.status_code, response.headers.items()
+
+    except requests.exceptions.RequestException as e:
+        return jsonify({"error": "Proxy request failed", "details": str(e)}), 502
+    except Exception as e:
+        return jsonify({"error": "Internal server error", "details": str(e)}), 500

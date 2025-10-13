@@ -78,12 +78,12 @@
     "code_challenge_methods_supported": [
         "S256"
     ],
-    "issuer": "https://dev.issuer.eudiw.dev/oidc",
+    "issuer": "https://dev.issuer.eudiw.dev/frontend",
     "registration_endpoint": "https://dev.issuer.eudiw.dev/oidc/registration",
     "introspection_endpoint": "https://dev.issuer.eudiw.dev/oidc/introspection",
     "authorization_endpoint": "https://dev.issuer.eudiw.dev/oidc/authorization",
     "token_endpoint": "https://dev.issuer.eudiw.dev/oidc/token",
     "userinfo_endpoint": "https://dev.issuer.eudiw.dev/oidc/userinfo",
     "end_session_endpoint": "https://dev.issuer.eudiw.dev/oidc/session",
-    "pushed_authorization_request_endpoint": "https://dev.issuer.eudiw.dev/oidc/pushed_authorization"
+    "pushed_authorization_request_endpoint": "https://dev.issuer.eudiw.dev/frontend/pushed_authorization"
 }

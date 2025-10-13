@@ -108,7 +108,7 @@ def setup_metadata():
 
     new_domain = cfgserv.service_url[:-1]
 
-    openid_metadata = cast(
+    """ openid_metadata = cast(
         Dict[str, Any], replace_domain(openid_metadata, old_domain, new_domain)
     )
     oauth_metadata = cast(
@@ -117,7 +117,7 @@ def setup_metadata():
 
     oidc_metadata = cast(
         Dict[str, Any], replace_domain(oidc_metadata, old_domain, new_domain)
-    )
+    ) """
 
 
 setup_metadata()
@@ -152,7 +152,6 @@ def page_not_found(e):
 
 
 from typing import Optional
-
 
 
 def create_app(test_config=None):
@@ -194,10 +193,7 @@ def create_app(test_config=None):
         pass
 
     # register blueprint for the /pid route
-    from . import (
-        frontend,
-        auth_redirect
-    )
+    from . import frontend, auth_redirect
 
     app.register_blueprint(frontend.frontend)
     app.register_blueprint(auth_redirect.authorization_endpoint)
@@ -215,7 +211,7 @@ def create_app(test_config=None):
     cfgserv.app_logger.info(" - DEBUG - FLASK started")
 
     print(app.url_map)
-    
+
     return app
 
 

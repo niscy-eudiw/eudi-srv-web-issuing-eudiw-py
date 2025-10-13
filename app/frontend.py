@@ -8,6 +8,7 @@ import requests
 from flask import (
     Blueprint,
     Response,
+    make_response,
     request,
     redirect,
     render_template,
@@ -17,7 +18,7 @@ from flask import (
 import segno
 
 from app_config.config_service import ConfService as cfgservice
-from app import oidc_metadata
+from app import oidc_metadata, openid_metadata
 
 frontend = Blueprint("frontend", __name__, url_prefix="/")
 CORS(frontend)
@@ -218,3 +219,64 @@ def credentialOffer():
 
     else:
         return redirect(cfgservice.service_url + "credential_offer_choice")
+
+
+@frontend.route("/.well-known/<service>")
+def well_known(service):
+    if service == "openid-credential-issuer":
+        info = {
+            "response": oidc_metadata,
+            "http_headers": [
+                ("Content-type", "application/json"),
+                ("Pragma", "no-cache"),
+                ("Cache-Control", "no-store"),
+            ],
+        }
+
+        _http_response_code = info.get("response_code", 200)
+        resp = make_response(info["response"], _http_response_code)
+
+        for key, value in info["http_headers"]:
+            resp.headers[key] = value
+
+        return resp
+
+    elif service == "oauth-authorization-server":
+        info = {
+            "response": openid_metadata,
+            "http_headers": [
+                ("Content-type", "application/json"),
+                ("Pragma", "no-cache"),
+                ("Cache-Control", "no-store"),
+            ],
+        }
+
+        _http_response_code = info.get("response_code", 200)
+        resp = make_response(info["response"], _http_response_code)
+
+        for key, value in info["http_headers"]:
+            resp.headers[key] = value
+
+        return resp
+
+    elif service == "openid-configuration":
+        # _endpoint = current_app.server.get_endpoint("provider_config")
+        info = {
+            "response": openid_metadata,
+            "http_headers": [
+                ("Content-type", "application/json"),
+                ("Pragma", "no-cache"),
+                ("Cache-Control", "no-store"),
+            ],
+        }
+
+        _http_response_code = info.get("response_code", 200)
+        resp = make_response(info["response"], _http_response_code)
+
+        for key, value in info["http_headers"]:
+            resp.headers[key] = value
+
+        return resp
+
+    else:
+        return make_response("Not supported", 400)

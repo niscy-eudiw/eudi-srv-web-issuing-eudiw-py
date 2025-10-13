@@ -34,7 +34,7 @@ class ConfService:
     # ------------------------------------------------------------------------------------------------
     # Frontend service URL
     # service_url = os.getenv("SERVICE_URL", "https://dev.issuer.eudiw.dev/")
-    service_url = "http://127.0.0.1:5001/"
+    service_url = "https://dev.issuer.eudiw.dev/frontend/"
 
     frontend_id = "5d725b3c-6d42-448e-8bfd-1eff1fcf152d"
 
@@ -43,6 +43,8 @@ class ConfService:
     )
 
     issuer_url = os.getenv("ISSUER_URL", "https://dev.issuer.eudiw.dev")
+
+    oauth_url = os.getenv("OAUTH_URL", "https://dev.issuer.eudiw.dev/oidc")
 
     # ------------------------------------------------------------------------------------------------
     # Error list (error number, error string)
