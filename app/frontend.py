@@ -24,10 +24,44 @@ frontend = Blueprint("frontend", __name__, url_prefix="/")
 CORS(frontend)
 
 
+@frontend.route("/display_auth_method", methods=["POST"])
+def display_auth_method():
+    raw_json_string = request.form.get("payload")
+
+    cfgservice.app_logger.info(f"raw_json_string: {raw_json_string}")
+
+    if raw_json_string:
+        try:
+
+            data_payload = json.loads(raw_json_string)
+            cfgservice.app_logger.info(f"data_payload: {data_payload}")
+
+        except json.JSONDecodeError:
+            return jsonify({"status": "error", "message": "Invalid JSON payload"}), 400
+
+        session_id = data_payload.get("session_id")
+        cfgservice.app_logger.info(f"session_id: {session_id}")
+        pid_auth = data_payload.get("pid_auth")
+        cfgservice.app_logger.info(f"pid_auth: {pid_auth}")
+
+        country_selection = data_payload.get("country_selection")
+        cfgservice.app_logger.info(f"country_selection: {country_selection}")
+
+        redirect_url = data_payload.get("redirect_url")
+        cfgservice.app_logger.info(f"redirect_url: {redirect_url}")
+
+        return render_template(
+            "misc/auth_method.html",
+            pid_auth=pid_auth,
+            country_selection=country_selection,
+            redirect_url=redirect_url,
+        )
+
+    return jsonify({"status": "error", "message": "Payload not found"}), 400
+
+
 @frontend.route("/display_countries", methods=["POST"])
 def display_countries():
-    cfgservice.app_logger.info(f"Testing")
-
     raw_json_string = request.form.get("payload")
 
     cfgservice.app_logger.info(f"raw_json_string: {raw_json_string}")
