@@ -1,80 +1,68 @@
+
 <!DOCTYPE html>
-<html lang="en">
-
 <head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=0, shrink-to-fit=no" />
-    <meta name="Title" content="Request Credentials" />
-    <meta name="Keywords" content="EUDI Wallet, Credentials, Enrolment" />
-    <meta name="Description" content="Request Credentials for EUDI Wallet" />
-    <meta name="robots" content="noindex, nofollow" />
-    <meta http-equiv="Cache-Control" content="no-cache,no-store,must-revalidate" />
-    <meta http-equiv="Pragma" content="no-cache" />
-    <link rel="shortcut icon" href="{{ url_for('static', filename='images/favicon.ico') }}" type="image/vnd.microsoft.icon" />
-    <link rel="icon" href="{{ url_for('static', filename='images/favicon.gif') }}" type="image/gif" />
-    <link rel="apple-touch-icon" href="{{ url_for('static', filename='images/apple-touch-icon.png') }}" />
-    <link href="{{ url_for('static', filename='bootstrap-3.4.1-dist/css/bootstrap.min.css') }}" rel="stylesheet" type="text/css" />
-    <link href="{{ url_for('static', filename='css/stylesheets/custom/custom_en_9.7.1.20.1679559965505.css') }}" media="all" rel="stylesheet" type="text/css" />
-    <link href="{{ url_for('static', filename='fontawesome-free-5.15.4-web/css/fontawesome.min.css') }}" rel="stylesheet" type="text/css" />
-    <script type="text/javascript" id="jqueryId" src="{{ url_for('static', filename='scripts/jquery/jquery-3.6.3.min.js') }}" charset="UTF-8"></script>
-    <script type="text/javascript" src="{{ url_for('static', filename='scripts/promiz/promiz-1.0.6.js') }}" charset="UTF-8"></script>
-    <script type="text/javascript" src="{{ url_for('static', filename='bootstrap-3.4.1-dist/js/bootstrap.min.js') }}" charset="UTF-8" defer="true"></script>
-    <script type="text/javascript" src="{{ url_for('static', filename='scripts/html5shiv/html5shiv-3.7.3.js') }}" charset="UTF-8"></script>
-    <script type="text/javascript" src="{{ url_for('static', filename='scripts/respond/respond-1.4.2.js') }}" charset="UTF-8"></script>
-    <meta name="referrer" content="no-referrer">
-    <script type="text/javascript" src="{{ url_for('static', filename='scripts/loc/loc_en_9.7.1.20.1679559965505.js') }}" charset="UTF-8"></script>
-    <title>Request Credentials for your EUDI Wallet</title>
+   <meta charset="utf-8">
+   <meta name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=0, shrink-to-fit=no" />
+   <meta name="Title" content="Request Credentials" />
+   <meta name="robots" content="noindex, nofollow" />
+   <link rel="shortcut icon" href="{{ url_for('static', filename='images/favicon.ico') }}" />
+   <link href="{{ url_for('static', filename='css/tailwind.css') }}" rel="stylesheet">
+   <title>Request Credentials for your EUDI Wallet</title>
 </head>
-
-<body id="responsive-main-nav">
-    <div class="main container-fluid">
-        <header role="banner" class="main-header">
-            <div class="container">
-                <div class="row">
-                </div>
+<body class="font-pf">
+   <!-- This is the main container that drives the sticky footer layout -->
+   <div class="mx-auto w-full max-w-screen-md flex flex-col min-h-screen">
+      <!-- Header Content -->
+      <header class="p-6">
+         <p class="text-xs uppercase tracking-wide text-gray-500 font-semibold">Test Credentials Provider</p>
+         <p>This Credentials Provider should only be used for issuing Credentials for testing purposes.</p>
+         <h3 class="font-bold text-gray-800">Please select your country of origin</h3>
+      </header>
+      <!-- Form -->
+      <form id="selectCountryForm" method="post"
+         action="{{redirect_url}}/dynamic/country_selected"
+         class="flex-grow flex flex-col">
+         <!-- Main scrolling area -->
+         <main class="flex-grow p-6">
+            <!-- Country grid -->
+            <div id="eidasCountries" class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4 auto-rows-[8rem]">
+               {% for key, value in countries.items() %}
+               <div class="relative">
+                  <!-- The radio button, with jinja pre-selection -->
+                  <input type="radio" value="{{ key }}" id="{{ key }}" name="country" class="sr-only peer" {% if loop.first
+                  %}checked{% endif %}>
+                  <!-- card with fixed height -->
+                  <label for="{{ key }}"
+                     class="flex flex-col h-28 p-4 border-2 border-gray-200 rounded-lg cursor-pointer transition-colors hover:bg-gray-100 hover:border-gray-300 peer-checked:border-indigo-600 peer-checked:bg-indigo-50">
+                     <!--flag container with fixed height as anchor -->
+                     <div class="h-10 w-full flex items-center justify-center mb-1">
+                        <img src="{{ url_for('static', filename='flags/' + key|lower + '.svg') }}" alt="{{ value }} Flag"
+                           class="w-8 h-auto object-contain shadow-sm border border-custom-gray">
+                     </div>
+                     <!-- text container grows to fill the rest of the card. -->
+                     <div class="flex-grow flex items-center justify-center">
+                        <span class="text-center text-sm font-semibold text-gray-700 break-words">{{ value }}</span>
+                     </div>
+                  </label>
+               </div>
+               {% endfor %}
             </div>
-        </header>
-        <div role="main" class="container">
-            <div class="row">
-                <div class="col-md-12">
-                    <h1>Request Credentials for your EUDI Wallet</h1>
-                    <div id="content" class="content-wrap content-center col-md-6 col-sm-7">
-                        <div class="genericErrors" id="genericErrorsDesc">
-                        </div>
-                        <h2>Please select your country of origin</h2>
-                       <form id="selectCountryForm" method="post" action="{{redirect_url}}/dynamic/country_selected" accept-charset="UTF-8" enctype="application/x-www-form-urlencoded;charset=UTF-8" autocapitalize="off" spellcheck="false">
-                            <h3>Test Credentials Provider</h3>
-                            <p>This Credentials Provider should only be used for issuing Credentials for testing purposes.</p>
-                            <div id="eidasCountries">
-                                {% for key, value in countries.items() %}
-                                <div class="flag">
-                                    <input type="radio" value="{{ key }}" id="{{ key }}" name="country" class="{{ key }}">
-                                    <label for="{{ key }}" class="{{ key }} countryName">{{ value }}</label>
-                                </div>
-                                {% endfor %}
-                            </div>
-                            <div class="clearfix"></div>
-
-
-                            <span class="more-submit">
-                                <input type="submit" name="proceed" accesskey="S" value="Submit" class="btn btn-primary" title="Submit" />
-                                <input type="button" name="Cancelled" accesskey="C" value="Cancel" id="cancelBtnId" class="btn btn-cancel btn-alternate cancellable" title="Cancel" onclick="window.history.back();" />
-                            </span>
-                        </form>
-                        
-                    </div>
-
-                </div>
+         </main>
+         <!-- The Action Button Footer -->
+         <div class="p-6 border-t border-gray-200 bg-white">
+            <div class="flex flex-col gap-2 items-center">
+               <button type="submit" name="proceed"
+                  class="w-full bg-blue-900 text-white font-semibold py-3 rounded-lg shadow-md hover:bg-blue-800 transition-colors duration-200">
+               Submit
+               </button>
+               <button type="button" name="Cancelled" class="w-full text-gray-500 font-semibold py-2"
+                  onclick="window.history.back();">
+               Cancel
+               </button>
             </div>
-        </div>
-    </div>
-
-    <footer class="main-footer container-fluid" role="contentinfo">
-        <div class="container">
-            <div class="row">
-            </div>
-        </div>
-    </footer>
+         </div>
+      </form>
+   </div>
 </body>
-
 </html>
