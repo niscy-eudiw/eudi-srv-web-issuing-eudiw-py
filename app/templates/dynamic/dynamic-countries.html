@@ -38,7 +38,7 @@
                      <!--flag container with fixed height as anchor -->
                      <div class="h-10 w-full flex items-center justify-center mb-1">
                         <img src="{{ url_for('static', filename='flags/' + key|lower + '.svg') }}" alt="{{ value }} Flag"
-                           class="w-8 h-auto object-contain shadow-sm border border-custom-gray">
+                           class="max-w-full max-h-full w-8 h-auto object-contain shadow-sm border border-custom-gray">
                      </div>
                      <!-- text container grows to fill the rest of the card. -->
                      <div class="flex-grow flex items-center justify-center">

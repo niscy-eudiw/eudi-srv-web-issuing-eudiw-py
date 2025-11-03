@@ -148,6 +148,43 @@ def display_authorization():
     return jsonify({"status": "error", "message": "Payload not found"}), 400
 
 
+@frontend.route("/display_pid_login", methods=["POST"])
+def display_pid_login():
+    raw_json_string = request.form.get("payload")
+
+    if raw_json_string:
+        try:
+            data_payload = json.loads(raw_json_string)
+
+        except json.JSONDecodeError:
+            return jsonify({"status": "error", "message": "Invalid JSON payload"}), 400
+
+        session_id = data_payload.get("session_id")
+        cfgservice.app_logger.info(f"session_id: {session_id}")
+
+        deeplink_url = data_payload.get("deeplink_url")
+        cfgservice.app_logger.info(f"deeplink_url: {deeplink_url}")
+
+        redirect_url = data_payload.get("redirect_url")
+        cfgservice.app_logger.info(f"redirect_url: {redirect_url}")
+
+        qr_img_base64 = data_payload.get("qr_img_base64")
+        cfgservice.app_logger.info(f"qr_img_base64: {qr_img_base64}")
+
+        transaction_id = data_payload.get("transaction_id")
+        cfgservice.app_logger.info(f"transaction_id: {transaction_id}")
+
+        return render_template(
+            "openid/pid_login_qr_code.html",
+            url_data=deeplink_url,
+            qrcode=qr_img_base64,
+            presentation_id=transaction_id,
+            redirect_url=cfgservice.service_url,
+        )
+
+    return jsonify({"status": "error", "message": "Payload not found"}), 400
+
+
 @frontend.route("/credential_offer_choice", methods=["GET"])
 def credential_offer():
     """Page for selecting credentials
@@ -217,7 +254,7 @@ def credentialOffer():
             else:
 
                 credential_offer = {
-                    "credential_issuer": cfgservice.service_url[:-1],
+                    "credential_issuer": cfgservice.service_url,
                     "credential_configuration_ids": credentials_id,
                     "grants": {"authorization_code": {}},
                 }
@@ -249,10 +286,10 @@ def credentialOffer():
                     qrcode=qr_img_base64,
                 )
         else:
-            return redirect(cfgservice.service_url + "credential_offer_choice")
+            return redirect(f"{cfgservice.service_url}/credential_offer_choice")
 
     else:
-        return redirect(cfgservice.service_url + "credential_offer_choice")
+        return redirect(f"{cfgservice.service_url}/credential_offer_choice")
 
 
 @frontend.route("/.well-known/<service>")

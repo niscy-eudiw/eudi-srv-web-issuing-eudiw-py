@@ -27,9 +27,11 @@ import json
 import os
 import sys
 
+import requests
+
 sys.path.append(os.path.dirname(__file__))
 
-from flask import Flask, render_template, send_from_directory
+from flask import Flask, jsonify, render_template, send_from_directory
 from flask_session import Session
 from flask_cors import CORS
 from werkzeug.debug import *
@@ -79,14 +81,27 @@ def setup_metadata():
             oidc_metadata = json.load(metadata)
             oidc_metadata_clean = copy.deepcopy(oidc_metadata)
 
-        for file in os.listdir(dir_path + "/metadata_config/credentials_supported/"):
-            if file.endswith("json"):
-                json_path = os.path.join(
-                    dir_path + "/metadata_config/credentials_supported/", file
-                )
-                with open(json_path, encoding="utf-8") as json_file:
-                    credential = json.load(json_file)
-                    credentials_supported.update(credential)
+        metadata_endpoint = f"{cfgserv.issuer_url}/.well-known/openid-credential-issuer"
+
+        try:
+            response = requests.get(metadata_endpoint)
+            response.raise_for_status()
+
+            data = response.json()
+
+            credentials_supported = data.get("credential_configurations_supported", {})
+
+        except Exception:
+            for file in os.listdir(
+                dir_path + "/metadata_config/credentials_supported/"
+            ):
+                if file.endswith("json"):
+                    json_path = os.path.join(
+                        dir_path + "/metadata_config/credentials_supported/", file
+                    )
+                    with open(json_path, encoding="utf-8") as json_file:
+                        credential = json.load(json_file)
+                        credentials_supported.update(credential)
 
     except FileNotFoundError as e:
         cfgserv.app_logger.exception(f"Metadata Error: file not found. \n{e}")
@@ -106,7 +121,7 @@ def setup_metadata():
 
     old_domain = oidc_metadata["credential_issuer"]
 
-    new_domain = cfgserv.service_url[:-1]
+    new_domain = cfgserv.service_url
 
     """ openid_metadata = cast(
         Dict[str, Any], replace_domain(openid_metadata, old_domain, new_domain)
@@ -165,7 +180,7 @@ def create_app(test_config=None):
     def initial_page():
         return render_template(
             "misc/initial_page.html",
-            oidc=f"{cfgserv.service_url}.well-known/openid-credential-issuer",
+            oidc=f"{cfgserv.service_url}/.well-known/openid-credential-issuer",
             service_url=cfgserv.service_url,
         )
 
