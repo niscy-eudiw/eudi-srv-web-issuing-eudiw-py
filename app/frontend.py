@@ -185,111 +185,11 @@ def display_pid_login():
     return jsonify({"status": "error", "message": "Payload not found"}), 400
 
 
-@frontend.route("/credential_offer_choice", methods=["GET"])
-def credential_offer():
-    """Page for selecting credentials
-
-    Loads credentials supported by EUDIW Issuer
-    """
-    credentialsSupported = oidc_metadata["credential_configurations_supported"]
-
-    credentials = {"sd-jwt vc format": {}, "mdoc format": {}}
-
-    for cred in credentialsSupported:
-        credential = credentialsSupported[cred]
-
-        if credential["format"] == "dc+sd-jwt":
-            credentials["sd-jwt vc format"].update(
-                {cred: credential["credential_metadata"]["display"][0]["name"]}
-            )
-
-        if credential["format"] == "mso_mdoc":
-            credentials["mdoc format"].update(
-                {cred: credential["credential_metadata"]["display"][0]["name"]}
-            )
-
-    return render_template(
-        "openid/credential_offer.html",
-        cred=credentials,
-        redirect_url=cfgservice.service_url,
-        credential_offer_URI="openid-credential-offer://",
-    )
-
-
 @frontend.route("/credential_offer", methods=["GET", "POST"])
 def credentialOffer():
-
-    credentialsSupported = oidc_metadata["credential_configurations_supported"]
-
-    cfgservice.app_logger.info(f"credentialsSupported: {credentialsSupported}")
-    auth_choice = request.form.get("Authorization Code Grant")
-    cfgservice.app_logger.info(f"auth_choice: {auth_choice}")
-
-    form_keys = request.form.keys()
-    credential_offer_URI = request.form.get("credential_offer_URI")
-
-    cfgservice.app_logger.info(f"credential_offer_URI: {credential_offer_URI}")
-
-    if "proceed" in form_keys:
-        form = list(form_keys)
-        form.remove("proceed")
-        form.remove("credential_offer_URI")
-        form.remove("Authorization Code Grant")
-        all_exist = all(credential in credentialsSupported for credential in form)
-
-        if all_exist:
-            credentials_id = form
-            credentials_id_list = json.dumps(form)
-            if auth_choice == "pre_auth_code":
-                """return redirect(
-                    url_for("preauth.preauthRed", credentials_id=credentials_id_list)
-                )"""
-                params = {
-                    "frontend_id": cfgservice.frontend_id,
-                    "credentials_id": credentials_id_list,
-                }
-                target_url = f"{cfgservice.issuer_url}/preauth?{urlencode(params)}"
-                return redirect(target_url)
-
-            else:
-
-                credential_offer = {
-                    "credential_issuer": cfgservice.service_url,
-                    "credential_configuration_ids": credentials_id,
-                    "grants": {"authorization_code": {}},
-                }
-
-                # create URI
-                json_string = json.dumps(credential_offer)
-
-                uri = (
-                    f"{credential_offer_URI}credential_offer?credential_offer="
-                    + quote(json_string, safe=":/")
-                )
-
-                qrcode = segno.make(uri)
-                out = io.BytesIO()
-                qrcode.save(out, kind="png", scale=3)
-
-                qr_img_base64 = "data:image/png;base64," + base64.b64encode(
-                    out.getvalue()
-                ).decode("utf-8")
-
-                wallet_url = cfgservice.wallet_test_url + "credential_offer"
-
-                return render_template(
-                    "openid/credential_offer_qr_code.html",
-                    wallet_dev=wallet_url
-                    + "?credential_offer="
-                    + json.dumps(credential_offer),
-                    url_data=uri,
-                    qrcode=qr_img_base64,
-                )
-        else:
-            return redirect(f"{cfgservice.service_url}/credential_offer_choice")
-
-    else:
-        return redirect(f"{cfgservice.service_url}/credential_offer_choice")
+    return redirect(
+        f"{cfgservice.issuer_url}/credential_offer_choice?frontend_id={cfgservice.frontend_id}"
+    )
 
 
 @frontend.route("/.well-known/<service>")
@@ -351,3 +251,204 @@ def well_known(service):
 
     else:
         return make_response("Not supported", 400)
+
+
+@frontend.route("/internal_error", methods=["POST"])
+def display_internal_error():
+    raw_json_string = request.form.get("payload")
+
+    if raw_json_string:
+        try:
+            data_payload = json.loads(raw_json_string)
+
+        except json.JSONDecodeError:
+            return jsonify({"status": "error", "message": "Invalid JSON payload"}), 400
+
+        error = data_payload.get("error")
+        error_code = data_payload.get("error_code")
+        error_type = data_payload.get("error_type")
+
+        return (
+            render_template("misc/500.html", error=error, error_code=error_code),
+            error_type,
+        )
+
+    return jsonify({"status": "error", "message": "Payload not found"}), 400
+
+
+@frontend.route("/display_revocation_authorization", methods=["POST"])
+def display_revocation_authorization():
+    raw_json_string = request.form.get("payload")
+
+    if raw_json_string:
+        try:
+            data_payload = json.loads(raw_json_string)
+
+        except json.JSONDecodeError:
+            return jsonify({"status": "error", "message": "Invalid JSON payload"}), 400
+
+        display_list = data_payload.get("display_list")
+        revocation_id = data_payload.get("revocation_id")
+        redirect_url = data_payload.get("redirect_url")
+        revocation_choice_url = data_payload.get("revocation_choice_url")
+
+        return render_template(
+            "misc/revocation_authorization.html",
+            display_list=display_list,
+            revocation_identifier=revocation_id,
+            redirect_url=redirect_url,
+            revocation_choice_url=revocation_choice_url,
+        )
+
+    return jsonify({"status": "error", "message": "Payload not found"}), 400
+
+
+@frontend.route("/display_revocation_success", methods=["POST"])
+def display_revocation_success():
+    raw_json_string = request.form.get("payload")
+
+    if raw_json_string:
+        try:
+            data_payload = json.loads(raw_json_string)
+
+        except json.JSONDecodeError:
+            return jsonify({"status": "error", "message": "Invalid JSON payload"}), 400
+
+        redirect_url = data_payload.get("redirect_url")
+
+        return render_template(
+            "misc/revocation_success.html",
+            redirect_url=redirect_url,
+        )
+
+    return jsonify({"status": "error", "message": "Payload not found"}), 400
+
+
+@frontend.route("/display_credential_offer", methods=["POST"])
+def display_credential_offer():
+    raw_json_string = request.form.get("payload")
+
+    if raw_json_string:
+        try:
+            data_payload = json.loads(raw_json_string)
+
+        except json.JSONDecodeError:
+            return jsonify({"status": "error", "message": "Invalid JSON payload"}), 400
+
+        redirect_url = data_payload.get("redirect_url")
+        cred = data_payload.get("cred")
+        credential_offer_URI = data_payload.get("credential_offer_URI")
+
+        return render_template(
+            "openid/credential_offer.html",
+            cred=cred,
+            redirect_url=redirect_url,
+            credential_offer_URI=credential_offer_URI,
+        )
+
+    return jsonify({"status": "error", "message": "Payload not found"}), 400
+
+
+@frontend.route("/display_credential_offer_qr_code", methods=["POST"])
+def display_credential_offer_qr_code():
+    raw_json_string = request.form.get("payload")
+
+    if raw_json_string:
+        try:
+            data_payload = json.loads(raw_json_string)
+
+        except json.JSONDecodeError:
+            return jsonify({"status": "error", "message": "Invalid JSON payload"}), 400
+
+        wallet_dev = data_payload.get("wallet_dev")
+        cfgservice.app_logger.info(f"wallet_dev: {wallet_dev}")
+        credential_offer = data_payload.get("credential_offer")
+        cfgservice.app_logger.info(f"credential_offer: {credential_offer}")
+        url_data = data_payload.get("url_data")
+        cfgservice.app_logger.info(f"url_data: {url_data}")
+        qrcode = data_payload.get("qrcode")
+        cfgservice.app_logger.info(f"qrcode: {qrcode}")
+        tx_code = data_payload.get("tx_code")
+        cfgservice.app_logger.info(f"tx_code: {tx_code}")
+        code = data_payload.get("code")
+        cfgservice.app_logger.info(f"code: {code}")
+
+        if tx_code and code:
+            return render_template(
+                "openid/credential_offer_qr_code.html",
+                wallet_dev=wallet_dev
+                + "?code="
+                + code
+                + "&tx_code="
+                + str(tx_code)
+                + "&credential_offer="
+                + json.dumps(credential_offer),
+                url_data=url_data,
+                tx_code=tx_code,
+                qrcode=qrcode,
+            )
+        else:
+            return render_template(
+                "openid/credential_offer_qr_code.html",
+                wallet_dev=wallet_dev
+                + "?credential_offer="
+                + json.dumps(credential_offer),
+                url_data=url_data,
+                qrcode=qrcode,
+            )
+
+    return jsonify({"status": "error", "message": "Payload not found"}), 400
+
+
+@frontend.route("/display_revocation_choice", methods=["POST"])
+def display_revocation_choice():
+    raw_json_string = request.form.get("payload")
+
+    if raw_json_string:
+        try:
+            data_payload = json.loads(raw_json_string)
+
+        except json.JSONDecodeError:
+            return jsonify({"status": "error", "message": "Invalid JSON payload"}), 400
+
+        redirect_url = data_payload.get("redirect_url")
+        cred = data_payload.get("cred")
+
+        return render_template(
+            "openid/revocation_choice.html",
+            cred=cred,
+            redirect_url=redirect_url,
+        )
+
+    return jsonify({"status": "error", "message": "Payload not found"}), 400
+
+
+@frontend.route("/display_revocation_qr_code", methods=["POST"])
+def display_revocation_qr_code():
+    raw_json_string = request.form.get("payload")
+
+    if raw_json_string:
+        try:
+            data_payload = json.loads(raw_json_string)
+
+        except json.JSONDecodeError:
+            return jsonify({"status": "error", "message": "Invalid JSON payload"}), 400
+
+        url_data = data_payload.get("url_data")
+        cfgservice.app_logger.info(f"url_data: {url_data}")
+        qrcode = data_payload.get("qrcode")
+        cfgservice.app_logger.info(f"qrcode: {qrcode}")
+        presentation_id = data_payload.get("presentation_id")
+        cfgservice.app_logger.info(f"presentation_id: {presentation_id}")
+        redirect_url = data_payload.get("redirect_url")
+        cfgservice.app_logger.info(f"redirect_url: {redirect_url}")
+
+        return render_template(
+            "openid/revocation_qr_code.html",
+            url_data=url_data,
+            qrcode=qrcode,
+            presentation_id=presentation_id,
+            redirect_url=redirect_url,
+        )
+
+    return jsonify({"status": "error", "message": "Payload not found"}), 400
