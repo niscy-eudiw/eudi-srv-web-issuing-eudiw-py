@@ -79,10 +79,10 @@ To run the EUDIW Issuer, please follow these simple steps (some of which may hav
    - Configure the service according to [documentation](api_docs/configuration.md)  
 
 8. Install Authorization Server
-    - Install the service according to [Issuer Authorization Server]()
+    - Install the service according to [Issuer Authorization Server](https://github.com/eu-digital-identity-wallet/eudi-srv-issuer-oidc-py/blob/main/install.md)
 
 9. Install Issuer Front-End
-    - Install the service according to [Issuer Front-End]()
+    - Install the service according to [Issuer Front-End](https://github.com/eu-digital-identity-wallet/eudi-srv-web-issuing-frontend-eudiw-py/blob/main/install.md)
 
 10. Run the EUDIW Issuer Back-end
 
@@ -258,7 +258,7 @@ This guide provides step-by-step instructions for deploying the **EUDIW Issuer**
 To complete the full EUDIW ecosystem, you will also need to deploy the associated Front-end and Authorization Server components.
 
 * **Front-end Installation:** Follow the guide to install the web issuing front-end component using Docker.
-    * [Front-end Deployment Guide](https://github.com/eu-digital-identity-wallet/eudi-srv-web-issuing-frontend-eudiw-py/blob/dev/install.md#6-docker)
+    * [Front-end Deployment Guide](https://github.com/eu-digital-identity-wallet/eudi-srv-web-issuing-frontend-eudiw-py/blob/main/install.md#6-docker)
 
 * **Authorization Server Installation:** Follow the guide to install the OIDC authorization server component using Docker.
-    * [Authorization Server Deployment Guide](https://github.com/eu-digital-identity-wallet/eudi-srv-web-issuing-oidc-eudiw-py/blob/dev/install.md#6-docker)
+    * [Authorization Server Deployment Guide](https://github.com/eu-digital-identity-wallet/eudi-srv-issuer-oidc-py/blob/main/install.md#6-docker)
