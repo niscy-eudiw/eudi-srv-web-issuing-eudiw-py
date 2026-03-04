@@ -157,6 +157,9 @@ def mdocFormatter(
 
         if response.status_code == 200:
             revocation_json = response.json()
+            revocation_json["identifier_list"]["id"] = revocation_json[
+                "identifier_list"
+            ]["id"].encode("utf-8")
 
     mdoci.new(
         doctype=credential_metadata["doctype"],
@@ -233,18 +236,25 @@ def sdjwtNestedClaims(claims, credential_metadata):
                         for attribute, value2 in element.items():
                             subClaimsElement.update({SDObj(value=attribute): value2})
 
-                    subClaims.append(subClaimsElement)
+                        subClaims.append(subClaimsElement)
+
+                    else:
+                        subClaims.append(element)
 
                 nestedDict.update({SDObj(value=claim): subClaims})
 
             elif (
                 isinstance(value, list) and claim != "nationalities" and len(value) == 1
             ):
-                subClaims = {}
+                subClaims = []
                 for element in value:
                     if isinstance(element, dict):
+                        subClaimsElement = {}
                         for attribute, value2 in element.items():
-                            subClaims.update({SDObj(value=attribute): value2})
+                            subClaimsElement.update({SDObj(value=attribute): value2})
+                        subClaims.append(subClaimsElement)
+                    else:
+                        subClaims.append(element)
 
                 nestedDict.update({SDObj(value=claim): subClaims})
 
@@ -271,7 +281,7 @@ def sdjwtNestedClaims(claims, credential_metadata):
     return nestedDict
 
 
-def sdjwtFormatter(PID, country):
+def sdjwtFormatter(PID, country, scope):
     """Construct sd-jwt with the country private key
 
     Keyword arguments:
@@ -300,14 +310,12 @@ def sdjwtFormatter(PID, country):
 
     vct = PID["credential_metadata"]["vct"]  # doctype2vct(doctype)
 
-    #doctype = vct2doctype(vct)
+    # doctype = vct2doctype(vct)
 
     revocation_json = None
 
     if cfgservice.revocation_api_key:
-        payload = (
-            "doctype=" + vct + "&country=" + country + "&expiry_date=" + validity
-        )
+        payload = "doctype=" + vct + "&country=" + country + "&expiry_date=" + validity
         headers = {
             "Content-Type": "application/x-www-form-urlencoded",
             "X-Api-Key": cfgservice.revocation_api_key,
@@ -319,6 +327,8 @@ def sdjwtFormatter(PID, country):
 
         if response.status_code == 200:
             revocation_json = response.json()
+            if "identifier_list" in revocation_json:
+                revocation_json.pop("identifier_list")
 
     claims = {
         "iss": cfgservice.service_url[:-1],
@@ -326,6 +336,9 @@ def sdjwtFormatter(PID, country):
         "exp": exp,
         "vct": vct,
     }
+
+    if scope == "eu.europa.ec.eudi.learning_credential_vc_sd_jwt":
+        claims.update({"jti": str(uuid4())})
 
     if revocation_json:
         claims.update({"status": revocation_json})

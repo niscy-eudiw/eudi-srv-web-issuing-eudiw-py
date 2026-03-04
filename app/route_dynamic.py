@@ -82,11 +82,14 @@ def Supported_Countries():
     current_session = session_manager.get_session(session_id=session_id)
     # session["credentials_requested"] = credentials_requested
 
-    if "eu.europa.ec.eudi.age_verification_mdoc_passport" in  current_session.credentials_requested:
+    if (
+        "eu.europa.ec.eudi.age_verification_mdoc_passport"
+        in current_session.credentials_requested
+    ):
         user_data = {"age_over_18": True}
-        session_manager.update_user_data(
-            session_id=session_id, user_data=user_data
-        )
+        session_manager.update_user_data(session_id=session_id, user_data=user_data)
+
+        session_manager.update_country(session_id=session_id, country="AV")
 
         current_session = session_manager.get_session(session_id=session_id)
 
@@ -99,7 +102,6 @@ def Supported_Countries():
                 },
             )
         )
-
 
     display_countries = {}
     for country in cfgcountries.supported_countries:
@@ -324,11 +326,15 @@ def red():
 
     data = f"code={request.args.get('code')}"
 
+    print("\ntoken_endpoint_headers", token_endpoint_headers, flush=True)
+
     params = {
         "grant_type": "authorization_code",
         "code": auth_code,
         "redirect_uri": country_config["oauth_auth"]["redirect_uri"],
     }
+
+    print("\nparams", params, flush=True)
 
     try:
         response = requests.post(
@@ -449,6 +455,8 @@ def red():
     user_id = current_session.country + "." + session["access_token"]
 
     target_url = ConfFrontend.registered_frontends[current_session.frontend_id]["url"]
+
+    print("\npresentation_data", presentation_data, flush=True)
 
     return post_redirect_with_payload(
         target_url=f"{target_url}/display_authorization",
@@ -580,6 +588,8 @@ def dynamic_R2_data_collect(country, session_id, access_token):
             response.raise_for_status()
 
             user_data = response.json()
+
+            print("\nuser_data", user_data)
 
         except requests.exceptions.RequestException as e:
             print(f"An error occurred while fetching user data: {e}")
@@ -717,19 +727,24 @@ def credentialCreation(credential_request, data, country, session_id):
 
     credential_response = {"credentials": []}
 
+    print("\ncredential_request", credential_request, flush=True)
+
     for proof in credential_request["proofs"]:
 
         if "credential_identifier" in credential_request:
             doctype = credentials_supported[
                 credential_request["credential_identifier"]
             ]["scope"]
+
             format = credentials_supported[credential_request["credential_identifier"]][
                 "format"
             ]
 
         elif "credential_configuration_id" in credential_request:
 
-            if (
+            scope = credential_request["credential_configuration_id"]
+
+            """ if (
                 "vct"
                 in credentials_supported[
                     credential_request["credential_configuration_id"]
@@ -743,11 +758,9 @@ def credentialCreation(credential_request, data, country, session_id):
             else:
                 doctype = credentials_supported[
                     credential_request["credential_configuration_id"]
-                ]["doctype"]
+                ]["doctype"] """
 
-            format = credentials_supported[
-                credential_request["credential_configuration_id"]
-            ]["format"]
+            format = credentials_supported[scope]["format"]
 
         else:
             return {
@@ -823,7 +836,7 @@ def credentialCreation(credential_request, data, country, session_id):
             if country == "PT":
                 portuguese_fields = cfgcountries.supported_countries[country]["oidc"][
                     "scope"
-                ][doctype]
+                ][scope]
 
                 for fields_pt in portuguese_fields:
                     for item in data:
@@ -857,7 +870,7 @@ def credentialCreation(credential_request, data, country, session_id):
         )
 
         pdata = dynamic_formatter(
-            format, doctype, form_data, device_publickey, session_id
+            format, scope, form_data, device_publickey, session_id
         )
 
         credential_response["credentials"].append({"credential": pdata})
@@ -897,6 +910,8 @@ def auth():
 
 def form_formatter(form_data: dict) -> dict:
     cleaned_data = {}
+
+    print("\nunclean_data", form_data, flush=True)
 
     # Handle date formatting first, as it's a simple key-value replacement
     if "effective_from_date" in form_data:
@@ -977,11 +992,28 @@ def form_formatter(form_data: dict) -> dict:
             # Check if the list contains dictionaries (it should from the form)
             if cleaned_data[key] and isinstance(cleaned_data[key][0], dict):
                 # Use a list comprehension to extract the 'country_code' from each dictionary.
-                cleaned_data[key] = [
+                country_codes = [
                     item.get("country_code")
                     for item in cleaned_data[key]
                     if "country_code" in item
                 ]
+                # Populate both keys regardless of which one was found
+                cleaned_data["nationality"] = country_codes
+                cleaned_data["nationalities"] = country_codes
+                break
+
+    if "birth_place" in cleaned_data and isinstance(cleaned_data["birth_place"], list):
+        cleaned_data["birth_place"] = cleaned_data["birth_place"][0]
+        cleaned_data["place_of_birth"] = cleaned_data["birth_place"]
+
+    if "place_of_birth" in cleaned_data and isinstance(
+        cleaned_data["place_of_birth"], list
+    ):
+        cleaned_data["place_of_birth"] = cleaned_data["place_of_birth"][0]
+        cleaned_data["birth_place"] = cleaned_data["place_of_birth"]
+
+    if "birth_date" in cleaned_data:
+        cleaned_data["birthdate"] = cleaned_data["birth_date"]
 
     # Perform any final data transformations if necessary
     if "portrait" in cleaned_data:
@@ -1008,6 +1040,11 @@ def form_formatter(form_data: dict) -> dict:
             cleaned_data["signature_usual_mark_issuing_officer"] = (
                 cfgserv.signature_usual_mark_issuing_officer
             )
+
+    if "age_over_18" in cleaned_data and cleaned_data["age_over_18"] == "true":
+        cleaned_data["age_over_18"] = True
+    elif "age_over_18" in cleaned_data and cleaned_data["age_over_18"] == "false":
+        cleaned_data["age_over_18"] = False
 
     # Add issuer-filled data
     cleaned_data.update(
@@ -1221,11 +1258,23 @@ def Dynamic_form():
 
     user_id = session_id
 
-    form_data = request.form.to_dict()
+    form_data = {}
+
+    for key in request.form.keys():
+        if key.endswith("[]"):
+            # This is an array field - get all values as a list
+            form_data[key.replace("[]", "")] = request.form.getlist(key)
+        else:
+            # Regular field - get single value
+            form_data[key] = request.form.get(key)
+
+    # form_data = request.form.to_dict()
 
     form_data.pop("proceed")
 
     cleaned_data = form_formatter(form_data)
+
+    print("\ncleaned_data", cleaned_data, flush=True)
 
     session_manager.update_user_data(session_id=session_id, user_data=cleaned_data)
 
@@ -1233,6 +1282,7 @@ def Dynamic_form():
 
     target_url = ConfFrontend.registered_frontends[current_session.frontend_id]["url"]
 
+    print("\npresentation_data", presentation_data, flush=True)
     return post_redirect_with_payload(
         target_url=f"{target_url}/display_authorization",
         data_payload={

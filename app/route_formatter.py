@@ -226,7 +226,7 @@ def sd_jwtformatter():
 
     # return error_message
 
-    sd_jwt = sdjwtFormatter(PID, request.json["country"])
+    sd_jwt = sdjwtFormatter(PID, request.json["country"], request.json["scope"])
 
     return jsonify(
         {"error_code": 0, "error_message": cfgservice.error_list["0"], "sd-jwt": sd_jwt}

@@ -90,9 +90,10 @@ def replace_domain(
     else:
         return obj
 
+
 def fix_key_attestations(data):
     """
-    Recursively traverse the data structure and replace 
+    Recursively traverse the data structure and replace
     key_attestations_required: null with key_attestations_required: {}
     """
     if isinstance(data, dict):
@@ -104,8 +105,9 @@ def fix_key_attestations(data):
     elif isinstance(data, list):
         for item in data:
             fix_key_attestations(item)
-    
+
     return data
+
 
 def setup_metadata():
     global oidc_metadata
@@ -184,6 +186,7 @@ def setup_metadata():
     oidc_metadata = cast(
         Dict[str, Any], replace_domain(oidc_metadata, old_domain, new_domain)
     )
+
 
 setup_metadata()
 
@@ -364,6 +367,7 @@ def create_app(test_config=None):
         route_oid4vp,
         preauthorization,
         revocation,
+        signed_metadata,
     )
 
     app.register_blueprint(route_formatter.formatter)
@@ -372,6 +376,7 @@ def create_app(test_config=None):
     app.register_blueprint(route_oid4vp.oid4vp)
     app.register_blueprint(route_dynamic.dynamic)
     app.register_blueprint(preauthorization.preauth)
+    app.register_blueprint(signed_metadata.metadata)
 
     # config session
     app.config["SESSION_FILE_THRESHOLD"] = 50

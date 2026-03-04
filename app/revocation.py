@@ -75,11 +75,10 @@ def revocation_choice():
                 {cred: credential["credential_metadata"]["display"][0]["name"]}
             )
 
-        if (credential["format"] == "mso_mdoc"
-            and credential["scope"] not in [
-                "eu.europa.ec.eudi.age_verification_mdoc_passport",
-                "eu.europa.ec.eudi.age_verification_mdoc",
-        ]):
+        if credential["format"] == "mso_mdoc" and credential["scope"] not in [
+            "eu.europa.ec.eudi.age_verification_mdoc_passport",
+            "eu.europa.ec.eudi.age_verification_mdoc",
+        ]:
             credentials["mdoc format"].update(
                 {cred: credential["credential_metadata"]["display"][0]["name"]}
             )
@@ -124,9 +123,7 @@ def oid4vp_call():
             dcql_credential["meta"] = {"vct_values": [credential_config["vct"]]}
 
             for claim in credential_metadata["claims"]:
-                dcql_credential["claims"].append(
-                    {"path": claim["path"]}
-                )
+                dcql_credential["claims"].append({"path": claim["path"]})
 
         elif credential_format == "mso_mdoc":
             dcql_credential["meta"] = {"doctype_value": credential_config["doctype"]}
@@ -134,7 +131,6 @@ def oid4vp_call():
                 dcql_credential["claims"].append(
                     {"path": claim["path"], "intent_to_retain": False}
                 )
-        
 
         dcql_credentials.append(dcql_credential)
 
@@ -224,7 +220,6 @@ def oid4vp_call():
 
     target_url = ConfFrontend.registered_frontends[cfgservice.default_frontend]["url"]
 
-    
     return post_redirect_with_payload(
         target_url=f"{target_url}/display_revocation_qr_code",
         data_payload={
@@ -246,6 +241,7 @@ def b64url_decode(data):
     except Exception as e:
         raise ValueError(f"Invalid base64 data: {e}")
 
+
 def b64_decode_x5c(data):
     if not re.fullmatch(r"[A-Za-z0-9+/]*={0,2}", data):
         raise ValueError("Invalid base64 characters in x5c certificate")
@@ -255,6 +251,7 @@ def b64_decode_x5c(data):
         return base64.b64decode(data + padding)
     except Exception as e:
         raise ValueError(f"Invalid base64 in x5c: {e}")
+
 
 def extract_public_key_from_x5c(
     jwt_raw: str,
@@ -440,7 +437,7 @@ def oid4vp_get():
         if session[query_number] == "mso_mdoc":
             credentials["mso_mdoc"].extend(query)
         elif session[query_number] == "dc+sd-jwt":
-            credentials["dc+sd-jwt"].extend(query)  
+            credentials["dc+sd-jwt"].extend(query)
 
     """ if len(response_json["vp_token"]) == 1:
 
@@ -470,11 +467,10 @@ def oid4vp_get():
             elif format == "dc+sd-jwt":
                 credentials["dc+sd-jwt"].append(response_json["vp_token"][index]) """
 
-
     for credential in credentials["mso_mdoc"]:
 
         statuses = get_status_mdoc(credential)
-        
+
         if isinstance(statuses, list):
             resp["mso_mdoc"].extend(statuses)
         else:
@@ -546,7 +542,7 @@ def revoke():
         for _status in status_lists[_format]:
 
             if "identifier_list" in _status:
-                id = _status["identifier_list"]["id"]
+                id = _status["identifier_list"]["id"].decode("utf-8")
                 uri = _status["identifier_list"]["uri"]
 
                 payload = f"uri={quote_plus(uri)}&id={id}&status=1"
@@ -560,7 +556,8 @@ def revoke():
                         print(f"[OK] {uri} id={id}", flush=True)
                     else:
                         print(
-                            f"[FAIL] {uri} id={id} -> {response.status_code} {response.text}",flush=True
+                            f"[FAIL] {uri} id={id} -> {response.status_code} {response.text}",
+                            flush=True,
                         )
 
                 except Exception as e:
@@ -577,10 +574,11 @@ def revoke():
                     )
 
                     if response.status_code == 200:
-                        print(f"[OK] {uri} idx={idx}",flush=True)
+                        print(f"[OK] {uri} idx={idx}", flush=True)
                     else:
                         print(
-                            f"[FAIL] {uri} idx={idx} -> {response.status_code} {response.text}", flush=True
+                            f"[FAIL] {uri} idx={idx} -> {response.status_code} {response.text}",
+                            flush=True,
                         )
 
                 except Exception as e:

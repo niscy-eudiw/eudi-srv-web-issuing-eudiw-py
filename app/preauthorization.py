@@ -132,7 +132,16 @@ def preauthRed():
 @preauth.route("/preauth_form", methods=["GET", "POST"])
 def preauth_form():
 
-    form_data = request.form.to_dict()
+    # form_data = request.form.to_dict()
+    form_data = {}
+
+    for key in request.form.keys():
+        if key.endswith("[]"):
+            # This is an array field - get all values as a list
+            form_data[key.replace("[]", "")] = request.form.getlist(key)
+        else:
+            # Regular field - get single value
+            form_data[key] = request.form.get(key)
 
     cfgservice.app_logger.info(f"form_data: {form_data}")
 
@@ -212,11 +221,10 @@ def generate_offer(data):
             "url"
         ]
     else:
-        credential_issuer = ConfFrontend.registered_frontends[cfgservice.default_frontend][
-            "url"
-        ]
+        credential_issuer = ConfFrontend.registered_frontends[
+            cfgservice.default_frontend
+        ]["url"]
 
-    
     credential_offer = {
         "credential_issuer": credential_issuer,
         "credential_configuration_ids": current_session.credentials_requested,
@@ -319,7 +327,9 @@ def credentialOfferReq2():
     tx_code = current_session.tx_code
 
     credential_offer = {
-        "credential_issuer": ConfFrontend.registered_frontends[cfgservice.default_frontend]["url"],
+        "credential_issuer": ConfFrontend.registered_frontends[
+            cfgservice.default_frontend
+        ]["url"],
         "credential_configuration_ids": credential_ids,
         "grants": {
             "urn:ietf:params:oauth:grant-type:pre-authorized_code": {
@@ -362,7 +372,10 @@ def request_preauth_token(scope):
 
     tx_code = _response.get("tx_code")
 
-    if scope == "eu.europa.ec.eudi.age_verification_mdoc" or scope == "eu.europa.ec.eudi.age_verification_mdoc_passport":
+    if (
+        scope == "eu.europa.ec.eudi.age_verification_mdoc"
+        or scope == "eu.europa.ec.eudi.age_verification_mdoc_passport"
+    ):
         country = "AV"
     else:
         country = "FC"

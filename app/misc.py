@@ -313,7 +313,13 @@ def getMandatoryAttributesSDJWT(claims):
         if attribute_name == "nationalities":
 
             attributes_form.update(
-                {attribute_name: {"type": claim["value_type"], "filled_value": None}}
+                {
+                    attribute_name: {
+                        "type": claim["value_type"],
+                        "filled_value": None,
+                        "mandatory": True,
+                    }
+                }
             )
             attributes_form[attribute_name]["cardinality"] = {"min": 0, "max": "n"}
             attributes_form[attribute_name]["attributes"] = [
@@ -328,7 +334,13 @@ def getMandatoryAttributesSDJWT(claims):
 
         if attribute_name == "place_of_birth":
             attributes_form.update(
-                {attribute_name: {"type": "list", "filled_value": None}}
+                {
+                    attribute_name: {
+                        "type": "list",
+                        "filled_value": None,
+                        "mandatory": True,
+                    }
+                }
             )
             attributes_form[attribute_name]["cardinality"] = {"min": 0, "max": 1}
             attributes_form[attribute_name]["attributes"] = [
@@ -360,7 +372,13 @@ def getMandatoryAttributesSDJWT(claims):
             "place_of_birth",
         ):
             attributes_form.update(
-                {attribute_name: {"type": claim["value_type"], "filled_value": None}}
+                {
+                    attribute_name: {
+                        "type": claim["value_type"],
+                        "filled_value": None,
+                        "mandatory": True,
+                    }
+                }
             )
 
         if "issuer_conditions" in claim and attribute_name not in (

@@ -43,11 +43,14 @@ from app import session_manager
 from formatter_func import mdocFormatter, sdjwtFormatter
 
 
-def dynamic_formatter(format, doctype, form_data, device_publickey, session_id):
+def dynamic_formatter(format, scope, form_data, device_publickey, session_id):
 
     current_session = session_manager.get_session(session_id=session_id)
 
-    if doctype == "org.iso.18013.5.1.mDL":
+    if (
+        scope == "eu.europa.ec.eudi.mdl_mdoc"
+        or scope == "eu.europa.ec.eudi.aamva_mdl_mdoc"
+    ):
         un_distinguishing_sign = cfgcountries.supported_countries[
             current_session.country
         ]["un_distinguishing_sign"]
@@ -55,8 +58,10 @@ def dynamic_formatter(format, doctype, form_data, device_publickey, session_id):
         un_distinguishing_sign = ""
 
     data, requested_credential = formatter(
-        dict(form_data), un_distinguishing_sign, doctype, format
+        dict(form_data), un_distinguishing_sign, scope, format
     )
+
+    print("\ndynamic_formatter data:", data, flush=True)
 
     r = {}
 
@@ -78,6 +83,7 @@ def dynamic_formatter(format, doctype, form_data, device_publickey, session_id):
             {
                 "country": current_session.country,
                 "credential_metadata": requested_credential,
+                "scope": scope,
                 "device_publickey": device_publickey,
                 "data": data,
             },
@@ -95,10 +101,10 @@ def dynamic_formatter(format, doctype, form_data, device_publickey, session_id):
     return credential
 
 
-def formatter(data, un_distinguishing_sign, doctype, format):
+def formatter(data, un_distinguishing_sign, scope, format):
     today = datetime.date.today()
 
-    requested_credential, pdata = get_requested_credential(data, doctype, format, today)
+    requested_credential, pdata = get_requested_credential(data, scope, format, today)
     doctype_config = requested_credential["issuer_config"]
     expiry = today + datetime.timedelta(days=doctype_config["validity"])
 
@@ -107,16 +113,41 @@ def formatter(data, un_distinguishing_sign, doctype, format):
         namescapes = getNamespaces(
             requested_credential["credential_metadata"]["claims"]
         )
+
+        print("\nnamescapes:", namescapes, flush=True)
+
+        attributes_by_namespace = {}
+
+        attributes_req = {}
+        attributes_req2 = {}
+        issuer_claims = {}
+
         for namescape in namescapes:
-            attributes_req = getMandatoryAttributes(
-                requested_credential["credential_metadata"]["claims"], namescape
-            )
-            attributes_req2 = getOptionalAttributes(
-                requested_credential["credential_metadata"]["claims"], namescape
-            )
-            issuer_claims = getIssuerFilledAttributes(
-                requested_credential["credential_metadata"]["claims"], namescape
-            )
+            attributes_by_namespace[namescape] = {
+                "mandatory": getMandatoryAttributes(
+                    requested_credential["credential_metadata"]["claims"], namescape
+                ),
+                "optional": getOptionalAttributes(
+                    requested_credential["credential_metadata"]["claims"], namescape
+                ),
+                "issuer": getIssuerFilledAttributes(
+                    requested_credential["credential_metadata"]["claims"], namescape
+                ),
+            }
+
+        attributes_req = {}
+        attributes_req2 = {}
+        issuer_claims = {}
+
+        for namescape in namescapes:
+            attributes_req.update(attributes_by_namespace[namescape]["mandatory"])
+            attributes_req2.update(attributes_by_namespace[namescape]["optional"])
+            issuer_claims.update(attributes_by_namespace[namescape]["issuer"])
+
+        print("\nattributes_req:", attributes_req, flush=True)
+        print("\nattributes_req2:", attributes_req2, flush=True)
+        print("\nissuer_claims:", issuer_claims, flush=True)
+
     else:  # "dc+sd-jwt"
         attributes_req = getMandatoryAttributesSDJWT(
             requested_credential["credential_metadata"]["claims"]
@@ -151,22 +182,27 @@ def formatter(data, un_distinguishing_sign, doctype, format):
         attributes_req,
         attributes_req2,
         issuer_claims,
+        attributes_by_namespace=(
+            attributes_by_namespace if format == "mso_mdoc" else None
+        ),
     )
 
     return pdata, requested_credential
 
 
-def get_requested_credential(data, doctype, format, today):
+def get_requested_credential(data, scope, format, today):
+    cred = oidc_metadata["credential_configurations_supported"][scope]
+
     if format == "mso_mdoc":
-        cred = doctype2credential(doctype, format)
+        # cred = doctype2credential(doctype, format)
         pdata = {}
     else:  # "dc+sd-jwt"
-        cred = doctype2credentialSDJWT(doctype, format)
+        # cred = doctype2credentialSDJWT(doctype, format)
         doctype_config = cred["issuer_config"]
         pdata = {
             "evidence": [
                 {
-                    "type": doctype,
+                    "type": cred["vct"],
                     "source": {
                         "organization_name": doctype_config["organization_name"],
                         "organization_id": doctype_config["organization_id"],
@@ -263,12 +299,25 @@ def normalize_list_and_type_fields(data, attributes_req, attributes_req2):
 
 
 def populate_pdata(
-    data, pdata, format, namescapes, attributes_req, attributes_req2, issuer_claims
+    data,
+    pdata,
+    format,
+    namescapes,
+    attributes_req,
+    attributes_req2,
+    issuer_claims,
+    attributes_by_namespace=None,
 ):
     if format == "mso_mdoc":
         for namescape in namescapes:
             pdata[namescape] = {}
-            for attr_group in (attributes_req, attributes_req2, issuer_claims):
+            # Use the namespace-specific attributes
+            namespace_attrs = attributes_by_namespace[namescape]
+            for attr_group in (
+                namespace_attrs["mandatory"],
+                namespace_attrs["optional"],
+                namespace_attrs["issuer"],
+            ):
                 for attr in attr_group:
                     if attr in data:
                         pdata[namescape][attr] = data[attr]
