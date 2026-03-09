@@ -35,6 +35,7 @@ from app.misc import (
     scope2details,
     vct2id,
     verify_jwt_with_x5c,
+    verify_wua_jwt_with_x5c
 )
 import segno
 
@@ -459,7 +460,7 @@ from authlib.jose import JsonWebKey
 
 
 def decode_verify_attestation(jwt_raw):
-    claims = verify_jwt_with_x5c(jwt_raw=jwt_raw)
+    claims = verify_wua_jwt_with_x5c(jwt_raw=jwt_raw)
 
     return claims
 
@@ -573,6 +574,8 @@ def generate_credentials(credential_request, session_id):
 def encrypt_response(credential_request, credential_response):
     encryption_config = credential_request.get("credential_response_encryption", {})
 
+    print("\nencryption_config\n", encryption_config)
+
     if not encryption_config or not all(k in encryption_config for k in ["jwk", "enc"]):
         return make_response(
             jsonify(
@@ -610,9 +613,11 @@ def encrypt_response(credential_request, credential_response):
     try:
         public_key = JsonWebKey.import_key(encryption_config["jwk"])
         jwe = JsonWebEncryption()
+
         jwe_token = jwe.serialize_compact(
             protected_header, json.dumps(credential_response), public_key
         )
+
     except:
         return make_response(
             jsonify(

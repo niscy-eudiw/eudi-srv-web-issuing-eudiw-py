@@ -87,6 +87,11 @@ class ConfService:
         "https://verifier-backend.eudiw.dev/ui/presentations/",
     )
 
+    trust_validator_url = os.getenv(
+        "TRUST_VALIDATOR",
+        "https://dev.trust-validator.eudiw.dev/trust",
+    )
+
     LOG_FILES = os.getenv(
         "LOG_FILES",
         "/tmp/oidc_log/logs.log,/tmp/log/logs.log",

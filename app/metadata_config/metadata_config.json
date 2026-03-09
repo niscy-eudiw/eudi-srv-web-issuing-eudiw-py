@@ -12,7 +12,6 @@
    },
    "credential_response_encryption":{
       "alg_values_supported":[
-         "RSA1_5",
          "RSA-OAEP",
          "RSA-OAEP-256",
          "ECDH-ES"

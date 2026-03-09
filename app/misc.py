@@ -30,6 +30,8 @@ import secrets
 import uuid
 from io import BytesIO
 from typing import Any, Dict, Optional, Tuple
+import requests
+
 
 # Third-party imports
 import jwt
@@ -41,6 +43,7 @@ from cryptography.hazmat.primitives.asymmetric.types import CertificatePublicKey
 from PIL import Image
 from flask import current_app, jsonify, redirect, render_template_string
 from flask.helpers import make_response
+
 
 # Local/project-specific imports
 from app import oidc_metadata
@@ -1103,3 +1106,189 @@ def verify_jwt_with_x5c(
     cfgservice.app_logger.debug(f"JWT claims: {claims}")
 
     return claims
+
+
+
+def verify_wua_jwt_with_x5c(
+    jwt_raw: str,
+    audience: Optional[str] = None,
+    issuer: Optional[str] = None,
+    allowed_algorithms: Optional[list[str]] = None,
+    verify_exp: bool = True,
+) -> Dict[str, Any]:
+    """
+    Verify a JWT using the x5c certificate chain in its header.
+
+    Args:
+        jwt_raw: The raw JWT as a string
+        audience: Expected audience claim (validated if provided)
+        issuer: Expected issuer claim (validated if provided)
+        allowed_algorithms: List of allowed signing algorithms
+        verify_exp: Whether to verify expiration (default: True)
+
+    Returns:
+        Decoded JWT claims if valid
+
+    Raises:
+        ValueError: If certificate verification or JWT structure is invalid
+        CertificateVerificationError: If certificate verification fails
+        jwt.ExpiredSignatureError: If the token has expired
+        jwt.InvalidIssuerError: If the issuer claim doesn't match expected
+        jwt.InvalidAudienceError: If the audience claim doesn't match expected
+        jwt.InvalidTokenError: For other JWT validation failures
+    """
+    cfgservice.app_logger.debug("Starting JWT verification with x5c")
+    cfgservice.app_logger.debug(
+        f"Expected audience: {audience}, Expected issuer: {issuer}"
+    )
+    cfgservice.app_logger.debug(f"Verify expiration: {verify_exp}")
+
+    # Extract and verify the public key from x5c
+    public_key, alg = extract_public_key_from_x5c_wua(jwt_raw, allowed_algorithms)
+
+    # Build options for PyJWT
+    options = {"verify_exp": verify_exp}
+
+    cfgservice.app_logger.debug(f"Decoding JWT with algorithm: {alg}")
+
+    # Verify the JWT signature and claims using PyJWT
+    claims = jwt.decode(
+        jwt_raw,
+        key=public_key,
+        algorithms=[alg],
+        audience=audience,
+        issuer=issuer,
+        options=options,
+    )
+
+    cfgservice.app_logger.debug("JWT signature and claims verified successfully")
+    cfgservice.app_logger.debug(f"JWT claims: {claims}")
+
+    return claims
+
+
+def extract_public_key_from_x5c_wua(
+    jwt_raw: str, allowed_algorithms: Optional[list[str]] = None
+) -> Tuple[CertificatePublicKeyTypes, str]:
+    """
+    Extract and verify the public key from x5c header in a JWT.
+
+    Args:
+        jwt_raw: The raw JWT as a string
+        allowed_algorithms: List of allowed signing algorithms (e.g., ['ES256', 'RS256'])
+                          If None, any algorithm in the header is accepted (less secure)
+
+    Raises:
+        ValueError: If the x5c header is missing or algorithm is not allowed
+        CertificateVerificationError: If certificate verification fails
+
+    Returns:
+        Tuple of (public_key, algorithm)
+    """
+    cfgservice.app_logger.debug("Extracting public key from x5c header")
+
+    unverified_header = jwt.get_unverified_header(jwt_raw)
+    cfgservice.app_logger.debug(f"JWT header (unverified): {unverified_header}")
+
+    # Validate algorithm before using it (prevent algorithm confusion attacks)
+    alg = unverified_header.get("alg")
+    if not alg:
+        cfgservice.app_logger.error("Algorithm not specified in JWT header")
+        raise ValueError("Algorithm not specified in JWT header")
+
+    cfgservice.app_logger.debug(f"JWT algorithm: {alg}")
+
+    if allowed_algorithms:
+        if alg not in allowed_algorithms:
+            cfgservice.app_logger.error(
+                f"Algorithm '{alg}' not in allowed list: {allowed_algorithms}"
+            )
+            raise ValueError(
+                f"Algorithm '{alg}' not allowed. Permitted algorithms: {allowed_algorithms}"
+            )
+        cfgservice.app_logger.debug(f"Algorithm '{alg}' is allowed")
+    else:
+        cfgservice.app_logger.warning(
+            "No algorithm whitelist specified - accepting any algorithm (less secure)"
+        )
+
+    # Get x5c certificate chain
+    x5c_chain = unverified_header.get("x5c")
+    if not x5c_chain:
+        cfgservice.app_logger.error("x5c header not found in JWT")
+        raise ValueError("x5c header not found in JWT")
+
+    if not isinstance(x5c_chain, list) or len(x5c_chain) == 0:
+        cfgservice.app_logger.error(
+            f"x5c header must be a non-empty array, got: {type(x5c_chain)}"
+        )
+        raise ValueError("x5c header must be a non-empty array")
+
+    cfgservice.app_logger.debug(f"x5c chain contains {len(x5c_chain)} certificate(s)")
+
+    # Decode and verify the leaf certificate (first in chain)
+    try:
+        x5c_cert_der = b64url_decode(x5c_chain[0])
+        cfgservice.app_logger.debug(
+            f"Decoded certificate from x5c[0], length: {len(x5c_cert_der)} bytes"
+        )
+    except Exception as e:
+        cfgservice.app_logger.error(f"Failed to decode x5c certificate: {e}")
+        raise ValueError(f"Invalid base64 encoding in x5c[0]: {e}")
+
+    # Verify certificate against trusted CA (this loads and validates it)
+    #verified_certificate = verify_certificate_against_trusted_CA(x5c_cert_der)
+
+    verified = call_trust_validator(
+            url=cfgservice.trust_validator_url,
+            chain=x5c_chain,
+            verification_context="WalletUnitAttestation")
+
+    if not verified:
+        cfgservice.app_logger.error("Certificate verification failed by trust validator")
+        raise CertificateVerificationError("Certificate verification failed by trust validator")
+
+    cert_der = base64.b64decode(x5c_chain[0])
+    verified_certificate = x509.load_der_x509_certificate(cert_der)
+
+    cfgservice.app_logger.debug(
+        "Successfully extracted and verified public key from x5c"
+    )
+        
+    # Extract public key from the VERIFIED certificate
+    return verified_certificate.public_key(), alg
+
+
+
+def call_trust_validator(url: str, chain: list[str], verification_context: str, timeout: int = 10):
+    """
+    Generic function to call the trust validator.
+
+    Args:
+        url: Trust validator endpoint
+        chain: certificate chain (list of base64 certs)
+        verification_context: Validation context (e.g., WalletUnitAttestation, PID)
+        timeout: Request timeout in seconds
+
+    Returns:
+        dict: Parsed JSON response from the trust validator
+    """
+
+    payload = {
+        "chain": chain,
+        "verificationContext": verification_context
+    }
+
+    headers = {
+        "accept": "application/json",
+        "Content-Type": "application/json"
+    }
+
+    response = requests.post(url, json=payload, headers=headers, timeout=timeout)
+    response.raise_for_status()
+
+    data = response.json()
+
+    print(f"Trust validator response: {data}")
+
+    return bool(data.get("trusted", False))
