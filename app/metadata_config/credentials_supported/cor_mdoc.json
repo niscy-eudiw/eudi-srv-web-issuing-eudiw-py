@@ -18,7 +18,7 @@
           1
        ],
        "credential_signing_alg_values_supported":[
-          "ES256"
+          -7
        ],
        "proof_types_supported":{
           "jwt":{
