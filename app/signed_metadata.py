@@ -26,7 +26,7 @@ from flask import (
     render_template,
     url_for,
 )
-
+import logging
 from datetime import datetime, timedelta
 import jwt
 import os
@@ -37,11 +37,11 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa, ec, ed25519
 from flask_cors import CORS
 from .app_config.config_service import ConfService as cfgservice
-from .app_config.config_countries import ConfFrontend as cfgfrontend
-from app_config.config_countries import ConfCountries as cfgcountries
 
 metadata = Blueprint("metadata", __name__, url_prefix="/metadata")
 CORS(metadata)
+
+logger = logging.getLogger(__name__)
 
 
 @metadata.route("metadata_signer", methods=["POST"])
@@ -89,9 +89,8 @@ def metadata_signer():
 
         print(f"DEBUG: Building payload...")
         payload = {
-            "sub": cfgfrontend.registered_frontends[issuer_frontend_id][
-                "url"
-            ],  # REQUIRED: Credential Issuer Identifier
+            "sub": CONFIGURATION["frontend"]["frontends_config"][issuer_frontend_id]["url"]
+,  # REQUIRED: Credential Issuer Identifier
             "iat": int(datetime.utcnow().timestamp()),  # REQUIRED: Issued at
         }
         print(f"DEBUG: Payload sub: {payload['sub']}")
@@ -110,25 +109,17 @@ def metadata_signer():
         payload.update(metadata_content)
         print(f"DEBUG: Payload updated with metadata")
 
-        print(f"DEBUG: About to load private key")
-        print(
-            f"DEBUG: Key path: {cfgcountries.supported_countries['FC']['pid_mdoc_privkey']}",
-            flush=True,
-        )
-
         try:
-            with open(
-                "/home/pid.issuer/pidprovider/dev/eudi-srv-web-issuing-eudiw-py/app/private/PID-DS-03.key",
-                "rb",
-            ) as key_file:
-                key_data = key_file.read()
-                print(f"DEBUG: Successfully read key file, size: {len(key_data)} bytes")
 
-                private_key = serialization.load_pem_private_key(
-                    key_data,
-                    password=None,
-                )
-                print(f"DEBUG: Successfully loaded private key")
+            key_file = CONFIGURATION["frontend"]["frontends_config"][issuer_frontend_id]["metadata_signing_key"]
+
+            private_key = serialization.load_pem_private_key(
+                key_data,
+                password=CONFIGURATION["frontend"]["frontends_config"][issuer_frontend_id]["metadata_signing_key_password"],
+            )
+
+            print(f"DEBUG: Successfully loaded private key")
+
         except Exception as e:
             print(f"DEBUG: Error loading key: {type(e).__name__}: {str(e)}")
             import traceback
@@ -230,21 +221,17 @@ def metadata_signer():
 
         print(f"DEBUG: Loading certificate for x5c header")
         try:
-            cert_path = "/home/pid.issuer/pidprovider/dev/eudi-srv-web-issuing-eudiw-py/app/private/PID-DS-03.crt"
-            with open(cert_path, "rb") as cert_file:
-                cert_data = cert_file.read()
-                print(
-                    f"DEBUG: Successfully read certificate file, size: {len(cert_data)} bytes"
-                )
 
-                # Load the certificate
-                certificate = x509.load_pem_x509_certificate(cert_data)
-                print(f"DEBUG: Successfully loaded certificate")
+            cert_data = CONFIGURATION["frontend"]["frontends_config"][issuer_frontend_id]["metadata_access_certificate"]
 
-                # Encode certificate as base64 (DER format, without PEM headers)
-                cert_der = certificate.public_bytes(serialization.Encoding.DER)
-                cert_b64 = base64.b64encode(cert_der).decode("utf-8")
-                print(f"DEBUG: Certificate encoded to base64, length: {len(cert_b64)}")
+            # Load the certificate
+            certificate = x509.load_pem_x509_certificate(cert_data)
+            print(f"DEBUG: Successfully loaded certificate")
+
+            # Encode certificate as base64 (DER format, without PEM headers)
+            cert_der = certificate.public_bytes(serialization.Encoding.DER)
+            cert_b64 = base64.b64encode(cert_der).decode("utf-8")
+            print(f"DEBUG: Certificate encoded to base64, length: {len(cert_b64)}")
 
         except Exception as e:
             print(f"DEBUG: Error loading certificate: {type(e).__name__}: {str(e)}")

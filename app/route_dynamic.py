@@ -28,6 +28,7 @@ from datetime import timedelta
 import json
 import base64
 import re
+import logging
 from urllib.parse import urlencode
 from uuid import uuid4
 from flask import (
@@ -46,7 +47,6 @@ from boot_validate import (
 )
 
 from app_config.config_service import ConfService as cfgserv
-from app_config.config_countries import ConfCountries as cfgcountries, ConfFrontend
 from redirect_func import url_get
 from app.redirect_func import post_redirect_with_payload
 from misc import (
@@ -60,11 +60,13 @@ from misc import (
 from dynamic_func import dynamic_formatter
 from app import oidc_metadata
 from app import session_manager
+from app import CONFIGURATION
 
 # /pid blueprint
 dynamic = Blueprint("dynamic", __name__, url_prefix="/dynamic")
 CORS(dynamic)  # enable CORS on the blue print
 
+logger = logging.getLogger(__name__)
 # secrets
 
 # app.config["SECRET_KEY"] = flask_secret_key
@@ -95,7 +97,7 @@ def Supported_Countries():
 
         return redirect(
             url_get(
-                cfgserv.OpenID_first_endpoint,
+                CONFIGURATION["authorization_server"]["user_verify_endpoint"],
                 {
                     "token": current_session.jws_token,
                     "username": session_id,
@@ -104,14 +106,14 @@ def Supported_Countries():
         )
 
     display_countries = {}
-    for country in cfgcountries.supported_countries:
+    for country in CONFIGURATION["countries"]:
         res = all(
-            ele in cfgcountries.supported_countries[country]["supported_credentials"]
+            ele in CONFIGURATION["countries"][country]["supported_credential_ids"]
             for ele in current_session.credentials_requested
         )
         if res:
             display_countries.update(
-                {str(country): str(cfgcountries.supported_countries[country]["name"])}
+                {str(country): str(CONFIGURATION["countries"][country]["name"])}
             )
 
     if len(display_countries) == 1:
@@ -120,7 +122,7 @@ def Supported_Countries():
         # session["returnURL"] = cfgserv.OpenID_first_endpoint
         # session["country"] = country
 
-        cfgserv.app_logger.info(
+        logger.info(
             ", Session ID: "
             + session["session_id"]
             + ", "
@@ -137,14 +139,14 @@ def Supported_Countries():
 
     # session["jws_token"] = token  # authorization_params["token"]
 
-    target_url = ConfFrontend.registered_frontends[current_session.frontend_id]["url"]
+    target_url = CONFIGURATION["frontend"]["frontends_config"][current_session.frontend_id]["url"]
 
     return post_redirect_with_payload(
         target_url=f"{target_url}/display_countries",
         data_payload={
             "countries": display_countries,
             "authorization_details": current_session.authorization_details,
-            "redirect_url": cfgserv.service_url,
+            "redirect_url": f"{CONFIGURATION['service_url']}/",
             "session_id": session_id,
         },
     )
@@ -155,7 +157,7 @@ def country_selected():
     # form_keys = request.form.keys()
     form_country = request.form.get("country")
 
-    cfgserv.app_logger.info(
+    logger.info(
         ", Session ID: "
         + session["session_id"]
         + ", "
@@ -200,16 +202,14 @@ def dynamic_R1(country):
             if key not in mandatory_attributes
         }
 
-        target_url = ConfFrontend.registered_frontends[current_session.frontend_id][
-            "url"
-        ]
+        target_url = CONFIGURATION["frontend"]["frontends_config"][current_session.frontend_id]["url"]
 
         return post_redirect_with_payload(
             target_url=f"{target_url}/display_form",
             data_payload={
                 "mandatory_attributes": mandatory_attributes,
                 "optional_attributes": optional_attributes_filtered,
-                "redirect_url": f"{cfgserv.service_url}dynamic/form",
+                "redirect_url": f"{CONFIGURATION['service_url']}/dynamic/form",
                 "session_id": session_id,
             },
         )
@@ -232,10 +232,9 @@ def dynamic_R1(country):
             )
         ) """
 
-        # return redirect(cfgcountries.supported_countries[country]["pid_url_oidc"])
 
-    elif cfgcountries.supported_countries[country]["connection_type"] == "oauth":
-        oauth_data = cfgcountries.supported_countries[country]["oauth_auth"]
+    elif CONFIGURATION["countries"][country]["connection_type"] == "oauth":
+        oauth_data = CONFIGURATION["countries"][country]["auth"]
 
         return redirect(
             generate_connector_authorization_url(
@@ -245,9 +244,9 @@ def dynamic_R1(country):
             )
         )
 
-    elif cfgcountries.supported_countries[country]["connection_type"] == "openid":
+    elif CONFIGURATION["countries"][country]["connection_type"] == "openid":
 
-        country_data = cfgcountries.supported_countries[country]["oidc_auth"]
+        country_data = CONFIGURATION["countries"][country]["auth"]
 
         metadata_url = country_data["base_url"] + "/.well-known/openid-configuration"
         metadata_json = requests.get(metadata_url).json()
@@ -294,10 +293,10 @@ def red():
 
     auth_code = request.args.get("code")
 
-    country_config = cfgcountries.supported_countries[current_session.country]
+    country_config = CONFIGURATION["countries"][current_session.country]
 
     metadata_url = (
-        country_config["oauth_auth"]["base_url"]
+        country_config["auth"]["base_url"]
         + "/.well-known/oauth-authorization-server"
     )
 
@@ -306,20 +305,21 @@ def red():
     token_endpoint = metadata_json["token_endpoint"]
 
     token_endpoint_headers = {}
+
     if (
-        "token_endpoint" in country_config["oauth_auth"]
-        and "header" in country_config["oauth_auth"]["token_endpoint"]
+        "token_endpoint" in country_config["auth"]
+        and "header" in country_config["auth"]["token_endpoint"]
     ):
-        token_endpoint_headers = country_config["oauth_auth"]["token_endpoint"][
+        token_endpoint_headers = country_config["auth"]["token_endpoint"][
             "headers"
         ]
 
     if (
-        "oauth_auth" in country_config
-        and "client_id" in country_config["oauth_auth"]
-        and "client_secret" in country_config["oauth_auth"]
+        "auth" in country_config
+        and "client_id" in country_config["auth"]
+        and "client_secret" in country_config["auth"]
     ):
-        auth_string = f"{country_config['oauth_auth']['client_id']}:{country_config['oauth_auth']['client_secret']}"
+        auth_string = f"{country_config['auth']['client_id']}:{country_config['auth']['client_secret']}"
         encoded_auth = base64.b64encode(auth_string.encode("utf-8")).decode("utf-8")
 
         token_endpoint_headers["Authorization"] = f"Basic {encoded_auth}"
@@ -331,7 +331,7 @@ def red():
     params = {
         "grant_type": "authorization_code",
         "code": auth_code,
-        "redirect_uri": country_config["oauth_auth"]["redirect_uri"],
+        "redirect_uri": country_config["auth"]["redirect_uri"],
     }
 
     print("\nparams", params, flush=True)
@@ -454,7 +454,7 @@ def red():
 
     user_id = current_session.country + "." + session["access_token"]
 
-    target_url = ConfFrontend.registered_frontends[current_session.frontend_id]["url"]
+    target_url = CONFIGURATION["frontend"]["frontends_config"][current_session.frontend_id]["url"]
 
     print("\npresentation_data", presentation_data, flush=True)
 
@@ -462,7 +462,7 @@ def red():
         target_url=f"{target_url}/display_authorization",
         data_payload={
             "presentation_data": presentation_data,
-            "redirect_url": f"{cfgserv.service_url}dynamic/redirect_wallet",
+            "redirect_url": f"{CONFIGURATION['service_url']}/dynamic/redirect_wallet",
             "session_id": session_id,
         },
     )
@@ -546,33 +546,10 @@ def dynamic_R2_data_collect(country, session_id, access_token):
 
         return data
 
-    elif cfgcountries.supported_countries[country]["connection_type"] == "oauth":
-
-        """attribute_request = cfgcountries.supported_countries[country][
-            "attribute_request"
-        ]
-        url = attribute_request["url"] + user_id
-        # headers = attribute_request["header"]
-        try:
-            r2 = requests.get(url)
-            print("\nr2", r2)
-            print("\nr2", r2.text)
-            json_response = r2.json()
-            print("\njson_response", json_response)
-            for attribute in json_response:
-                if attribute["state"] == "Pending":
-                    return {"error": "Pending", "response": json_response}
-
-            data = json_response
-
-            return data
-        except:
-            credential_error_resp(
-                "invalid_credential_request", "openid connection failed"
-            )"""
+    elif CONFIGURATION["countries"][country]["connection_type"] == "oauth":
 
         metadata_url = (
-            cfgcountries.supported_countries[country]["oauth_auth"]["base_url"]
+            CONFIGURATION["countries"][country]["auth"]["base_url"]
             + "/.well-known/oauth-authorization-server"
         )
 
@@ -599,10 +576,10 @@ def dynamic_R2_data_collect(country, session_id, access_token):
         cleaned_user_data = {}
 
         if country != "PT":
-            if "custom_modifiers" in cfgcountries.supported_countries[country]:
-                custom_modifiers = cfgcountries.supported_countries[country][
+            if "custom_modifiers" in CONFIGURATION["countries"][country]:
+                custom_modifiers = CONFIGURATION["countries"][country][
                     "custom_modifiers"
-                ]
+                ]["_default"]
 
                 for modifier in custom_modifiers:
                     if custom_modifiers[modifier] in user_data:
@@ -615,12 +592,12 @@ def dynamic_R2_data_collect(country, session_id, access_token):
             for attribute in user_data:
                 if (
                     attribute["state"] == "Available"
-                    and "custom_modifiers" in cfgcountries.supported_countries[country]
+                    and "custom_modifiers" in CONFIGURATION["countries"][country]
                     and attribute["name"]
-                    in cfgcountries.supported_countries[country]["custom_modifiers"]
+                    in CONFIGURATION["countries"][country]["custom_modifiers"]["_default"]
                 ):
                     cleaned_user_data[
-                        cfgcountries.supported_countries[country]["custom_modifiers"][
+                        CONFIGURATION["countries"][country]["custom_modifiers"]["_default"][
                             attribute["name"]
                         ]
                     ] = attribute["value"]
@@ -647,14 +624,10 @@ def dynamic_R2_data_collect(country, session_id, access_token):
 
         return cleaned_user_data
 
-    elif cfgcountries.supported_countries[country]["connection_type"] == "openid":
-
-        attribute_request = cfgcountries.supported_countries[country][
-            "attribute_request"
-        ]
+    elif CONFIGURATION["countries"][country]["connection_type"] == "openid":
 
         metadata_url = (
-            cfgcountries.supported_countries[session["country"]]["oidc_auth"][
+            CONFIGURATION["countries"][session["country"]]["auth"][
                 "base_url"
             ]
             + "/.well-known/openid-configuration"
@@ -666,10 +639,10 @@ def dynamic_R2_data_collect(country, session_id, access_token):
         if country == "EE":
             url = userinfo_endpoint + "?access_token=" + access_token
 
-            headers = attribute_request["header"]
+            headers = CONFIGURATION["countries"][country]["auth"]["header"]
         else:
             url = userinfo_endpoint
-            headers = attribute_request["header"]
+            headers = CONFIGURATION["countries"][country]["auth"]["header"]
             headers["Authorization"] = f"Bearer {access_token}"
 
         try:
@@ -678,11 +651,11 @@ def dynamic_R2_data_collect(country, session_id, access_token):
             data = json_response
             if (
                 "custom_modifiers"
-                in cfgcountries.supported_countries[country]["attribute_request"]
+                in CONFIGURATION["countries"][country]
             ):
-                custom_modifiers = cfgcountries.supported_countries[country][
-                    "attribute_request"
-                ]["custom_modifiers"]
+                custom_modifiers = CONFIGURATION["countries"][country][
+                    "custom_modifiers"]["_default"]
+
                 for modifier in custom_modifiers:
                     if custom_modifiers[modifier] in data:
                         data[modifier] = data[custom_modifiers[modifier]]
@@ -793,69 +766,14 @@ def credentialCreation(credential_request, data, country, session_id):
         elif country == "sample":
             form_data = data
 
-        elif (
-            cfgcountries.supported_countries[country]["connection_type"] == "eidasnode"
-        ):
-            form_data = data
-
-        elif cfgcountries.supported_countries[country]["connection_type"] == "oauth":
-            """if country == "PT":
-
-                portuguese_fields = cfgcountries.supported_countries[country][
-                    "oidc_auth"
-                ]["scope"][doctype]
-
-                for fields_pt in portuguese_fields:
-                    for item in data:
-                        if item["name"] == portuguese_fields[fields_pt]:
-                            form_data[fields_pt] = item["value"]
-                            break
-
-                if "birth_date" in form_data:
-                    form_data["birth_date"] = datetime.strptime(
-                        form_data["birth_date"], "%d-%m-%Y"
-                    ).strftime("%Y-%m-%d")
-
-                if "portrait" in form_data:
-                    form_data["portrait"] = base64.urlsafe_b64encode(
-                        convert_png_to_jpeg(base64.b64decode(form_data["portrait"]))
-                    ).decode("utf-8")
-
-                form_data["nationality"] = ["PT"]
-                form_data["nationalities"] = ["PT"]
-
-                form_data["birth_place"] = "Lisboa"
-                form_data["place_of_birth"] = [{"locality": "Lisboa"}]
-
-            else:"""
+        elif CONFIGURATION["countries"][country]["connection_type"] == "oauth":
 
             for attribute in data:
                 form_data[attribute] = data[attribute]
 
-        elif cfgcountries.supported_countries[country]["connection_type"] == "openid":
-            if country == "PT":
-                portuguese_fields = cfgcountries.supported_countries[country]["oidc"][
-                    "scope"
-                ][scope]
-
-                for fields_pt in portuguese_fields:
-                    for item in data:
-                        if item["name"] == portuguese_fields[fields_pt]:
-                            form_data[fields_pt] = item["value"]
-                            break
-
-                form_data["birth_date"] = datetime.strptime(
-                    form_data["birth_date"], "%d-%m-%Y"
-                ).strftime("%Y-%m-%d")
-
-                form_data["portrait"] = base64.urlsafe_b64encode(
-                    convert_png_to_jpeg(base64.b64decode(form_data["Portrait"]))
-                ).decode("utf-8")
-
-            else:
-
-                for attribute in data:
-                    form_data[attribute] = data[attribute]
+        elif CONFIGURATION["countries"][country]["connection_type"] == "openid":
+            for attribute in data:
+                form_data[attribute] = data[attribute]
 
         else:
             return {
@@ -903,9 +821,9 @@ def auth():
     choice = request.form.get("optionsRadios")
 
     if choice == "link1":
-        return redirect(cfgserv.service_url + "oid4vp")
+        return redirect(f"{CONFIGURATION['service_url']}/oid4vp")
     elif choice == "link2":
-        return redirect(cfgserv.service_url + "dynamic/")
+        return redirect(f"{CONFIGURATION['service_url']}/dynamic/")
 
 
 def form_formatter(form_data: dict) -> dict:
@@ -1280,14 +1198,14 @@ def Dynamic_form():
 
     presentation_data = presentation_formatter(cleaned_data=cleaned_data)
 
-    target_url = ConfFrontend.registered_frontends[current_session.frontend_id]["url"]
+    target_url = CONFIGURATION["frontend"]["frontends_config"][current_session.frontend_id]["url"]
 
     print("\npresentation_data", presentation_data, flush=True)
     return post_redirect_with_payload(
         target_url=f"{target_url}/display_authorization",
         data_payload={
             "presentation_data": presentation_data,
-            "redirect_url": f"{cfgserv.service_url}dynamic/redirect_wallet",
+            "redirect_url": f"{CONFIGURATION['service_url']}/dynamic/redirect_wallet",
             "session_id": session_id,
         },
     )
@@ -1305,7 +1223,7 @@ def redirect_wallet():
 
     return redirect(
         url_get(
-            cfgserv.OpenID_first_endpoint,
+            f"{CONFIGURATION['authorization_server']['user_verify_endpoint']}",
             {
                 "token": current_session.jws_token,
                 "username": session_id,

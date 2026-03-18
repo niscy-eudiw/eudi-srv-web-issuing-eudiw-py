@@ -18,7 +18,9 @@
 from datetime import datetime, timedelta, timezone
 from typing import Dict, Optional, List
 import threading
+import logging
 
+logger = logging.getLogger(__name__)
 
 class Session:
     """

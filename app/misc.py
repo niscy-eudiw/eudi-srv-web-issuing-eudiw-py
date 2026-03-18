@@ -31,6 +31,7 @@ import uuid
 from io import BytesIO
 from typing import Any, Dict, Optional, Tuple
 import requests
+import logging
 
 
 # Third-party imports
@@ -50,7 +51,9 @@ from app import oidc_metadata
 from app import trusted_CAs
 from app_config.config_service import ConfService as cfgservice
 from redirect_func import url_get
+from app import CONFIGURATION
 
+logger = logging.getLogger(__name__)
 
 def create_dict(dict, item):
     """Create dictionary with key and value element. The key will be the key of dict and the value will be dict[item]
@@ -877,74 +880,74 @@ def verify_certificate_against_trusted_CA(certificate_der: bytes) -> x509.Certif
     Raises:
         CertificateVerificationError: If verification fails
     """
-    cfgservice.app_logger.debug("Starting certificate verification")
+    logger.debug("Starting certificate verification")
 
     certificate = x509.load_der_x509_certificate(certificate_der, default_backend())
     issuer = certificate.issuer
     subject = certificate.subject
 
-    cfgservice.app_logger.debug(f"Certificate subject: {subject}")
-    cfgservice.app_logger.debug(f"Certificate issuer: {issuer}")
+    logger.debug(f"Certificate subject: {subject}")
+    logger.debug(f"Certificate issuer: {issuer}")
 
     now = datetime.datetime.now(datetime.timezone.utc)
 
     # Check if issued by trusted CA
     """ if issuer not in trusted_CAs:
-        cfgservice.app_logger.error(
+        logger.error(
             f"Certificate not issued by a trusted CA. Issuer: {issuer}"
         )
         raise CertificateVerificationError(
             f"Certificate not issued by a trusted CA. Issuer: {issuer}"
         ) """
 
-    cfgservice.app_logger.debug(f"Certificate issuer found in trusted CAs")
+    logger.debug(f"Certificate issuer found in trusted CAs")
 
     """ ca_info = trusted_CAs[issuer]
     public_key_ca = ca_info["public_key"]
 
     # Verify certificate signature using CA's public key
     try:
-        cfgservice.app_logger.debug("Verifying certificate signature")
+        logger.debug("Verifying certificate signature")
         public_key_ca.verify(
             certificate.signature,
             certificate.tbs_certificate_bytes,
             ec.ECDSA(certificate.signature_hash_algorithm),
         )
-        cfgservice.app_logger.debug("Certificate signature verified successfully")
+        logger.debug("Certificate signature verified successfully")
     except InvalidSignature:
-        cfgservice.app_logger.error(
+        logger.error(
             "Certificate signature verification failed: Invalid signature"
         )
         raise CertificateVerificationError("Certificate signature invalid")
     except Exception as e:
-        cfgservice.app_logger.error(f"Certificate signature verification failed: {e}")
+        logger.error(f"Certificate signature verification failed: {e}")
         raise CertificateVerificationError(f"Signature verification failed: {e}") """
 
     # Check the CERTIFICATE's validity period (not the CA's)
     """ cert_not_before = certificate.not_valid_before_utc
     cert_not_after = certificate.not_valid_after_utc """
 
-    """ cfgservice.app_logger.debug(
+    """ logger.debug(
         f"Certificate validity period: {cert_not_before} to {cert_not_after}"
     )
-    cfgservice.app_logger.debug(f"Current time: {now}")
+    logger.debug(f"Current time: {now}")
 
     if now < cert_not_before:
-        cfgservice.app_logger.error(
+        logger.error(
             f"Certificate not yet valid. Valid from: {cert_not_before}, current time: {now}"
         )
         raise CertificateVerificationError(
             f"Certificate not yet valid. Valid from: {cert_not_before}"
         )
     if now > cert_not_after:
-        cfgservice.app_logger.error(
+        logger.error(
             f"Certificate expired. Valid until: {cert_not_after}, current time: {now}"
         )
         raise CertificateVerificationError(
             f"Certificate expired. Valid until: {cert_not_after}"
         ) """
 
-    cfgservice.app_logger.debug("Certificate validity period check passed")
+    logger.debug("Certificate validity period check passed")
 
     # Optional: Also check if the CA certificate itself is still valid
     """ ca_not_valid_before = ca_info["not_valid_before"].replace(
@@ -954,18 +957,18 @@ def verify_certificate_against_trusted_CA(certificate_der: bytes) -> x509.Certif
         tzinfo=datetime.timezone.utc
     )
 
-    cfgservice.app_logger.debug(
+    logger.debug(
         f"CA validity period: {ca_not_valid_before} to {ca_not_valid_after}"
     )
 
     if not (ca_not_valid_before <= now <= ca_not_valid_after):
-        cfgservice.app_logger.error(
+        logger.error(
             f"CA certificate not currently valid. Valid period: {ca_not_valid_before} to {ca_not_valid_after}"
         )
         raise CertificateVerificationError("CA certificate not currently valid") """
 
-    cfgservice.app_logger.debug("CA certificate validity check passed")
-    cfgservice.app_logger.debug("Certificate verification completed successfully")
+    logger.debug("CA certificate validity check passed")
+    logger.debug("Certificate verification completed successfully")
 
     return certificate
 
@@ -988,61 +991,61 @@ def extract_public_key_from_x5c(
     Returns:
         Tuple of (public_key, algorithm)
     """
-    cfgservice.app_logger.debug("Extracting public key from x5c header")
+    logger.debug("Extracting public key from x5c header")
 
     unverified_header = jwt.get_unverified_header(jwt_raw)
-    cfgservice.app_logger.debug(f"JWT header (unverified): {unverified_header}")
+    logger.debug(f"JWT header (unverified): {unverified_header}")
 
     # Validate algorithm before using it (prevent algorithm confusion attacks)
     alg = unverified_header.get("alg")
     if not alg:
-        cfgservice.app_logger.error("Algorithm not specified in JWT header")
+        logger.error("Algorithm not specified in JWT header")
         raise ValueError("Algorithm not specified in JWT header")
 
-    cfgservice.app_logger.debug(f"JWT algorithm: {alg}")
+    logger.debug(f"JWT algorithm: {alg}")
 
     if allowed_algorithms:
         if alg not in allowed_algorithms:
-            cfgservice.app_logger.error(
+            logger.error(
                 f"Algorithm '{alg}' not in allowed list: {allowed_algorithms}"
             )
             raise ValueError(
                 f"Algorithm '{alg}' not allowed. Permitted algorithms: {allowed_algorithms}"
             )
-        cfgservice.app_logger.debug(f"Algorithm '{alg}' is allowed")
+        logger.debug(f"Algorithm '{alg}' is allowed")
     else:
-        cfgservice.app_logger.warning(
+        logger.warning(
             "No algorithm whitelist specified - accepting any algorithm (less secure)"
         )
 
     # Get x5c certificate chain
     x5c_chain = unverified_header.get("x5c")
     if not x5c_chain:
-        cfgservice.app_logger.error("x5c header not found in JWT")
+        logger.error("x5c header not found in JWT")
         raise ValueError("x5c header not found in JWT")
 
     if not isinstance(x5c_chain, list) or len(x5c_chain) == 0:
-        cfgservice.app_logger.error(
+        logger.error(
             f"x5c header must be a non-empty array, got: {type(x5c_chain)}"
         )
         raise ValueError("x5c header must be a non-empty array")
 
-    cfgservice.app_logger.debug(f"x5c chain contains {len(x5c_chain)} certificate(s)")
+    logger.debug(f"x5c chain contains {len(x5c_chain)} certificate(s)")
 
     # Decode and verify the leaf certificate (first in chain)
     try:
         x5c_cert_der = b64url_decode(x5c_chain[0])
-        cfgservice.app_logger.debug(
+        logger.debug(
             f"Decoded certificate from x5c[0], length: {len(x5c_cert_der)} bytes"
         )
     except Exception as e:
-        cfgservice.app_logger.error(f"Failed to decode x5c certificate: {e}")
+        logger.error(f"Failed to decode x5c certificate: {e}")
         raise ValueError(f"Invalid base64 encoding in x5c[0]: {e}")
 
     # Verify certificate against trusted CA (this loads and validates it)
     verified_certificate = verify_certificate_against_trusted_CA(x5c_cert_der)
 
-    cfgservice.app_logger.debug(
+    logger.debug(
         "Successfully extracted and verified public key from x5c"
     )
 
@@ -1078,11 +1081,11 @@ def verify_jwt_with_x5c(
         jwt.InvalidAudienceError: If the audience claim doesn't match expected
         jwt.InvalidTokenError: For other JWT validation failures
     """
-    cfgservice.app_logger.debug("Starting JWT verification with x5c")
-    cfgservice.app_logger.debug(
+    logger.debug("Starting JWT verification with x5c")
+    logger.debug(
         f"Expected audience: {audience}, Expected issuer: {issuer}"
     )
-    cfgservice.app_logger.debug(f"Verify expiration: {verify_exp}")
+    logger.debug(f"Verify expiration: {verify_exp}")
 
     # Extract and verify the public key from x5c
     public_key, alg = extract_public_key_from_x5c(jwt_raw, allowed_algorithms)
@@ -1090,7 +1093,7 @@ def verify_jwt_with_x5c(
     # Build options for PyJWT
     options = {"verify_exp": verify_exp}
 
-    cfgservice.app_logger.debug(f"Decoding JWT with algorithm: {alg}")
+    logger.debug(f"Decoding JWT with algorithm: {alg}")
 
     # Verify the JWT signature and claims using PyJWT
     claims = jwt.decode(
@@ -1102,8 +1105,8 @@ def verify_jwt_with_x5c(
         options=options,
     )
 
-    cfgservice.app_logger.debug("JWT signature and claims verified successfully")
-    cfgservice.app_logger.debug(f"JWT claims: {claims}")
+    logger.debug("JWT signature and claims verified successfully")
+    logger.debug(f"JWT claims: {claims}")
 
     return claims
 
@@ -1137,11 +1140,11 @@ def verify_wua_jwt_with_x5c(
         jwt.InvalidAudienceError: If the audience claim doesn't match expected
         jwt.InvalidTokenError: For other JWT validation failures
     """
-    cfgservice.app_logger.debug("Starting JWT verification with x5c")
-    cfgservice.app_logger.debug(
+    logger.debug("Starting JWT verification with x5c")
+    logger.debug(
         f"Expected audience: {audience}, Expected issuer: {issuer}"
     )
-    cfgservice.app_logger.debug(f"Verify expiration: {verify_exp}")
+    logger.debug(f"Verify expiration: {verify_exp}")
 
     # Extract and verify the public key from x5c
     public_key, alg = extract_public_key_from_x5c_wua(jwt_raw, allowed_algorithms)
@@ -1149,7 +1152,7 @@ def verify_wua_jwt_with_x5c(
     # Build options for PyJWT
     options = {"verify_exp": verify_exp}
 
-    cfgservice.app_logger.debug(f"Decoding JWT with algorithm: {alg}")
+    logger.debug(f"Decoding JWT with algorithm: {alg}")
 
     # Verify the JWT signature and claims using PyJWT
     claims = jwt.decode(
@@ -1161,8 +1164,8 @@ def verify_wua_jwt_with_x5c(
         options=options,
     )
 
-    cfgservice.app_logger.debug("JWT signature and claims verified successfully")
-    cfgservice.app_logger.debug(f"JWT claims: {claims}")
+    logger.debug("JWT signature and claims verified successfully")
+    logger.debug(f"JWT claims: {claims}")
 
     return claims
 
@@ -1185,73 +1188,76 @@ def extract_public_key_from_x5c_wua(
     Returns:
         Tuple of (public_key, algorithm)
     """
-    cfgservice.app_logger.debug("Extracting public key from x5c header")
+    logger.debug("Extracting public key from x5c header")
 
     unverified_header = jwt.get_unverified_header(jwt_raw)
-    cfgservice.app_logger.debug(f"JWT header (unverified): {unverified_header}")
+    logger.debug(f"JWT header (unverified): {unverified_header}")
 
     # Validate algorithm before using it (prevent algorithm confusion attacks)
     alg = unverified_header.get("alg")
     if not alg:
-        cfgservice.app_logger.error("Algorithm not specified in JWT header")
+        logger.error("Algorithm not specified in JWT header")
         raise ValueError("Algorithm not specified in JWT header")
 
-    cfgservice.app_logger.debug(f"JWT algorithm: {alg}")
+    logger.debug(f"JWT algorithm: {alg}")
 
     if allowed_algorithms:
         if alg not in allowed_algorithms:
-            cfgservice.app_logger.error(
+            logger.error(
                 f"Algorithm '{alg}' not in allowed list: {allowed_algorithms}"
             )
             raise ValueError(
                 f"Algorithm '{alg}' not allowed. Permitted algorithms: {allowed_algorithms}"
             )
-        cfgservice.app_logger.debug(f"Algorithm '{alg}' is allowed")
+        logger.debug(f"Algorithm '{alg}' is allowed")
     else:
-        cfgservice.app_logger.warning(
+        logger.warning(
             "No algorithm whitelist specified - accepting any algorithm (less secure)"
         )
 
     # Get x5c certificate chain
     x5c_chain = unverified_header.get("x5c")
     if not x5c_chain:
-        cfgservice.app_logger.error("x5c header not found in JWT")
+        logger.error("x5c header not found in JWT")
         raise ValueError("x5c header not found in JWT")
 
     if not isinstance(x5c_chain, list) or len(x5c_chain) == 0:
-        cfgservice.app_logger.error(
+        logger.error(
             f"x5c header must be a non-empty array, got: {type(x5c_chain)}"
         )
         raise ValueError("x5c header must be a non-empty array")
 
-    cfgservice.app_logger.debug(f"x5c chain contains {len(x5c_chain)} certificate(s)")
+    logger.debug(f"x5c chain contains {len(x5c_chain)} certificate(s)")
 
     # Decode and verify the leaf certificate (first in chain)
     try:
         x5c_cert_der = b64url_decode(x5c_chain[0])
-        cfgservice.app_logger.debug(
+        logger.debug(
             f"Decoded certificate from x5c[0], length: {len(x5c_cert_der)} bytes"
         )
     except Exception as e:
-        cfgservice.app_logger.error(f"Failed to decode x5c certificate: {e}")
+        logger.error(f"Failed to decode x5c certificate: {e}")
         raise ValueError(f"Invalid base64 encoding in x5c[0]: {e}")
 
     # Verify certificate against trusted CA (this loads and validates it)
     #verified_certificate = verify_certificate_against_trusted_CA(x5c_cert_der)
 
-    verified = call_trust_validator(
-            url=cfgservice.trust_validator_url,
-            chain=x5c_chain,
-            verification_context="WalletUnitAttestation")
+    if CONFIGURATION["trust_validator"]["enabled"]:
+        verified = call_trust_validator(
+                url=CONFIGURATION["trust_validator"]["url"],
+                chain=x5c_chain,
+                verification_context="WalletUnitAttestation")
+    else:
+        verified = True
 
     if not verified:
-        cfgservice.app_logger.error("Certificate verification failed by trust validator")
+        logger.error("Certificate verification failed by trust validator")
         raise CertificateVerificationError("Certificate verification failed by trust validator")
 
     cert_der = base64.b64decode(x5c_chain[0])
     verified_certificate = x509.load_der_x509_certificate(cert_der)
 
-    cfgservice.app_logger.debug(
+    logger.debug(
         "Successfully extracted and verified public key from x5c"
     )
         

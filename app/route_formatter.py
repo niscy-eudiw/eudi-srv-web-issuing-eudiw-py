@@ -34,14 +34,12 @@ from flask import (
 from validate import validate_mandatory_args, validate_date_format
 from app_config.config_service import ConfService as cfgservice
 from formatter_func import mdocFormatter, sdjwtFormatter
-
-from app_config.config_countries import ConfCountries as cfcountries
-
+from app import CONFIGURATION
 # /formatter blueprint
 formatter = Blueprint("formatter", __name__, url_prefix="/formatter")
 
 # Log
-logger = logging.getLogger()
+logger = logging.getLogger(__name__)
 
 
 # --------------------------------------------------------------------------------------------------------------------------------------
@@ -95,7 +93,7 @@ def cborformatter():
             }
         )
 
-    if request.json["country"] not in cfcountries.supported_countries:
+    if request.json["country"] not in CONFIGURATION["countries"]:
         return jsonify(
             {
                 "error_code": 102,

@@ -41,6 +41,7 @@ from . import oidc_metadata
 from misc import generate_unique_id
 from datetime import datetime, timedelta
 import cbor2
+import logging
 
 """ from app.data_management import (
     oid4vp_requests,
@@ -50,11 +51,12 @@ import jwt
 from cryptography import x509
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives.asymmetric.types import CertificatePublicKeyTypes
-from app_config.config_countries import ConfFrontend
 from app.redirect_func import post_redirect_with_payload
+from app import CONFIGURATION
 
 revocation = Blueprint("revocation", __name__, url_prefix="/revocation")
 
+logger = logging.getLogger(__name__)
 
 # TODO finish revocation pages.
 @revocation.route("revocation_choice", methods=["GET"])
@@ -83,13 +85,13 @@ def revocation_choice():
                 {cred: credential["credential_metadata"]["display"][0]["name"]}
             )
 
-    target_url = ConfFrontend.registered_frontends[cfgservice.default_frontend]["url"]
+    target_url = CONFIGURATION["frontend"]["frontends_config"][CONFIGURATION["frontend"]["default"]]["url"]
 
     return post_redirect_with_payload(
         target_url=f"{target_url}/display_revocation_choice",
         data_payload={
             "cred": credentials,
-            "redirect_url": f"{cfgservice.service_url}revocation/oid4vp_call",
+            "redirect_url": f"{CONFIGURATION['service_url']}/revocation/oid4vp_call",
         },
     )
 
@@ -139,7 +141,8 @@ def oid4vp_call():
     # Final DCQL query
     dcql_query = {"credentials": dcql_credentials}
 
-    url = cfgservice.dynamic_presentation_url
+    url = CONFIGURATION["dynamic_presentation_url"]
+
     payload_cross_device = json.dumps(
         {
             "type": "vp_token",
@@ -155,8 +158,8 @@ def oid4vp_call():
             "nonce": "hiCV7lZi5qAeCy7NFzUWSR4iCfSmRb99HfIvCkPaCLc=",
             "request_uri_method": "post",
             "dcql_query": dcql_query,
-            "wallet_response_redirect_uri_template": cfgservice.service_url
-            + "revocation/getoid4vp?response_code={RESPONSE_CODE}&session_id="
+            "wallet_response_redirect_uri_template": CONFIGURATION["service_url"]
+            + "/revocation/getoid4vp?response_code={RESPONSE_CODE}&session_id="
             + session_id,
         }
     )
@@ -166,11 +169,11 @@ def oid4vp_call():
     }
 
     response_cross = requests.request(
-        "POST", url[:-1], headers=headers, data=payload_cross_device
+        "POST", url, headers=headers, data=payload_cross_device
     ).json()
 
     response_same = requests.request(
-        "POST", url[:-1], headers=headers, data=payload_same_device
+        "POST", url, headers=headers, data=payload_same_device
     ).json()
 
     """ oid4vp_requests.update(
@@ -185,23 +188,8 @@ def oid4vp_call():
 
     domain = urlparse(url).netloc
 
-    deeplink_url = (
-        cfgservice.oid4vp_scheme
-        + domain
-        + "?client_id="
-        + response_same["client_id"]
-        + "&request_uri="
-        + response_same["request_uri"]
-    )
-
-    qr_code_url = (
-        cfgservice.oid4vp_scheme
-        + domain
-        + "?client_id="
-        + response_cross["client_id"]
-        + "&request_uri="
-        + response_cross["request_uri"]
-    )
+    deeplink_url = f"{CONFIGURATION['oid4vp_scheme']}{domain}?client_id={response_same['client_id']}&request_uri={response_same['request_uri']}"
+    qr_code_url = f"{CONFIGURATION['oid4vp_scheme']}{domain}?client_id={response_cross['client_id']}&request_uri={response_cross['request_uri']}"
 
     # Generate QR code
     # img = qrcode.make("uri")
@@ -218,13 +206,13 @@ def oid4vp_call():
         "utf-8"
     )
 
-    target_url = ConfFrontend.registered_frontends[cfgservice.default_frontend]["url"]
+    target_url = CONFIGURATION["frontend"]["frontends_config"][CONFIGURATION["frontend"]["default"]]["url"]
 
     return post_redirect_with_payload(
         target_url=f"{target_url}/display_revocation_qr_code",
         data_payload={
             "url_data": deeplink_url,
-            "redirect_url": cfgservice.service_url,
+            "redirect_url": f"{CONFIGURATION['service_url']}/",
             "qrcode": qr_img_base64,
             "presentation_id": response_cross["transaction_id"],
         },
@@ -388,7 +376,7 @@ def oid4vp_get():
 
     if "response_code" in request.args and "session_id" in request.args:
 
-        cfgservice.app_logger.info(
+        logger.info(
             ", Session ID: " + session_id + ", " + "oid4vp flow: same_device"
         )
 
@@ -398,10 +386,10 @@ def oid4vp_get():
 
         presentation_id = current_session.oid4vp_transaction_id
 
-        url = f"{cfgservice.dynamic_presentation_url}{presentation_id}?nonce=hiCV7lZi5qAeCy7NFzUWSR4iCfSmRb99HfIvCkPaCLc=&response_code={response_code}"
+        url = f"{CONFIGURATION['dynamic_presentation_url']}/{presentation_id}?nonce=hiCV7lZi5qAeCy7NFzUWSR4iCfSmRb99HfIvCkPaCLc=&response_code={response_code}"
 
     elif "presentation_id" in request.args:
-        cfgservice.app_logger.info(
+        logger.info(
             f", Session ID: {session_id}, oid4vp flow: cross_device"
         )
 
@@ -413,7 +401,7 @@ def oid4vp_get():
         if not re.match(r"^[A-Za-z0-9_-]+$", presentation_id):
             raise ValueError("Invalid Presentation id format")
 
-        url = f"{cfgservice.dynamic_presentation_url}{presentation_id}?nonce=hiCV7lZi5qAeCy7NFzUWSR4iCfSmRb99HfIvCkPaCLc="
+        url = f"{CONFIGURATION['dynamic_presentation_url']}/{presentation_id}?nonce=hiCV7lZi5qAeCy7NFzUWSR4iCfSmRb99HfIvCkPaCLc="
 
     else:
         return jsonify({"error": "Missing required parameters"}), 400
@@ -502,20 +490,20 @@ def oid4vp_get():
             revocation_id: {
                 "status_lists": resp,
                 "expires": datetime.now()
-                + timedelta(minutes=cfgservice.revocation_code_expiry),
+                + timedelta(minutes=CONFIGURATION["expiry"]["revocation_code"]),
             }
         }
     )
 
-    target_url = ConfFrontend.registered_frontends[cfgservice.default_frontend]["url"]
+    target_url = CONFIGURATION["frontend"]["frontends_config"][CONFIGURATION["frontend"]["default"]]["url"]
 
     return post_redirect_with_payload(
         target_url=f"{target_url}/display_revocation_authorization",
         data_payload={
             "display_list": display_list,
-            "redirect_url": f"{cfgservice.service_url}revocation/revoke",
+            "redirect_url": f"{CONFIGURATION['service_url']}/revocation/revoke",
             "revocation_identifier": revocation_id,
-            "revocation_choice_url": f"{cfgservice.service_url}revocation/revocation_choice",
+            "revocation_choice_url": f"{CONFIGURATION['service_url']}/revocation/revocation_choice",
         },
     )
 
@@ -535,7 +523,7 @@ def revoke():
 
     headers = {
         "Content-Type": "application/x-www-form-urlencoded",
-        "X-Api-Key": cfgservice.revocation_api_key,
+        "X-Api-Key": CONFIGURATION["revocation"]["api_key"],
     }
 
     for _format in status_lists:
@@ -549,7 +537,7 @@ def revoke():
 
                 try:
                     response = requests.post(
-                        cfgservice.revoke_service_url, headers=headers, data=payload
+                        CONFIGURATION["revocation"]["set_url"], headers=headers, data=payload
                     )
 
                     if response.status_code == 200:
@@ -570,7 +558,7 @@ def revoke():
                 payload = f"uri={quote_plus(uri)}&idx={idx}&status=1"
                 try:
                     response = requests.post(
-                        cfgservice.revoke_service_url, headers=headers, data=payload
+                        CONFIGURATION["revocation"]["set_url"], headers=headers, data=payload
                     )
 
                     if response.status_code == 200:
@@ -586,11 +574,11 @@ def revoke():
 
     revocation_requests.pop(revocation_identifier)
 
-    target_url = ConfFrontend.registered_frontends[cfgservice.default_frontend]["url"]
+    target_url = CONFIGURATION["frontend"]["frontends_config"][CONFIGURATION["frontend"]["default"]]["url"]
 
     return post_redirect_with_payload(
         target_url=f"{target_url}/display_revocation_success",
         data_payload={
-            "redirect_url": cfgservice.service_url,
+            "redirect_url": f"{CONFIGURATION['service_url']}/",
         },
     )

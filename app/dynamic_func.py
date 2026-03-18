@@ -18,8 +18,6 @@
 import datetime
 import json
 from flask import session
-from app_config.config_service import ConfService as cfgserv
-from app_config.config_countries import ConfCountries as cfgcountries
 from misc import (
     calculate_age,
     doctype2credential,
@@ -35,11 +33,11 @@ from misc import (
 from redirect_func import json_post
 import base64
 from flask import session
-from app_config.config_service import ConfService as cfgserv
 from misc import calculate_age
 from redirect_func import json_post
 from app import oidc_metadata
 from app import session_manager
+from app import CONFIGURATION
 from formatter_func import mdocFormatter, sdjwtFormatter
 
 
@@ -51,9 +49,7 @@ def dynamic_formatter(format, scope, form_data, device_publickey, session_id):
         scope == "eu.europa.ec.eudi.mdl_mdoc"
         or scope == "eu.europa.ec.eudi.aamva_mdl_mdoc"
     ):
-        un_distinguishing_sign = cfgcountries.supported_countries[
-            current_session.country
-        ]["un_distinguishing_sign"]
+        un_distinguishing_sign = CONFIGURATION["countries"][current_session.country]["un_distinguishing_sign"]
     else:
         un_distinguishing_sign = ""
 
@@ -73,10 +69,9 @@ def dynamic_formatter(format, scope, form_data, device_publickey, session_id):
             device_publickey=device_publickey,
             session_id=session_id,
         )
-        # url = cfgserv.service_url + "formatter/cbor"
 
     elif format == "dc+sd-jwt":
-        url = cfgserv.service_url + "formatter/sd-jwt"
+        url = CONFIGURATION["service_url"] + "/formatter/sd-jwt"
 
         r = json_post(
             url,
