@@ -55,7 +55,7 @@ def openid4vp():
 
     current_request = session_manager.get_session(session_id=session_id)
 
-    cfgservice.app_logger.info(
+    logger.info(
         ", Session ID: "
         + session_id
         + ", "
@@ -181,7 +181,7 @@ def openid4vp():
 def getpidoid4vp():
 
     if "response_code" in request.args and "session_id" in request.args:
-        cfgservice.app_logger.info(
+        logger.info(
             ", Session ID: " + session["session_id"] + ", " + "oid4vp flow: same_device"
         )
 
@@ -194,7 +194,7 @@ def getpidoid4vp():
         url = f"{CONFIGURATION['dynamic_presentation_url']}/{presentation_id}?nonce=hiCV7lZi5qAeCy7NFzUWSR4iCfSmRb99HfIvCkPaCLc=&response_code={response_code}"
 
     elif "presentation_id" in request.args:
-        cfgservice.app_logger.info(
+        logger.info(
             f", Session ID: {session['session_id']}, oid4vp flow: cross_device"
         )
 
@@ -225,7 +225,7 @@ def getpidoid4vp():
     )
 
     if error == True:
-        cfgservice.app_logger.error(
+        logger.error(
             ", Session ID: " + session_id + ", " + "OID4VP error: " + error_msg
         )
         raise ValueError(f"invalid_request. Session ID: {session_id}")
