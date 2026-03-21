@@ -1321,7 +1321,7 @@ def credentialOffer():
                     out.getvalue()
                 ).decode("utf-8")
 
-                wallet_url = f"{CONFIGURATION.wallet_tester_url}/credential_offer"
+                wallet_url = f"{CONFIGURATION['wallet_tester_url']}/credential_offer"
 
                 if "frontend_id" in session:
                     target_url = CONFIGURATION["frontend"]["frontends_config"][session["frontend_id"]]["url"]
