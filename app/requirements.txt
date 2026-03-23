@@ -28,6 +28,6 @@ concurrent-log-handler
 dotenv
 pytest
 pytest-cov
-PyYAML=6.0.3
+PyYAML==6.0.3
 git+https://github.com/eu-digital-identity-wallet/pyMDOC-CBOR.git
 git+https://github.com/openwallet-foundation-labs/sd-jwt-python.git@v0.10.4-1
