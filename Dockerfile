@@ -18,8 +18,8 @@ RUN pip install --no-cache-dir -r app/requirements.txt
 RUN mkdir -p /etc/eudiw/pid-issuer-dev/cert/ \
     /etc/eudiw/pid-issuer-dev/privKey/ 
     
-ENV FLASK_APP=app
+ENV FLASK_APP="app:create_app"
 
 EXPOSE 5000
 
-CMD ["flask", "run", "--host=0.0.0.0", "--app", "app:create_app"]
+CMD ["flask", "run", "--host=0.0.0.0"]
