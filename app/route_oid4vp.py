@@ -102,7 +102,7 @@ def openid4vp():
             "type": "vp_token",
             "nonce": "hiCV7lZi5qAeCy7NFzUWSR4iCfSmRb99HfIvCkPaCLc=",
             "dcql_query": dcql_query,
-            "request_uri_method": "post",
+            "request_uri_method": "get",
         }
     )
 
@@ -110,10 +110,10 @@ def openid4vp():
         {
             "type": "vp_token",
             "nonce": "hiCV7lZi5qAeCy7NFzUWSR4iCfSmRb99HfIvCkPaCLc=",
-            "request_uri_method": "post",
+            "request_uri_method": "get",
             "dcql_query": dcql_query,
-            "request_uri_method": "post",
-            "dcql_query": dcql_query,
+            "profile": "haip",
+            "authorization_request_uri": "haip-vp://",
             "wallet_response_redirect_uri_template": f"{CONFIGURATION['service_url']}/getpidoid4vp?response_code={{RESPONSE_CODE}}&session_id={session_id}",
         }
     )
