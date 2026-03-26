@@ -24,7 +24,7 @@ segno==1.6.1
 qrcode-artistic==3.0.2
 gunicorn==25.1.0
 Authlib>=1.5.1
-concurrent-log-handler
+concurrent-log-handler==0.9.29
 dotenv
 pytest
 pytest-cov

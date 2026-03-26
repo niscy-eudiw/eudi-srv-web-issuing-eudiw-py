@@ -36,7 +36,7 @@ import base64
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa, ec, ed25519
 from flask_cors import CORS
-from .app_config.config_service import ConfService as cfgservice
+from app import CONFIGURATION
 
 metadata = Blueprint("metadata", __name__, url_prefix="/metadata")
 CORS(metadata)
@@ -114,7 +114,7 @@ def metadata_signer():
             key_file = CONFIGURATION["frontend"]["frontends_config"][issuer_frontend_id]["metadata_signing_key"]
 
             private_key = serialization.load_pem_private_key(
-                key_data,
+                key_file,
                 password=CONFIGURATION["frontend"]["frontends_config"][issuer_frontend_id]["metadata_signing_key_password"],
             )
 

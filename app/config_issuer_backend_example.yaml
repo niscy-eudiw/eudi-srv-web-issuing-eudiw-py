@@ -1,0 +1,379 @@
+# config_issuer_backend.yaml - COMPLETE CONFIGURATION
+# ⚠️ IMPORTANT: This file contains SECRETS - DO NOT commit to git!
+# Add to .gitignore: config_issuer_backend.yaml, config_issuer_backend.*.yaml
+
+# ============================================================================
+# SERVICE CONFIGURATION
+# ============================================================================
+service_url: "https://dev.issuer.eudiw.dev"
+  
+wallet_tester_url: "https://dev.tester.issuer.eudiw.dev"
+
+revocation:
+  take_url: "https://dev.issuer.eudiw.dev/token_status_list/take"
+  set_url: https://dev.issuer.eudiw.dev/token_status_list/set
+  api_key: "test"  # SECRET
+  enabled: true
+
+# ============================================================================
+# FRONTEND CONFIGURATION
+# ============================================================================
+frontend:
+  default: "5d725b3c-6d42-448e-8bfd-1eff1fcf152d"
+  
+  frontends_config:
+    "5d725b3c-6d42-448e-8bfd-1eff1fcf152d":
+      url: "https://ec.dev.issuer.eudiw.dev"
+      metadata_signing_key_path: "/home/pid.issuer/pidprovider/dev/eudi-srv-web-issuing-eudiw-py/app/private/PID-DS-03.key"
+      metadata_access_certificate_path: "/home/pid.issuer/pidprovider/dev/eudi-srv-web-issuing-eudiw-py/app/private/PID-DS-03.crt"
+      metadata_signing_key_password: null
+
+# ============================================================================
+# ISSUER AUTHORIZATION SERVER CONFIGURATION
+# ============================================================================
+
+authorization_server:
+  base_url: "https://backend.issuer.eudiw.dev/oidc"
+  user_verify_endpoint: "https://dev.issuer.eudiw.dev/oidc/verify/user"
+  internal_url: "http://127.0.0.1:6005"
+
+# ============================================================================
+# EXTERNAL SERVICES CONFIGURATION
+# ============================================================================
+
+dynamic_presentation_url: "https://verifier-backend.eudiw.dev/ui/presentations"
+
+trust_validator:  
+  url: "https://dev.trust-validator.eudiw.dev/trust"
+  enabled: true
+
+# ============================================================================
+# SCHEMA CONFIGURATION
+# ============================================================================
+oid4vp_scheme: "haip-vp://"
+
+credential_offer_scheme: "haip-vci://"
+
+
+# ============================================================================
+# LOGGING
+# ============================================================================
+logging:
+  backend_path: "/tmp/log_dev/logs.log"
+  authorization_server_path: "/tmp/oidc_log_dev/logs.log"
+  log_level: "INFO"
+
+# ============================================================================
+# EXPIRY TIMES (minutes)
+# ============================================================================
+expiry:
+  revocation_code: 60
+  form: 60
+  session: 60
+
+# ============================================================================
+# KEY PATHS
+# ============================================================================
+keys:
+  nonce_path: "/etc/eudiw/pid-issuer-dev/privKey/nonce_rsa2048.pem"
+  credential_request_path: "/etc/eudiw/pid-issuer-dev/privKey/credential_request.pem"
+
+trusted_CAs_path: "/etc/eudiw/pid-issuer-dev/cert/"
+
+# ============================================================================
+# CREDENTIALS AUTHENTICATION METHODS CONFIGURATION
+# ============================================================================
+credential_auth_methods:
+  PID_login:
+    - eu.europa.ec.eudi.pseudonym_over18_mdoc
+    - eu.europa.ec.eudi.pseudonym_over18_mdoc_deferred_endpoint
+    - eu.europa.ec.eudi.por_mdoc
+    - eu.europa.ec.eudi.iban_mdoc
+    - eu.europa.ec.eudi.hiid_mdoc
+    - eu.europa.ec.eudi.tax_mdoc
+    - eu.europa.ec.eudi.msisdn_mdoc
+
+  country_selection:
+    - eu.europa.ec.eudi.loyalty_mdoc
+    - eu.europa.ec.eudi.mdl_mdoc
+    - eu.europa.ec.eudi.pid_vc_sd_jwt
+    - eu.europa.ec.eudi.pid_mdoc
+    - eu.europa.ec.eudi.pseudonym_over18_mdoc
+    - eu.europa.ec.eudi.pseudonym_over18_mdoc_deferred_endpoint
+    - eu.europa.ec.eudi.photoid
+    - eu.europa.ec.eudi.por_mdoc
+    - eu.europa.ec.eudi.iban_mdoc
+    - eu.europa.ec.eudi.hiid_mdoc
+    - eu.europa.ec.eudi.tax_mdoc
+    - eu.europa.ec.eudi.msisdn_mdoc
+    - eu.europa.ec.eudi.ehic_mdoc
+    - eu.europa.ec.eudi.pda1_mdoc
+    - eu.europa.ec.eudi.tax_sd_jwt_vc
+    - eu.europa.ec.eudi.por_sd_jwt_vc
+    - eu.europa.ec.eudi.msisdn_sd_jwt_vc
+    - eu.europa.ec.eudi.hiid_sd_jwt_vc
+    - eu.europa.ec.eudi.iban_sd_jwt_vc
+    - eu.europa.ec.eudi.pseudonym_over18_sd_jwt_vc
+    - eu.europa.ec.eudi.cor_mdoc
+    - eu.europa.ec.eudi.pda1_sd_jwt_vc
+    - eu.europa.ec.eudi.ehic_sd_jwt_vc
+    - org.iso.18013.5.1.reservation_mdoc
+    - eu.europa.ec.eudi.seafarer_mdoc
+    - eu.europa.ec.eudi.diploma_vc_sd_jwt
+    - eu.europa.ec.eudi.tax_residency_vc_sd_jwt
+    - eu.europa.ec.eudi.employee_mdoc
+    - eu.europa.ec.eudi.pid_mdoc_deferred
+    - eu.europa.ec.eudi.age_verification_mdoc
+    - eu.europa.ec.eudi.age_verification_mdoc_passport
+    - eu.europa.ec.eudi.learning_credential_vc_sd_jwt
+
+# ============================================================================
+# COUNTRIES CONFIGURATION
+# ============================================================================
+countries:
+  EU:
+    name: "nodeEU"
+
+    # Keys and certificates
+    keys:
+      _default:
+        private_key_path: "/etc/eudiw/pid-issuer-dev/privKey/PID-DS-0002_EU.pem"
+        private_key_password: null 
+        certificate_path: "/etc/eudiw/pid-issuer-dev/cert/PID-DS-0002_EU_cert.der"
+
+    supported_credential_ids:
+      - "eu.europa.ec.eudi.pid_mdoc"
+      - "eu.europa.ec.eudi.pid_vc_sd_jwt"
+      - "eu.europa.ec.eudi.pid_mdoc_deferred"
+    
+    custom_modifiers:
+      _default:
+        family_name: "CurrentFamilyName"
+        given_name: "CurrentGivenName"
+        birth_date: "DateOfBirth"
+    
+    connection_type: "oauth"
+    
+    auth:
+      base_url: "https://eidas.projj.eu"
+      redirect_uri: "https://backend.issuer.eudiw.dev/dynamic/redirect"
+      scope: "profile"
+      response_type: "code"
+      client_id: "example"
+      client_secret: "example"
+
+  FC:
+    name: "FormEU"    
+    keys:
+      _default:
+        private_key_path: "/etc/eudiw/pid-issuer-dev/privKey/PID-DS-0002_UT.pem"
+        private_key_password: null
+        certificate_path: "/etc/eudiw/pid-issuer-dev/cert/PID-DS-0002_UT_cert.der"
+    
+    un_distinguishing_sign: "FC"
+    
+    supported_credential_ids:
+      - "eu.europa.ec.eudi.pid_mdoc"
+      - "eu.europa.ec.eudi.pid_vc_sd_jwt"
+      - "eu.europa.ec.eudi.mdl_mdoc"
+      - "eu.europa.ec.eudi.over18_mdoc"
+      - "eu.europa.ec.eudi.loyalty_mdoc"
+      - "eu.europa.ec.eudi.photoid"
+      - "eu.europa.ec.eudi.por_mdoc"
+      - "eu.europa.ec.eudi.iban_mdoc"
+      - "eu.europa.ec.eudi.hiid_mdoc"
+      - "eu.europa.ec.eudi.tax_mdoc"
+      - "eu.europa.ec.eudi.msisdn_mdoc"
+      - "eu.europa.ec.eudi.pda1_mdoc"
+      - "eu.europa.ec.eudi.tax_sd_jwt_vc"
+      - "eu.europa.ec.eudi.por_sd_jwt_vc"
+      - "eu.europa.ec.eudi.msisdn_sd_jwt_vc"
+      - "eu.europa.ec.eudi.hiid_sd_jwt_vc"
+      - "eu.europa.ec.eudi.iban_sd_jwt_vc"
+      - "eu.europa.ec.eudi.ehic_mdoc"
+      - "eu.europa.ec.eudi.cor_mdoc"
+      - "eu.europa.ec.eudi.ehic_sd_jwt_vc"
+      - "eu.europa.ec.eudi.pda1_sd_jwt_vc"
+      - "org.iso.18013.5.1.reservation_mdoc"
+      - "eu.europa.ec.eudi.seafarer_mdoc"
+      - "eu.europa.ec.eudi.diploma_vc_sd_jwt"
+      - "eu.europa.ec.eudi.tax_residency_vc_sd_jwt"
+      - "eu.europa.ec.eudi.employee_mdoc"
+      - "eu.europa.ec.eudi.pid_mdoc_deferred"
+      - "eu.europa.ec.eudi.learning_credential_vc_sd_jwt"
+
+
+  PT:
+    name: "Portugal"
+    
+    keys:
+      _default:
+        private_key_path: "/etc/eudiw/pid-issuer-dev/privKey/PID-DS-0002_PT.pem"
+        private_key_password: null
+        certificate_path: "/etc/eudiw/pid-issuer-dev/cert/PID-DS-0002_PT_cert.der"
+    
+    un_distinguishing_sign: "P"
+    
+    supported_credential_ids:
+      - "eu.europa.ec.eudi.pid_mdoc"
+      - "eu.europa.ec.eudi.pid_vc_sd_jwt"
+      - "eu.europa.ec.eudi.mdl_mdoc"
+      - "eu.europa.ec.eudi.pid_mdoc_deferred"
+    
+    connection_type: "oauth"
+    
+    custom_modifiers:
+      _default:
+        "http://interop.gov.pt/MDC/Cidadao/DataNascimento": "birth_date"
+        "http://interop.gov.pt/MDC/Cidadao/NomeApelido": "family_name"
+        "http://interop.gov.pt/MDC/Cidadao/NomeProprio": "given_name"
+    
+    auth:
+      base_url: "https://country-connector.ageverification.dev"
+      redirect_uri: "https://backend.issuer.eudiw.dev/dynamic/redirect"
+      scope: "profile"
+      response_type: "code"
+      client_id: "example"
+      client_secret: "example"
+
+  EE:
+    name: "Estonia"
+    
+    keys:
+      _default:
+        private_key_path: "/etc/eudiw/pid-issuer-dev/privKey/PID-DS-0002_EE.pem"
+        private_key_password: null
+        certificate_path: "/etc/eudiw/pid-issuer-dev/cert/PID-DS-0002_EE_cert.der"
+    
+    supported_credential_ids:
+      - "eu.europa.ec.eudi.pid_mdoc"
+      - "eu.europa.ec.eudi.pid_vc_sd_jwt"
+    
+    connection_type: "openid"
+    
+    auth:
+      base_url: "https://tara-test.ria.ee"
+      redirect_uri: "https://pprpid.provider.eudiw.projj.eu/tara/redirect"
+      scope: "openid"
+      response_type: "code"
+      grant_type: "authorization_code"
+      client_id: "eu_europa_ec_eudiw_pid_provider_1_ppr"
+      client_secret: "Basic example=="
+      header: {"Host": "tara-test.ria.ee"}
+
+    custom_modifiers:
+      _default:
+        family_name: "CurrentFamilyName"
+        given_name: "CurrentGivenName"
+        birth_date: "date_of_birth"
+
+  CZ:
+    name: "Czechia"
+
+    keys:
+      _default:
+        private_key_path: "/etc/eudiw/pid-issuer-dev/privKey/PID-DS-0002_CZ.pem"
+        certificate_path: "/etc/eudiw/pid-issuer-dev/cert/PID-DS-0002_CZ_cert.der"
+        
+    supported_credential_ids:
+      - "eu.europa.ec.eudi.pid_mdoc"
+      - "eu.europa.ec.eudi.pid_vc_sd_jwt"
+    
+    custom_modifiers:
+      family_name: "CurrentFamilyName"
+      given_name: "CurrentGivenName"
+      birth_date: "DateOfBirth"
+    
+    connection_type: "oauth"
+    
+    auth:
+      base_url: "https://eidas.projj.eu"
+      redirect_uri: "https://backend.issuer.eudiw.dev/dynamic/redirect"
+      scope: "profile"
+      response_type: "code"
+      client_id: "example"
+      client_secret: "example"
+
+  NL:
+    name: "Netherland"
+    
+    keys:
+      _default:
+        private_key_path: "/etc/eudiw/pid-issuer-dev/privKey/PID-DS-0002_NL.pem"
+        certificate_path: "/etc/eudiw/pid-issuer-dev/cert/PID-DS-0002_NL_cert.der"
+        
+    supported_credential_ids:
+      - "eu.europa.ec.eudi.pid_mdoc"
+      - "eu.europa.ec.eudi.pid_vc_sd_jwt"
+    
+    custom_modifiers:
+      _default:
+        family_name: "CurrentFamilyName"
+        given_name: "CurrentGivenName"
+        birth_date: "DateOfBirth"
+    
+    connection_type: "oauth"
+    
+    oauth_auth:
+      base_url: "https://eidas.projj.eu"
+      redirect_uri: "https://backend.issuer.eudiw.dev/dynamic/redirect"
+      scope: "profile"
+      response_type: "code"
+      client_id: "example"
+      client_secret: "example"
+
+  LU:
+    name: "Luxembourg"    
+    keys:
+      _default:
+        private_key_path: "/etc/eudiw/pid-issuer-dev/privKey/PID-DS-0002_LU.pem"
+        certificate_path: "/etc/eudiw/pid-issuer-dev/cert/PID-DS-0002_LU_cert.der"
+        
+    supported_credential_ids:
+      - "eu.europa.ec.eudi.pid_mdoc"
+      - "eu.europa.ec.eudi.pid_vc_sd_jwt"
+    
+    custom_modifiers:
+      _default:
+        family_name: "CurrentFamilyName"
+        given_name: "CurrentGivenName"
+        birth_date: "DateOfBirth"
+    
+    connection_type: "oauth"
+    
+    auth:
+      base_url: "https://eidas.projj.eu"
+      redirect_uri: "https://backend.issuer.eudiw.dev/dynamic/redirect"
+      scope: "profile"
+      response_type: "code"
+      client_id: "example"
+      client_secret: "example"
+
+  AV:
+    name: "Trusted Issuer"
+    
+    keys:
+      _default:
+        private_key_path: "/etc/eudiw/age_verification/privKey/AgeVerificationDS-001.pem"
+        certificate_path: "/etc/eudiw/age_verification/cert/AgeVerificationDS-001_cert.der"
+    
+    un_distinguishing_sign: "AV"
+    
+    supported_credential_ids:
+      - "eu.europa.ec.eudi.age_verification_mdoc"
+      - "eu.europa.ec.eudi.age_verification_mdoc_passport"
+    
+  AV2:
+    name: "Non-Trusted Issuer"
+    
+    keys:
+      _default:
+        private_key_path: "/etc/eudiw/age_verification/privKey/bak/AgeVerificationDS-001.pem"
+        certificate_path: "/etc/eudiw/age_verification/cert/bak/AgeVerificationDS-001_cert.der"
+    
+    un_distinguishing_sign: "AV"
+    
+    supported_credential_ids:
+      - "eu.europa.ec.eudi.age_verification_mdoc"
+      - "eu.europa.ec.eudi.pid_mdoc"
+    
