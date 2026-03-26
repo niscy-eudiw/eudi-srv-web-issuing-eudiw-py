@@ -12,6 +12,7 @@ RUN apt-get update && apt-get install -y \
     python3-dev \
     ca-certificates \
     git \
+    pkg-config \
     && rm -rf /var/lib/apt/lists/*
 
 RUN python -m pip install --upgrade pip
