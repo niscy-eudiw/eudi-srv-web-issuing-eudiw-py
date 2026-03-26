@@ -7,6 +7,8 @@ COPY . .
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     build-essential \
+    python3-dev \
+    libffi-dev \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
