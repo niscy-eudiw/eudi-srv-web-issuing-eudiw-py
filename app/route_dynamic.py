@@ -38,7 +38,7 @@ from flask import (
     request,
     session,
 )
-from flask_api import status
+from http import HTTPStatus
 from flask_cors import CORS
 import requests
 
@@ -1163,7 +1163,7 @@ def Dynamic_form():
         ):  # someone is trying to connect directly to this endpoint
             return (
                 "Error 101: " + cfgserv.error_list["101"] + "\n",
-                status.HTTP_400_BAD_REQUEST,
+                HTTPStatus.BAD_REQUEST,
             )
 
     # if submitted form is valid
