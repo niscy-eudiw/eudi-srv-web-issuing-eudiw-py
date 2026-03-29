@@ -265,6 +265,8 @@ def _build_credential_encryption_metadata(key_bytes: bytes) -> dict:
         .decode()
     )
 
+    logger.info("credential_request_encryption metadata built successfully (kid=%s, crv=P-256)", kid)
+    
     return {
         "jwks": {
             "keys": [
@@ -350,12 +352,6 @@ def setup_metadata():
         oidc_metadata_clean["credential_configurations_supported"]
     )
 
-    oidc_metadata_clean["credential_request_encryption"] = (
-        _build_credential_encryption_metadata(
-            CONFIGURATION["keys"]["credential_encryption_key"]
-        )
-    )
-
     old_domain = oidc_metadata["credential_issuer"]
 
     new_domain = CONFIGURATION["service_url"]
@@ -372,6 +368,16 @@ def setup_metadata():
     oidc_metadata = cast(
         Dict[str, Any], replace_domain(oidc_metadata, old_domain, new_domain)
     )
+
+    logger.info("Setting up credential_request_encryption in oidc_metadata_clean")
+    try:
+        oidc_metadata_clean["credential_request_encryption"] = _build_credential_encryption_metadata(
+            CONFIGURATION["keys"]["credential_encryption_key"]
+        )
+        logger.info("credential_request_encryption successfully added to oidc_metadata_clean")
+    except Exception as e:
+        logger.exception("Failed to build credential_request_encryption metadata: %s", e)
+        raise
 
 
 def setup_trusted_cas():
