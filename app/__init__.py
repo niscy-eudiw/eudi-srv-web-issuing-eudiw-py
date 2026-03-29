@@ -226,6 +226,8 @@ def fix_key_attestations(data):
 
     return data
 
+import base64
+import hashlib
 from cryptography.hazmat.primitives.serialization import load_pem_private_key
 
 def _build_credential_encryption_metadata(key_bytes: bytes) -> dict:
