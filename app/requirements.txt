@@ -13,7 +13,7 @@ validators==0.34.0
 Flask-Session==0.8.0
 jsonschema==4.26.0
 werkzeug==3.1.6
-pycose==1.1.0
+pycose==1.0.1
 cwt==2.3.2
 pyjwt==2.12.1
 schedule==1.2.1
