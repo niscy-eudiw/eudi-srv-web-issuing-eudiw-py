@@ -266,7 +266,7 @@ def _build_credential_encryption_metadata(key_bytes: bytes) -> dict:
     )
 
     logger.info("credential_request_encryption metadata built successfully (kid=%s, crv=P-256)", kid)
-    
+
     return {
         "jwks": {
             "keys": [
@@ -374,7 +374,7 @@ def setup_metadata():
         oidc_metadata_clean["credential_request_encryption"] = _build_credential_encryption_metadata(
             CONFIGURATION["keys"]["credential_encryption_key"]
         )
-        logger.info("credential_request_encryption successfully added to oidc_metadata_clean")
+        logger.info("credential_request_encryption: %s", json.dumps(oidc_metadata_clean["credential_request_encryption"], indent=2))
     except Exception as e:
         logger.exception("Failed to build credential_request_encryption metadata: %s", e)
         raise
