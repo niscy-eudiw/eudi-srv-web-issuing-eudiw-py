@@ -226,6 +226,66 @@ def fix_key_attestations(data):
 
     return data
 
+from cryptography.hazmat.primitives.serialization import load_pem_private_key
+
+def _build_credential_encryption_metadata(key_bytes: bytes) -> dict:
+    """
+    Build the credential_request_encryption block from a PEM-encoded
+    EC private key. Only the public coordinates are exposed in the JWK.
+    The kid is the RFC 7638 JWK Thumbprint (SHA-256).
+    """
+    private_key = load_pem_private_key(key_bytes, password=None)
+
+    if not isinstance(private_key, ec.EllipticCurvePrivateKey):
+        raise ValueError("credential_encryption_key must be a P-256 EC private key")
+
+    nums = private_key.public_key().public_numbers()
+    key_size = (private_key.key_size + 7) // 8
+
+    def _b64url(n: int) -> str:
+        return (
+            base64.urlsafe_b64encode(n.to_bytes(key_size, "big"))
+            .rstrip(b"=")
+            .decode()
+        )
+
+    x_b64 = _b64url(nums.x)
+    y_b64 = _b64url(nums.y)
+
+    thumbprint_json = json.dumps(
+        {"crv": "P-256", "kty": "EC", "x": x_b64, "y": y_b64},
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode()
+    kid = (
+        base64.urlsafe_b64encode(hashlib.sha256(thumbprint_json).digest())
+        .rstrip(b"=")
+        .decode()
+    )
+
+    return {
+        "jwks": {
+            "keys": [
+                {
+                    "kty": "EC",
+                    "use": "enc",
+                    "alg": "ECDH-ES",
+                    "crv": "P-256",
+                    "x": x_b64,
+                    "y": y_b64,
+                    "kid": kid,
+                }
+            ]
+        },
+        "enc_values_supported": [
+            "A128GCM",
+            "A256GCM",
+            "A128CBC-HS256",
+            "A256CBC-HS512",
+            "ECDH-ES",
+        ],
+        "encryption_required": False,
+    }
 
 def setup_metadata():
     global oidc_metadata
@@ -286,6 +346,12 @@ def setup_metadata():
 
     oidc_metadata_clean["credential_configurations_supported"] = fix_key_attestations(
         oidc_metadata_clean["credential_configurations_supported"]
+    )
+
+    oidc_metadata_clean["credential_request_encryption"] = (
+        _build_credential_encryption_metadata(
+            CONFIGURATION["keys"]["credential_encryption_key"]
+        )
     )
 
     old_domain = oidc_metadata["credential_issuer"]
