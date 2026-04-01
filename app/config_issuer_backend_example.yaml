@@ -35,14 +35,14 @@ frontend:
 authorization_server:
   base_url: "https://backend.issuer.eudiw.dev/oidc"
   user_verify_endpoint: "https://issuer.eudiw.dev/oidc/verify/user"
-  internal_url: "http://127.0.0.1:6005"
 
 # ============================================================================
 # EXTERNAL SERVICES CONFIGURATION
 # ============================================================================
-
+#verifier url for oid4vp request generation, available at https://github.com/eu-digital-identity-wallet/eudi-srv-verifier-endpoint
 dynamic_presentation_url: "https://verifier-backend.eudiw.dev/ui/presentations"
 
+# WUA trust validator url, available at https://github.com/eu-digital-identity-wallet/eudi-srv-trust-validator
 trust_validator:  
   url: "https://trust-validator.eudiw.dev/trust"
   enabled: true
@@ -54,13 +54,11 @@ oid4vp_scheme: "haip-vp://"
 
 credential_offer_scheme: "haip-vci://"
 
-
 # ============================================================================
 # LOGGING
 # ============================================================================
 logging:
-  backend_path: "/tmp/log_dev/logs.log"
-  authorization_server_path: "/tmp/oidc_log_dev/logs.log"
+  backend_path: "/tmp/log_prod/logs.log"
   log_level: "INFO"
 
 # ============================================================================
@@ -75,9 +73,10 @@ expiry:
 # KEY PATHS
 # ============================================================================
 keys:
-  nonce_path: "/etc/eudiw/pid-issuer-dev/privKey/nonce_rsa2048.pem"
-  credential_request_path: "/etc/eudiw/pid-issuer-dev/privKey/credential_request.pem"
+  nonce_path: "/etc/eudiw/pid-issuer-dev/privKey/nonce_rsa2048.pem" # Private key that signs the nonce at the nonce enpoint. 
+  credential_request_path: "/etc/eudiw/pid-issuer-dev/privKey/credential_request.pem" # Private key used for credential request encryption. Metadata advertised public key is automatically generated from this private key.
 
+# Path to trusted CA certificates, used to validate VP_Tokens
 trusted_CAs_path: "/etc/eudiw/pid-issuer-dev/cert/"
 
 # ============================================================================
@@ -130,6 +129,11 @@ credential_auth_methods:
 # ============================================================================
 # COUNTRIES CONFIGURATION
 # ============================================================================
+
+# Currently only _default is supported for both keys and custom_modifiers
+# Eventually keys will be separated by frontend and custom_modifiers per credential_configuration_id
+# Connection types supported: oauth or openid
+
 countries:
   EU:
     name: "nodeEU"
@@ -259,121 +263,11 @@ countries:
       grant_type: "authorization_code"
       client_id: "eu_europa_ec_eudiw_pid_provider_1_ppr"
       client_secret: "Basic example=="
-      header: {"Host": "tara-test.ria.ee"}
+      authorization_headers: {"Host": "tara-test.ria.ee"}
+      token_endpoint_headers: {"Host": "tara-test.ria.ee", "Content-Type": "application/x-www-form-urlencoded"}
 
     custom_modifiers:
       _default:
         family_name: "CurrentFamilyName"
         given_name: "CurrentGivenName"
         birth_date: "date_of_birth"
-
-  CZ:
-    name: "Czechia"
-
-    keys:
-      _default:
-        private_key_path: "/etc/eudiw/pid-issuer-dev/privKey/PID-DS-0002_CZ.pem"
-        certificate_path: "/etc/eudiw/pid-issuer-dev/cert/PID-DS-0002_CZ_cert.der"
-        
-    supported_credential_ids:
-      - "eu.europa.ec.eudi.pid_mdoc"
-      - "eu.europa.ec.eudi.pid_vc_sd_jwt"
-    
-    custom_modifiers:
-      family_name: "CurrentFamilyName"
-      given_name: "CurrentGivenName"
-      birth_date: "DateOfBirth"
-    
-    connection_type: "oauth"
-    
-    auth:
-      base_url: "https://eidas.projj.eu"
-      redirect_uri: "https://backend.issuer.eudiw.dev/dynamic/redirect"
-      scope: "profile"
-      response_type: "code"
-      client_id: "example"
-      client_secret: "example"
-
-  NL:
-    name: "Netherland"
-    
-    keys:
-      _default:
-        private_key_path: "/etc/eudiw/pid-issuer-dev/privKey/PID-DS-0002_NL.pem"
-        certificate_path: "/etc/eudiw/pid-issuer-dev/cert/PID-DS-0002_NL_cert.der"
-        
-    supported_credential_ids:
-      - "eu.europa.ec.eudi.pid_mdoc"
-      - "eu.europa.ec.eudi.pid_vc_sd_jwt"
-    
-    custom_modifiers:
-      _default:
-        family_name: "CurrentFamilyName"
-        given_name: "CurrentGivenName"
-        birth_date: "DateOfBirth"
-    
-    connection_type: "oauth"
-    
-    oauth_auth:
-      base_url: "https://eidas.projj.eu"
-      redirect_uri: "https://backend.issuer.eudiw.dev/dynamic/redirect"
-      scope: "profile"
-      response_type: "code"
-      client_id: "example"
-      client_secret: "example"
-
-  LU:
-    name: "Luxembourg"    
-    keys:
-      _default:
-        private_key_path: "/etc/eudiw/pid-issuer-dev/privKey/PID-DS-0002_LU.pem"
-        certificate_path: "/etc/eudiw/pid-issuer-dev/cert/PID-DS-0002_LU_cert.der"
-        
-    supported_credential_ids:
-      - "eu.europa.ec.eudi.pid_mdoc"
-      - "eu.europa.ec.eudi.pid_vc_sd_jwt"
-    
-    custom_modifiers:
-      _default:
-        family_name: "CurrentFamilyName"
-        given_name: "CurrentGivenName"
-        birth_date: "DateOfBirth"
-    
-    connection_type: "oauth"
-    
-    auth:
-      base_url: "https://eidas.projj.eu"
-      redirect_uri: "https://backend.issuer.eudiw.dev/dynamic/redirect"
-      scope: "profile"
-      response_type: "code"
-      client_id: "example"
-      client_secret: "example"
-
-  AV:
-    name: "Trusted Issuer"
-    
-    keys:
-      _default:
-        private_key_path: "/etc/eudiw/age_verification/privKey/AgeVerificationDS-001.pem"
-        certificate_path: "/etc/eudiw/age_verification/cert/AgeVerificationDS-001_cert.der"
-    
-    un_distinguishing_sign: "AV"
-    
-    supported_credential_ids:
-      - "eu.europa.ec.eudi.age_verification_mdoc"
-      - "eu.europa.ec.eudi.age_verification_mdoc_passport"
-    
-  AV2:
-    name: "Non-Trusted Issuer"
-    
-    keys:
-      _default:
-        private_key_path: "/etc/eudiw/age_verification/privKey/bak/AgeVerificationDS-001.pem"
-        certificate_path: "/etc/eudiw/age_verification/cert/bak/AgeVerificationDS-001_cert.der"
-    
-    un_distinguishing_sign: "AV"
-    
-    supported_credential_ids:
-      - "eu.europa.ec.eudi.age_verification_mdoc"
-      - "eu.europa.ec.eudi.pid_mdoc"
-    
