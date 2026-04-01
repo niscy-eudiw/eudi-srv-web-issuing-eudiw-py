@@ -80,37 +80,6 @@ from app import CONFIGURATION
 
 logger = logging.getLogger(__name__)
 
-
-@oidc.route("/.well-known/oauth-authorization-server/oidc")
-def well_known2():
-    info = {
-        "response": openid_metadata,
-        "http_headers": [
-            ("Content-type", "application/json"),
-            ("Pragma", "no-cache"),
-            ("Cache-Control", "no-store"),
-        ],
-    }
-
-    _http_response_code = info.get("response_code", 200)
-    resp = make_response(info["response"], _http_response_code)
-
-    for key, value in info["http_headers"]:
-        resp.headers[key] = value
-
-    return resp
-
-
-@oidc.route("/.well-known/oauth-authorization-server/frontend")
-def well_known3():
-    url = "https://dev.issuer.eudiw.dev/frontend/.well-known/oauth-authorization-server"
-    r = requests.get(url)
-
-    return Response(
-        r.content, status=r.status_code, content_type=r.headers.get("Content-Type")
-    )
-
-
 @oidc.route("/.well-known/<service>")
 def well_known(service):
     if service == "openid-credential-issuer":
@@ -214,7 +183,7 @@ def auth_choice():
 
             authorization_details = json.loads(json.loads(decoded_string))
         except json.JSONDecodeError as e:
-            print(f"Error parsing authorization_details JSON: {e}")
+            logger.error(f"Error parsing authorization_details JSON: {e}")
             return jsonify({"error": "Invalid authorization_details parameter"}), 400
 
     credential_configuration_id = None
@@ -343,14 +312,14 @@ def verify_introspection(bearer_token):
 
     except requests.exceptions.RequestException as e:
         # Error 4: Network or HTTP-level error during introspection call
-        print(f"An error occurred during introspection request: {e}")
+        logger.error(f"An error occurred during introspection request: {e}")
         return (
             jsonify({"error": "Failed to validate token with the issuer."}),
             502,
         )  # 502 Bad Gateway is appropriate here
     except json.JSONDecodeError:
         # Error 5: Malformed JSON from the introspection endpoint
-        print("Failed to decode JSON from introspection response.")
+        logger.error("Failed to decode JSON from introspection response.")
         return (
             jsonify({"error": "Invalid response from the introspection endpoint."}),
             502,
@@ -366,7 +335,7 @@ def verify_introspection(bearer_token):
 
     if not username:
         # Error 7: Missing username in introspection response
-        print("Token is active but missing username.")
+        logger.error("Token is active but missing username.")
         return (
             jsonify({"error": "invalid_token"}),
             401,
@@ -584,8 +553,6 @@ def generate_credentials(credential_request, session_id):
 def encrypt_response(credential_request, credential_response):
     encryption_config = credential_request.get("credential_response_encryption", {})
 
-    print("\nencryption_config\n", encryption_config)
-
     if not encryption_config or not all(k in encryption_config for k in ["jwk", "enc"]):
         return make_response(
             jsonify(
@@ -659,8 +626,6 @@ def decrypt_jwe_credential_request(jwt_token):
             pem_private_key = key_file.read() """
         
         pem_private_key = CONFIGURATION["keys"]["credential_encryption_key"]
-
-        print("\npem_private_key\n", pem_private_key)
 
         private_key = jwk.JWK.from_pem(pem_private_key)
 

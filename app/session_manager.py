@@ -232,7 +232,7 @@ class SessionManager:
 
         with self._sessions_lock:
             self._sessions[session_id] = session_obj
-            print(
+            logger.info(
                 f"Added session with session_id: {session_id} (Expires: {expiry_time.isoformat()})"
             )
         return session_obj
@@ -245,9 +245,9 @@ class SessionManager:
             session_obj = self._sessions.get(session_id)
             if session_obj:
                 session_obj.country = country
-                print(f"Updated country for session_id {session_id} to: {country}")
+                logger.info(f"Updated country for session_id {session_id} to: {country}")
             else:
-                print(
+                logger.info(
                     f"Warning: Attempted to update country for non-existent session_id: {session_id}"
                 )
 
@@ -259,9 +259,9 @@ class SessionManager:
             session_obj = self._sessions.get(session_id)
             if session_obj:
                 session_obj.user_data = user_data
-                print(f"Updated user_data for session_id {session_id}")
+                logger.info(f"Updated user_data for session_id {session_id}")
             else:
-                print(
+                logger.info(
                     f"Warning: Attempted to update user_data for non-existent session_id: {session_id}"
                 )
 
@@ -275,9 +275,9 @@ class SessionManager:
             session_obj = self._sessions.get(session_id)
             if session_obj:
                 session_obj.authorization_details = authorization_details
-                print(f"Updated authorization_details for session_id {session_id}")
+                logger.info(f"Updated authorization_details for session_id {session_id}")
             else:
-                print(
+                logger.info(
                     f"Warning: Attempted to update authorization_details for non-existent session_id: {session_id}"
                 )
 
@@ -291,9 +291,9 @@ class SessionManager:
             session_obj = self._sessions.get(session_id)
             if session_obj:
                 session_obj.credentials_requested = credentials_requested
-                print(f"Updated credentials_requested for session_id {session_id}")
+                logger.info(f"Updated credentials_requested for session_id {session_id}")
             else:
-                print(
+                logger.info(
                     f"Warning: Attempted to update credentials_requested for non-existent session_id: {session_id}"
                 )
 
@@ -313,11 +313,11 @@ class SessionManager:
 
                 session_obj.pre_authorized_code = pre_authorized_code
                 self._sessions_by_preauth_code[pre_authorized_code] = session_obj
-                print(
+                logger.info(
                     f"Updated pre_authorized_code for session_id {session_id} to: {pre_authorized_code}"
                 )
             else:
-                print(
+                logger.info(
                     f"Warning: Attempted to update pre_authorized_code for non-existent session_id: {session_id}"
                 )
 
@@ -343,11 +343,11 @@ class SessionManager:
                 self._sessions_by_preauth_code_ref[pre_authorized_code_ref] = (
                     session_obj
                 )
-                print(
+                logger.info(
                     f"Updated pre_authorized_code_ref for session_id {session_id} to: {pre_authorized_code_ref}"
                 )
             else:
-                print(
+                logger.info(
                     f"Warning: Attempted to update pre_authorized_code_ref for non-existent session_id: {session_id}"
                 )
 
@@ -359,9 +359,9 @@ class SessionManager:
             session_obj = self._sessions.get(session_id)
             if session_obj:
                 session_obj.jws_token = jws_token
-                print(f"Updated jws_token for session_id {session_id}")
+                logger.info(f"Updated jws_token for session_id {session_id}")
             else:
-                print(
+                logger.info(
                     f"Warning: Attempted to update jws_token for non-existent session_id: {session_id}"
                 )
 
@@ -373,11 +373,11 @@ class SessionManager:
             session_obj = self._sessions.get(session_id)
             if session_obj:
                 session_obj.frontend_id = frontend_id
-                print(
+                logger.info(
                     f"Updated frontend_id for session_id {session_id} to: {frontend_id}"
                 )
             else:
-                print(
+                logger.info(
                     f"Warning: Attempted to update frontend_id for non-existent session_id: {session_id}"
                 )
 
@@ -389,9 +389,9 @@ class SessionManager:
             session_obj = self._sessions.get(session_id)
             if session_obj:
                 session_obj.tx_code = tx_code
-                print(f"Updated tx_code for session_id {session_id} to: {tx_code}")
+                logger.info(f"Updated tx_code for session_id {session_id} to: {tx_code}")
             else:
-                print(
+                logger.info(
                     f"Warning: Attempted to update tx_code for non-existent session_id: {session_id}"
                 )
 
@@ -403,11 +403,11 @@ class SessionManager:
             session_obj = self._sessions.get(session_id)
             if session_obj:
                 session_obj.is_batch_credential = is_batch_credential
-                print(
+                logger.info(
                     f"Updated is_batch_credential for session_id {session_id} to: {is_batch_credential}"
                 )
             else:
-                print(
+                logger.info(
                     f"Warning: Attempted to update is_batch_credential for non-existent session_id: {session_id}"
                 )
 
@@ -419,11 +419,11 @@ class SessionManager:
             session_obj = self._sessions.get(session_id)
             if session_obj:
                 session_obj.oid4vp_transaction_id = oid4vp_transaction_id
-                print(
+                logger.info(
                     f"Updated oid4vp_transaction_id for session_id {session_id} to: {oid4vp_transaction_id}"
                 )
             else:
-                print(
+                logger.info(
                     f"Warning: Attempted to update oid4vp_transaction_id for non-existent session_id: {session_id}"
                 )
 
@@ -439,12 +439,12 @@ class SessionManager:
             if session_obj:
                 session_obj.transaction_id[transaction_id] = credential_request
                 self._sessions_by_transaction_id[transaction_id] = session_obj
-                print(
+                logger.info(
                     f"Added transaction_id '{transaction_id}' "
                     f"to session_id '{session_id}'."
                 )
             else:
-                print(
+                logger.info(
                     f"Warning: Attempted to add transaction ID for non-existent session_id: {session_id}"
                 )
 
@@ -457,12 +457,12 @@ class SessionManager:
             if session_obj:
                 session_obj.notification_ids.append(notification_id)
                 self._sessions_by_notification_id[notification_id] = session_obj
-                print(
+                logger.info(
                     f"Added notification_id '{notification_id}' "
                     f"to session_id '{session_id}'."
                 )
             else:
-                print(
+                logger.info(
                     f"Warning: Attempted to add notification ID for non-existent session_id: {session_id}"
                 )
 
@@ -475,7 +475,7 @@ class SessionManager:
             if session_obj and not self.is_expired(session_obj):
                 return session_obj
             elif session_obj and self.is_expired(session_obj):
-                print(
+                logger.info(
                     f"Session with session_id {session_id} found but has expired. Removing."
                 )
                 self._remove_session_from_all_managers(session_obj)
@@ -492,7 +492,7 @@ class SessionManager:
             if session_obj and not self.is_expired(session_obj):
                 return session_obj
             elif session_obj and self.is_expired(session_obj):
-                print(
+                logger.info(
                     f"Session with pre_authorized_code {pre_authorized_code} found but has expired. Removing."
                 )
                 self._remove_session_from_all_managers(session_obj)
@@ -511,7 +511,7 @@ class SessionManager:
             if session_obj and not self.is_expired(session_obj):
                 return session_obj
             elif session_obj and self.is_expired(session_obj):
-                print(
+                logger.info(
                     f"Session with pre_authorized_code_ref {pre_authorized_code_ref} found but has expired. Removing."
                 )
                 self._remove_session_from_all_managers(session_obj)
@@ -526,7 +526,7 @@ class SessionManager:
             if session_obj and not self.is_expired(session_obj):
                 return session_obj
             elif session_obj and self.is_expired(session_obj):
-                print(
+                logger.info(
                     f"Session with transaction_id {transaction_id} found but has expired. Removing."
                 )
                 self._remove_session_from_all_managers(session_obj)
@@ -541,7 +541,7 @@ class SessionManager:
             if session_obj and not self.is_expired(session_obj):
                 return session_obj
             elif session_obj and self.is_expired(session_obj):
-                print(
+                logger.info(
                     f"Session with notification_id {notification_id} found but has expired. Removing."
                 )
                 self._remove_session_from_all_managers(session_obj)
@@ -580,7 +580,7 @@ class SessionManager:
             for notif_id in session_obj.notification_ids:
                 if notif_id in self._sessions_by_notification_id:
                     del self._sessions_by_notification_id[notif_id]
-            print(f"Removed all references for session_id: {session_obj.session_id}")
+            logger.info(f"Removed all references for session_id: {session_obj.session_id}")
 
     def clean_expired_sessions(self):
         """
@@ -594,15 +594,15 @@ class SessionManager:
             ]
             for session_id in expired_session_ids:
                 session_obj = self._sessions[session_id]
-                print(
+                logger.info(
                     f"Cleaning up expired session: {session_id} (Pre-auth Code: {session_obj.pre_authorized_code})"
                 )
                 self._remove_session_from_all_managers(session_obj)
 
             if expired_session_ids:
-                print(f"Cleaned up {len(expired_session_ids)} expired sessions.")
+                logger.info(f"Cleaned up {len(expired_session_ids)} expired sessions.")
             else:
-                print("No expired sessions to clean up.")
+                logger.info("No expired sessions to clean up.")
 
     def get_active_sessions_count(self) -> int:
         """

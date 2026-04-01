@@ -253,23 +253,28 @@ def dynamic_R1(country):
 
         authorization_endpoint = metadata_json["authorization_endpoint"]
 
-        url = authorization_endpoint + "?redirect_uri=" + country_data["redirect_uri"]
-
-        if country == "EE":
-            country_data["state"] = country + "." + current_session.jws_token
-
-        for url_part in country_data:
-            if (
-                url_part == "url"
-                or url_part == "redirect_uri"
-                or url_part == "base_url"
-            ):
-                pass
-            else:
-                url = url + "&" + url_part + "=" + country_data[url_part]
+        url = f"{authorization_endpoint}?redirect_uri={country_data['redirect_uri']}&scope={country_data['scope']}&state={current_session.session_id}&response_type={country_data['response_type']}&client_id={country_data['client_id']}"
 
         return redirect(url)
 
+
+def get_metadata(base_url):
+    urls = [
+        f"{base_url}/.well-known/oauth-authorization-server",
+        f"{base_url}/.well-known/openid-configuration",
+    ]
+
+    for url in urls:
+        try:
+            res = requests.get(url, timeout=5)
+            if res.status_code == 200:
+                data = res.json()
+                if "token_endpoint" in data:
+                    return data
+        except Exception as e:
+            logger.error(f"Metadata fetch failed for {url}: {e}")
+
+    raise ValueError("No valid OAuth/OIDC metadata found")
 
 @dynamic.route("/redirect", methods=["GET", "POST"])
 def red():
@@ -295,46 +300,35 @@ def red():
 
     country_config = CONFIGURATION["countries"][current_session.country]
 
-    metadata_url = (
-        country_config["auth"]["base_url"]
-        + "/.well-known/oauth-authorization-server"
-    )
-
-    metadata_json = requests.get(metadata_url).json()
+    metadata_json = get_metadata(country_config["auth"]["base_url"])
 
     token_endpoint = metadata_json["token_endpoint"]
 
-    token_endpoint_headers = {}
+    token_endpoint_headers = country_config["auth"].get("token_endpoint_headers", {}).copy()
 
-    if (
-        "token_endpoint" in country_config["auth"]
-        and "header" in country_config["auth"]["token_endpoint"]
-    ):
-        token_endpoint_headers = country_config["auth"]["token_endpoint"][
-            "headers"
-        ]
+    if "auth" not in country_config:
+        raise ValueError("Missing 'auth' configuration for country")
 
-    if (
-        "auth" in country_config
-        and "client_id" in country_config["auth"]
-        and "client_secret" in country_config["auth"]
-    ):
-        auth_string = f"{country_config['auth']['client_id']}:{country_config['auth']['client_secret']}"
-        encoded_auth = base64.b64encode(auth_string.encode("utf-8")).decode("utf-8")
+    auth = country_config["auth"]
 
-        token_endpoint_headers["Authorization"] = f"Basic {encoded_auth}"
 
-    data = f"code={request.args.get('code')}"
+    client_id = auth.get("client_id")
+    client_secret = auth.get("client_secret")
 
-    print("\ntoken_endpoint_headers", token_endpoint_headers, flush=True)
+    if not client_id or not client_secret:
+        raise ValueError("Missing client_id or client_secret in auth config")
+
+    if client_secret.startswith("Basic "):
+        token_endpoint_headers["Authorization"] = client_secret
+    else:
+        encoded = base64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
+        token_endpoint_headers["Authorization"] = f"Basic {encoded}"
 
     params = {
         "grant_type": "authorization_code",
         "code": auth_code,
         "redirect_uri": country_config["auth"]["redirect_uri"],
-    }
-
-    print("\nparams", params, flush=True)
+    }  
 
     try:
         response = requests.post(
@@ -345,11 +339,10 @@ def red():
 
         response.raise_for_status()
         token_data = response.json()
-
         access_token = token_data.get("access_token")
 
     except requests.exceptions.RequestException as e:
-        print(f"An error occurred: {e}")
+        logger.error(f"An error occurred: {e}")
 
     session["access_token"] = access_token
 
@@ -456,8 +449,6 @@ def red():
 
     target_url = CONFIGURATION["frontend"]["frontends_config"][current_session.frontend_id]["url"]
 
-    print("\npresentation_data", presentation_data, flush=True)
-
     return post_redirect_with_payload(
         target_url=f"{target_url}/display_authorization",
         data_payload={
@@ -536,16 +527,6 @@ def dynamic_R2_data_collect(country, session_id, access_token):
 
         return data
 
-    if country == "sample":
-        """if data == "Data not found":
-        return {"error": "error", "error_description": "Data not found"}"""
-
-        current_session = session_manager.get_session(session_id=session_id)
-
-        data = current_session.user_data
-
-        return data
-
     elif CONFIGURATION["countries"][country]["connection_type"] == "oauth":
 
         metadata_url = (
@@ -566,12 +547,8 @@ def dynamic_R2_data_collect(country, session_id, access_token):
 
             user_data = response.json()
 
-            print("\nuser_data", user_data)
-
         except requests.exceptions.RequestException as e:
-            print(f"An error occurred while fetching user data: {e}")
-            if response:
-                print("Response Body:", response.text)
+            logger.error(f"An error occurred while fetching user data: {e}")
 
         cleaned_user_data = {}
 
@@ -626,23 +603,17 @@ def dynamic_R2_data_collect(country, session_id, access_token):
 
     elif CONFIGURATION["countries"][country]["connection_type"] == "openid":
 
-        metadata_url = (
-            CONFIGURATION["countries"][session["country"]]["auth"][
-                "base_url"
-            ]
-            + "/.well-known/openid-configuration"
-        )
-        metadata_json = requests.get(metadata_url).json()
+        metadata_json = get_metadata(CONFIGURATION["countries"][country]["auth"]["base_url"])
 
         userinfo_endpoint = metadata_json["userinfo_endpoint"]
+
+        headers = CONFIGURATION["countries"][country]["auth"].get("authorization_headers", {}).copy()
 
         if country == "EE":
             url = userinfo_endpoint + "?access_token=" + access_token
 
-            headers = CONFIGURATION["countries"][country]["auth"]["header"]
         else:
             url = userinfo_endpoint
-            headers = CONFIGURATION["countries"][country]["auth"]["header"]
             headers["Authorization"] = f"Bearer {access_token}"
 
         try:
@@ -675,7 +646,12 @@ def dynamic_R2_data_collect(country, session_id, access_token):
                 data["birth_place"] = birth_places[country]
                 data["place_of_birth"] = [{"locality": birth_places[country]}]
 
+            session_manager.update_user_data(
+                session_id=session_id, user_data=data
+            )
+
             return data
+
         except:
             credential_error_resp(
                 "invalid_credential_request", "openid connection failed"
@@ -699,8 +675,6 @@ def credentialCreation(credential_request, data, country, session_id):
     credentials_supported = oidc_metadata["credential_configurations_supported"]
 
     credential_response = {"credentials": []}
-
-    print("\ncredential_request", credential_request, flush=True)
 
     for proof in credential_request["proofs"]:
 
@@ -760,6 +734,7 @@ def credentialCreation(credential_request, data, country, session_id):
         # formatting_functions = document_mappings[doctype]["formatting_functions"]
 
         form_data = {}
+
         if country == "FC" or country == "AV" or country == "AV2":
             form_data = data
 
@@ -828,8 +803,6 @@ def auth():
 
 def form_formatter(form_data: dict) -> dict:
     cleaned_data = {}
-
-    print("\nunclean_data", form_data, flush=True)
 
     # Handle date formatting first, as it's a simple key-value replacement
     if "effective_from_date" in form_data:
@@ -1192,15 +1165,12 @@ def Dynamic_form():
 
     cleaned_data = form_formatter(form_data)
 
-    print("\ncleaned_data", cleaned_data, flush=True)
-
     session_manager.update_user_data(session_id=session_id, user_data=cleaned_data)
 
     presentation_data = presentation_formatter(cleaned_data=cleaned_data)
 
     target_url = CONFIGURATION["frontend"]["frontends_config"][current_session.frontend_id]["url"]
 
-    print("\npresentation_data", presentation_data, flush=True)
     return post_redirect_with_payload(
         target_url=f"{target_url}/display_authorization",
         data_payload={
@@ -1275,7 +1245,7 @@ def generate_connector_authorization_url(
         "state": state,
         "entity": country,
         # "credentials_requested": credentials_requested[0],
-        # "metadata_url": f"{cfgserv.service_url}.well-known/openid-credential-issuer2",
+        "metadata_url": f"{CONFIGURATION['service_url']}.well-known/openid-credential-issuer2",
     }
 
     full_url = f"{authorization_endpoint}?{urlencode(params)}"

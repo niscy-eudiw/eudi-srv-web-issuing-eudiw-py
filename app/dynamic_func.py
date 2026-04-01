@@ -57,8 +57,6 @@ def dynamic_formatter(format, scope, form_data, device_publickey, session_id):
         dict(form_data), un_distinguishing_sign, scope, format
     )
 
-    print("\ndynamic_formatter data:", data, flush=True)
-
     r = {}
 
     if format == "mso_mdoc":
@@ -109,8 +107,6 @@ def formatter(data, un_distinguishing_sign, scope, format):
             requested_credential["credential_metadata"]["claims"]
         )
 
-        print("\nnamescapes:", namescapes, flush=True)
-
         attributes_by_namespace = {}
 
         attributes_req = {}
@@ -138,10 +134,6 @@ def formatter(data, un_distinguishing_sign, scope, format):
             attributes_req.update(attributes_by_namespace[namescape]["mandatory"])
             attributes_req2.update(attributes_by_namespace[namescape]["optional"])
             issuer_claims.update(attributes_by_namespace[namescape]["issuer"])
-
-        print("\nattributes_req:", attributes_req, flush=True)
-        print("\nattributes_req2:", attributes_req2, flush=True)
-        print("\nissuer_claims:", issuer_claims, flush=True)
 
     else:  # "dc+sd-jwt"
         attributes_req = getMandatoryAttributesSDJWT(

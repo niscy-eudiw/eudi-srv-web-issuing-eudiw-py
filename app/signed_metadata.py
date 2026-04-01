@@ -60,9 +60,7 @@ def metadata_signer():
     - Payload: iss (optional), sub, iat, exp (optional), and all metadata as top-level claims
     """
     try:
-        print(f"DEBUG: metadata_signer endpoint called")
         data = request.get_json()
-        print(f"DEBUG: Received data: {data is not None}")
 
         if not data:
             return jsonify({"error": "No JSON data provided"}), 400
@@ -70,9 +68,6 @@ def metadata_signer():
         # Required fields
         metadata_content = data.get("metadata")
         issuer_frontend_id = data.get("issuer_frontend_id")
-
-        print(f"DEBUG: issuer_frontend_id: {issuer_frontend_id}")
-        print(f"DEBUG: metadata_content present: {metadata_content is not None}")
 
         if not metadata_content:
             return jsonify({"error": "metadata is required"}), 400
@@ -86,14 +81,11 @@ def metadata_signer():
         # Optional fields
         # exp_hours = data.get("exp_hours", 24)  # Default 24 hours
         iss_claim = data.get("iss")  # Optional issuer claim
-
-        print(f"DEBUG: Building payload...")
         payload = {
             "sub": CONFIGURATION["frontend"]["frontends_config"][issuer_frontend_id]["url"]
 ,  # REQUIRED: Credential Issuer Identifier
             "iat": int(datetime.utcnow().timestamp()),  # REQUIRED: Issued at
         }
-        print(f"DEBUG: Payload sub: {payload['sub']}")
 
         # Add optional iss claim
         if iss_claim:
@@ -107,7 +99,6 @@ def metadata_signer():
         # Add all metadata parameters as top-level claims in the payload
         # This is REQUIRED per the spec
         payload.update(metadata_content)
-        print(f"DEBUG: Payload updated with metadata")
 
         try:
 
@@ -118,10 +109,9 @@ def metadata_signer():
                 password=CONFIGURATION["frontend"]["frontends_config"][issuer_frontend_id]["metadata_signing_key_password"],
             )
 
-            print(f"DEBUG: Successfully loaded private key")
 
         except Exception as e:
-            print(f"DEBUG: Error loading key: {type(e).__name__}: {str(e)}")
+            logger.error(f"Error loading key: {type(e).__name__}: {str(e)}")
             import traceback
 
             traceback.print_exc()
@@ -131,26 +121,13 @@ def metadata_signer():
             )
 
         if not private_key:
-            print(f"DEBUG: private_key is None or False")
+            logger.error(f"private_key is None or False")
             return jsonify({"error": "Signing key not configured"}), 500
 
         # Determine algorithm based on key type by checking attributes
-        print(f"DEBUG: Detecting key type...")
-        print(f"DEBUG: private_key type: {type(private_key)}")
-        print(f"DEBUG: private_key type name: {type(private_key).__name__}")
-
         key_class_name = type(private_key).__name__
-        print(f"DEBUG: key_class_name = {key_class_name}")
-
-        print(
-            f"DEBUG: Checking for key_size attribute: {hasattr(private_key, 'key_size')}"
-        )
-        print(f"DEBUG: Checking for curve attribute: {hasattr(private_key, 'curve')}")
-
         if hasattr(private_key, "curve"):  # EC key - check this FIRST
-            print(f"DEBUG: Detected EC key")
             curve_name = private_key.curve.name
-            print(f"DEBUG: EC curve name: {curve_name}")
             if curve_name == "secp256r1":
                 algorithm = "ES256"
             elif curve_name == "secp384r1":
@@ -159,32 +136,29 @@ def metadata_signer():
                 algorithm = "ES512"
             else:
                 algorithm = "ES256"  # Default for EC keys
-            print(f"DEBUG: Selected algorithm: {algorithm}")
         elif hasattr(private_key, "key_size"):  # RSA key - check this SECOND
-            print(f"DEBUG: Detected RSA key")
             key_size = private_key.key_size
-            print(f"DEBUG: RSA key size: {key_size}")
             if key_size >= 4096:
                 algorithm = "RS512"
             elif key_size >= 3072:
                 algorithm = "RS384"
             else:
                 algorithm = "RS256"
-            print(f"DEBUG: Selected algorithm: {algorithm}")
+            logger.debug(f"Selected algorithm: {algorithm}")
         elif key_class_name == "Ed25519PrivateKey":  # EdDSA key
-            print(f"DEBUG: Detected Ed25519 key")
+            logger.debug(f"Detected Ed25519 key")
             algorithm = "EdDSA"
-            print(f"DEBUG: Selected algorithm: {algorithm}")
+            logger.debug(f"Selected algorithm: {algorithm}")
         else:
-            print(f"DEBUG: Unsupported key type detected")
+            logger.error(f"Unsupported key type detected")
             return jsonify({"error": f"Unsupported key type: {key_class_name}"}), 500
 
-        print(f"DEBUG: Final algorithm: {algorithm}")
+        logger.debug(f"Final algorithm: {algorithm}")
 
         # Validate algorithm is not 'none' or symmetric
         forbidden_algs = ["none", "HS256", "HS384", "HS512"]
         if algorithm in forbidden_algs:
-            print(f"DEBUG: Algorithm {algorithm} is forbidden")
+            logger.debug(f"Algorithm {algorithm} is forbidden")
             return (
                 jsonify(
                     {
@@ -204,11 +178,11 @@ def metadata_signer():
                 format=crypto_serialization.PrivateFormat.PKCS8,
                 encryption_algorithm=crypto_serialization.NoEncryption(),
             )
-            print(
-                f"DEBUG: Private key serialized to PEM, length: {len(private_key_pem)} bytes"
+            logger.debug(
+                f"Private key serialized to PEM, length: {len(private_key_pem)} bytes"
             )
         except Exception as e:
-            print(f"DEBUG: Error serializing key: {type(e).__name__}: {str(e)}")
+            logger.debug(f"Error serializing key: {type(e).__name__}: {str(e)}")
             import traceback
 
             traceback.print_exc()
@@ -219,22 +193,22 @@ def metadata_signer():
                 500,
             )
 
-        print(f"DEBUG: Loading certificate for x5c header")
+        logger.debug(f"Loading certificate for x5c header")
         try:
 
             cert_data = CONFIGURATION["frontend"]["frontends_config"][issuer_frontend_id]["metadata_access_certificate"]
 
             # Load the certificate
             certificate = x509.load_pem_x509_certificate(cert_data)
-            print(f"DEBUG: Successfully loaded certificate")
+            logger.debug(f"Successfully loaded certificate")
 
             # Encode certificate as base64 (DER format, without PEM headers)
             cert_der = certificate.public_bytes(serialization.Encoding.DER)
             cert_b64 = base64.b64encode(cert_der).decode("utf-8")
-            print(f"DEBUG: Certificate encoded to base64, length: {len(cert_b64)}")
+            logger.debug(f"Certificate encoded to base64, length: {len(cert_b64)}")
 
         except Exception as e:
-            print(f"DEBUG: Error loading certificate: {type(e).__name__}: {str(e)}")
+            logger.error(f"Error loading certificate: {type(e).__name__}: {str(e)}")
             import traceback
 
             traceback.print_exc()
@@ -243,8 +217,8 @@ def metadata_signer():
                 500,
             )
 
-        print(f"DEBUG: About to encode JWT")
-        print(f"DEBUG: Payload keys: {list(payload.keys())}", flush=True)
+        logger.debug(f"About to encode JWT")
+        logger.debug(f"Payload keys: {list(payload.keys())}")
 
         signed_metadata = jwt.encode(
             payload,
@@ -257,8 +231,8 @@ def metadata_signer():
             },
         )
 
-        print(f"DEBUG: JWT encoded successfully")
-        print(f"DEBUG: JWT length: {len(signed_metadata)}")
+        logger.debug(f"JWT encoded successfully")
+        logger.debug(f"JWT length: {len(signed_metadata)}")
 
         return (
             jsonify(
@@ -270,14 +244,14 @@ def metadata_signer():
         )
 
     except jwt.PyJWTError as e:
-        print(f"DEBUG: JWT encoding error: {type(e).__name__}: {str(e)}")
+        logger.debug(f"JWT encoding error: {type(e).__name__}: {str(e)}")
         import traceback
 
         traceback.print_exc()
         return jsonify({"error": "JWT encoding failed", "details": str(e)}), 500
 
     except Exception as e:
-        print(f"DEBUG: General exception: {type(e).__name__}: {str(e)}")
+        logger.error(f"General exception: {type(e).__name__}: {str(e)}")
         import traceback
 
         traceback.print_exc()

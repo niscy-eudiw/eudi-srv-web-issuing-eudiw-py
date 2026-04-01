@@ -1295,6 +1295,4 @@ def call_trust_validator(url: str, chain: list[str], verification_context: str, 
 
     data = response.json()
 
-    print(f"Trust validator response: {data}")
-
     return bool(data.get("trusted", False))
