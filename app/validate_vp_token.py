@@ -24,6 +24,7 @@ from pycose.headers import X5chain
 import base64
 from pycose.messages import Sign1Message
 import cbor2
+import logging
 from pycose.keys import EC2Key
 
 from cryptography.hazmat.backends import default_backend
@@ -33,6 +34,7 @@ import datetime
 import hashlib
 from . import trusted_CAs
 
+logger = logging.getLogger(__name__)
 
 def validate_vp_token(response_json, credentials_requested):
     """

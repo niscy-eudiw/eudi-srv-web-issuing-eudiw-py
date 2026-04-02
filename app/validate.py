@@ -24,15 +24,14 @@ This validate.py file includes different validation functions.
 """
 
 import datetime
-
+import logging
 from typing import List
 from werkzeug import datastructures
 from cryptography.hazmat.primitives import serialization
 
 
 # Log
-# from app_config.config_service import ConfService as log
-
+logger = logging.getLogger(__name__)
 
 def validate_mandatory_args(
     args: datastructures.ImmutableMultiDict[str, str], mandlist: List[str]

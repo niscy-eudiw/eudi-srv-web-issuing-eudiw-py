@@ -25,9 +25,9 @@ This redirect_func.py file manages the redirection of the flow.
 import requests
 import urllib.parse
 from flask import json, redirect, render_template_string, session
+import logging
 
-from app_config.config_service import ConfService as cfgserv
-
+logger = logging.getLogger(__name__)
 
 def url_get(url_path: str, args: dict):
     """Returns the URL for a HTTP GET query

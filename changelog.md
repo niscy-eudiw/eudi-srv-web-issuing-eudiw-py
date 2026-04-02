@@ -182,31 +182,49 @@ _11 Nov 2025_
 _26 Nov 2025_
 
 ### Added
-External credential offer API
+- External credential offer API
 
 ### Fixed
-install.md URLs 
-update .env example
+- install.md URLs 
+- update .env example
 
 ## [0.9.2]
 
 _28 Nov 2025_
 
 ### Fixed
-Fix invalid version tag in Docker Compose file by @thirtified
+- Fix invalid version tag in Docker Compose file by @thirtified
 
 ## [0.9.3]
 
 _05 Dec 2025_
 
 ### Added
-OID4VP and Credential offer scheme env variables
+- OID4VP and Credential offer scheme env variables
 
 ### Fixed
-Fix Pre-Authorization Front-End URL Handling
-mDL with multiple driving privileges
-key_attestation in JWT format handling
-Form Formatter Not Marking Mandatory Attributes
+- Fix Pre-Authorization Front-End URL Handling
+- mDL with multiple driving privileges
+- key_attestation in JWT format handling
+- Form Formatter Not Marking Mandatory Attributes
 
 ### Changed
-Updated revocation test to OID4VP version 1
+- Updated revocation test to OID4VP version 1
+
+
+## [0.9.4]
+
+_02 Apr 2026_
+
+### Added
+- Sign metadata endpoint
+- WUA trust validator
+
+### Fixed
+- PID SD-JWT VC: email_address and mobile_phone_number not remapped to IANA-registered claim names
+- encoding for place_of_birth in MSO MDoc PID
+- invalid values for credential_signing_alg_values_supported for mdoc credentials in metadata
+
+### Changed
+- Configuration to yaml
+- install.md

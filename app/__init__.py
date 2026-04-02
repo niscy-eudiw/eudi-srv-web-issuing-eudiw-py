@@ -26,40 +26,158 @@ import copy
 import json
 import os
 import sys
+import logging
 
-sys.path.append(os.path.dirname(__file__))
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Union, cast
+from urllib.parse import urlparse
 
+import yaml
 from dotenv import load_dotenv
+from flask import Flask, render_template, request, send_from_directory, session, jsonify
+from flask_cors import CORS
+from flask_session import Session
+from werkzeug.exceptions import HTTPException
 
-load_dotenv()
+from cryptography import x509
+from cryptography.hazmat.backends import default_backend
+from cryptography.hazmat.primitives.asymmetric import ec
+from pycose.keys.ec2 import EC2Key
 
 from app.session_manager import SessionManager
-from flask import Flask, render_template, request, send_from_directory, session
-from flask_session import Session
-from flask_cors import CORS
-from werkzeug.debug import *
-from werkzeug.exceptions import HTTPException
-from urllib.parse import urlparse
-from pycose.keys.ec2 import EC2Key
-from typing import Dict, Any, List, Union, cast
-
-from cryptography.hazmat.backends import default_backend
-from cryptography.hazmat.primitives.asymmetric import (
-    ec,
-)
-from cryptography import x509
-from app_config.config_service import ConfService as cfgserv
-from app_config.config_countries import ConfFrontend
 from app.redirect_func import post_redirect_with_payload
+from app.app_config.logging_config import configure_logging
 
-# Log
 
-session_manager = SessionManager(default_expiry_minutes=3600)
+
+# Load environment variables
+load_dotenv()
+
+# Allow local imports
+sys.path.append(os.path.dirname(__file__))
+
+def _load_file(path: str) -> bytes:
+    with open(path, 'rb') as f:
+        return f.read()
+
+def _process_config(config: dict) -> dict:
+    # --- Frontend keys ---
+    for frontend in config["frontend"]["frontends_config"].values():
+        frontend["metadata_signing_key"] = _load_file(frontend["metadata_signing_key_path"])
+        frontend["metadata_access_certificate"] = _load_file(frontend["metadata_access_certificate_path"])
+
+    # --- Global keys ---
+    keys = config["keys"]
+    keys["nonce_key"] = _load_file(keys["nonce_path"])
+    keys["credential_encryption_key"] = _load_file(keys["credential_request_path"])
+
+    # --- Country keys ---
+    for country in config["countries"].values():
+        for entry_name, entry in country["keys"].items():
+            # entry_name is either "_default" or a frontend UUID
+            entry["private_key"] = _load_file(entry["private_key_path"])
+            entry["certificate"] = _load_file(entry["certificate_path"])
+
+    return config
+
+def _load_config() -> dict:
+    config_path = os.environ.get("ISSUER_CONFIG_PATH", "/etc/issuer_config/config_issuer_backend.yaml")
+    try:
+        with open(config_path, 'r') as f:
+            config = yaml.safe_load(f)
+        if not config:
+            raise RuntimeError(f"Config file is empty: {config_path}")
+    except FileNotFoundError:
+        raise RuntimeError(f"Config file not found: {config_path}")
+    except yaml.YAMLError as e:
+        raise RuntimeError(f"Invalid YAML in config: {e}")
+
+    return _process_config(config)
+
+CONFIGURATION = _load_config()
+
+logger = logging.getLogger(__name__)
+
 oidc_metadata: Dict[str, Any] = {}
 oidc_metadata_clean: Dict[str, Any] = {}
 openid_metadata: Dict[str, Any] = {}
 oauth_metadata: Dict[str, Any] = {}
 trusted_CAs: Dict[str, Any] = {}
+
+IS_TEST_ENV = (
+    "pytest" in sys.modules
+    or any("pytest" in arg for arg in sys.argv)
+    or os.getenv("CI") == "true"
+    or os.getenv("SONARCLOUD") == "true"
+)
+
+session_manager = SessionManager(default_expiry_minutes=CONFIGURATION["expiry"]["session"])
+
+def create_app(test_config=None):
+    # create and configure the app
+    app = Flask(__name__, instance_relative_config=True)
+
+    app.config.from_mapping(SECRET_KEY="dev")
+
+    if test_config is None:
+        # load the instance config (in instance directory), if it exists, when not testing
+        app.config.from_pyfile("config.py", silent=True)
+    else:
+        # load the test config if passed in
+        app.config.from_mapping(test_config)
+
+    # ensure the instance folder exists
+    try:
+        os.makedirs(app.instance_path)
+    except OSError:
+        pass
+
+    configure_logging(app, CONFIGURATION["logging"])
+    
+    app.logger.info("Running initialization setups...")
+    setup_metadata()
+    if not IS_TEST_ENV:
+        setup_trusted_cas()
+
+    app.register_error_handler(Exception, handle_exception)
+    app.register_error_handler(404, page_not_found)
+
+    @app.route("/", methods=["GET"])
+    def health_check():
+        return "OK", 200
+
+    from . import (
+        route_formatter,
+        route_oidc,
+        route_dynamic,
+        route_oid4vp,
+        preauthorization,
+        revocation,
+        signed_metadata,
+    )
+
+    app.register_blueprint(route_formatter.formatter)
+    app.register_blueprint(route_oidc.oidc)
+    app.register_blueprint(revocation.revocation)
+    app.register_blueprint(route_oid4vp.oid4vp)
+    app.register_blueprint(route_dynamic.dynamic)
+    app.register_blueprint(preauthorization.preauth)
+    app.register_blueprint(signed_metadata.metadata)
+
+    # config session
+    app.config["SESSION_FILE_THRESHOLD"] = 50
+    app.config["SESSION_PERMANENT"] = False
+    app.config["SESSION_TYPE"] = "filesystem"
+    app.config.update(SESSION_COOKIE_SAMESITE="None", SESSION_COOKIE_SECURE=True)
+    Session(app)
+
+    # CORS is a mechanism implemented by browsers to block requests from domains other than the server's one.
+    CORS(app, supports_credentials=True)
+
+    app.logger.info(" - DEBUG - FLASK started")
+
+    return app
+
 
 
 def remove_keys(obj, keys_to_remove):
@@ -90,9 +208,10 @@ def replace_domain(
     else:
         return obj
 
+
 def fix_key_attestations(data):
     """
-    Recursively traverse the data structure and replace 
+    Recursively traverse the data structure and replace
     key_attestations_required: null with key_attestations_required: {}
     """
     if isinstance(data, dict):
@@ -104,8 +223,73 @@ def fix_key_attestations(data):
     elif isinstance(data, list):
         for item in data:
             fix_key_attestations(item)
-    
+
     return data
+
+import base64
+import hashlib
+from cryptography.hazmat.primitives.serialization import load_pem_private_key
+
+def _build_credential_encryption_metadata(key_bytes: bytes) -> dict:
+    """
+    Build the credential_request_encryption block from a PEM-encoded
+    EC private key. Only the public coordinates are exposed in the JWK.
+    The kid is the RFC 7638 JWK Thumbprint (SHA-256).
+    """
+    private_key = load_pem_private_key(key_bytes, password=None)
+
+    if not isinstance(private_key, ec.EllipticCurvePrivateKey):
+        raise ValueError("credential_encryption_key must be a P-256 EC private key")
+
+    nums = private_key.public_key().public_numbers()
+    key_size = (private_key.key_size + 7) // 8
+
+    def _b64url(n: int) -> str:
+        return (
+            base64.urlsafe_b64encode(n.to_bytes(key_size, "big"))
+            .rstrip(b"=")
+            .decode()
+        )
+
+    x_b64 = _b64url(nums.x)
+    y_b64 = _b64url(nums.y)
+
+    thumbprint_json = json.dumps(
+        {"crv": "P-256", "kty": "EC", "x": x_b64, "y": y_b64},
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode()
+    kid = (
+        base64.urlsafe_b64encode(hashlib.sha256(thumbprint_json).digest())
+        .rstrip(b"=")
+        .decode()
+    )
+
+    logger.info("credential_request_encryption metadata built successfully (kid=%s, crv=P-256)", kid)
+
+    return {
+        "jwks": {
+            "keys": [
+                {
+                    "kty": "EC",
+                    "use": "enc",
+                    "alg": "ECDH-ES",
+                    "crv": "P-256",
+                    "x": x_b64,
+                    "y": y_b64,
+                    "kid": kid,
+                }
+            ]
+        },
+        "enc_values_supported": [
+            "A128GCM",
+            "A256GCM",
+            "A128CBC-HS256",
+            "A256CBC-HS512",
+            "ECDH-ES",
+        ],
+        "encryption_required": False,
+    }
 
 def setup_metadata():
     global oidc_metadata
@@ -138,15 +322,15 @@ def setup_metadata():
                     credentials_supported.update(credential)
 
     except FileNotFoundError as e:
-        cfgserv.app_logger.exception(f"Metadata Error: file not found. \n{e}")
+        logger.exception(f"Metadata Error: file not found. \n{e}")
         raise
     except json.JSONDecodeError as e:
-        cfgserv.app_logger.exception(
+        logger.exception(
             f"Metadata Error: Metadata Unable to decode JSON. \n{e}"
         )
         raise
     except Exception as e:
-        cfgserv.app_logger.exception(
+        logger.exception(
             f"Metadata Error: An unexpected error occurred. \n{e}"
         )
         raise
@@ -170,7 +354,7 @@ def setup_metadata():
 
     old_domain = oidc_metadata["credential_issuer"]
 
-    new_domain = cfgserv.service_url[:-1]
+    new_domain = CONFIGURATION["service_url"]
 
     openid_metadata = cast(
         Dict[str, Any], replace_domain(openid_metadata, old_domain, new_domain)
@@ -185,23 +369,24 @@ def setup_metadata():
         Dict[str, Any], replace_domain(oidc_metadata, old_domain, new_domain)
     )
 
-setup_metadata()
-
-IS_TEST_ENV = (
-    "pytest" in sys.modules
-    or any("pytest" in arg for arg in sys.argv)
-    or os.getenv("CI") == "true"
-    or os.getenv("SONARCLOUD") == "true"
-)
+    logger.info("Setting up credential_request_encryption in oidc_metadata_clean")
+    try:
+        oidc_metadata_clean["credential_request_encryption"] = _build_credential_encryption_metadata(
+            CONFIGURATION["keys"]["credential_encryption_key"]
+        )
+        logger.info("credential_request_encryption: %s", json.dumps(oidc_metadata_clean["credential_request_encryption"], indent=2))
+    except Exception as e:
+        logger.exception("Failed to build credential_request_encryption metadata: %s", e)
+        raise
 
 
 def setup_trusted_cas():
     global trusted_CAs
     try:
         ec_keys = {}
-        for file in os.listdir(cfgserv.trusted_CAs_path):
+        for file in os.listdir(CONFIGURATION["trusted_CAs_path"]):
             if file.endswith("pem"):
-                ca_path = os.path.join(cfgserv.trusted_CAs_path, file)
+                ca_path = os.path.join(CONFIGURATION["trusted_CAs_path"], file)
 
                 with open(ca_path) as pem_file:
 
@@ -254,15 +439,15 @@ def setup_trusted_cas():
                     )
 
     except FileNotFoundError as e:
-        cfgserv.app_logger.exception(f"TrustedCA Error: file not found.\n {e}")
+        logger.exception(f"TrustedCA Error: file not found.\n {e}")
         raise
     except json.JSONDecodeError as e:
-        cfgserv.app_logger.exception(
+        logger.exception(
             f"TrustedCA Error: Metadata Unable to decode JSON.\n {e}"
         )
         raise
     except Exception as e:
-        cfgserv.app_logger.exception(
+        logger.exception(
             f"TrustedCA Error: An unexpected error occurred.\n {e}"
         )
         raise
@@ -270,154 +455,25 @@ def setup_trusted_cas():
     trusted_CAs = ec_keys
 
 
-if not IS_TEST_ENV:
-    setup_trusted_cas()
-
 
 def handle_exception(e):
-    # pass through HTTP errors
     if isinstance(e, HTTPException):
         return e
-    cfgserv.app_logger.exception("- WARN - Error 500")
 
-    target_url = ConfFrontend.registered_frontends[cfgserv.default_frontend]["url"]
+    logger.exception("Unhandled exception")
 
-    session_id = session.get("session_id")
-    if session_id:
-        current_session = session_manager.get_session(session_id=session_id)
-        frontend_id = getattr(current_session, "frontend_id", None)
-
-        if frontend_id and frontend_id in ConfFrontend.registered_frontends:
-            target_url = ConfFrontend.registered_frontends[frontend_id]["url"]
-
-    return post_redirect_with_payload(
-        target_url=f"{target_url}/internal_error",
-        data_payload={
-            "error": "Sorry, an internal server error has occurred. Our team has been notified and is working to resolve the issue. Please try again later.",
-            "error_code": "Internal Server Error",
-            "error_type": 500,
-        },
-    )
+    return jsonify({
+        "error": "Internal Server Error",
+        "error_code": 500,
+        "message": "An internal server error has occurred. Our team has been notified and is working to resolve the issue. Please try again later.",
+    }), 500
 
 
 def page_not_found(e):
-    cfgserv.app_logger.warning(f"- WARN - Error 404: {request.path} not found")
+    logger.warning("404 Not Found: %s", request.path)
 
-    if "session_id" in session:
-        current_session = session_manager.get_session(session_id=session["session_id"])
-        target_url = ConfFrontend.registered_frontends[current_session.frontend_id][
-            "url"
-        ]
-
-    else:
-        target_url = ConfFrontend.registered_frontends[cfgserv.default_frontend]["url"]
-
-    return post_redirect_with_payload(
-        target_url=f"{target_url}/error_404",
-        data_payload={
-            "error": "Page not found.We're sorry, we couldn't find the page you requested.",
-            "error_code": "Page not found",
-            "error_type": 404,
-        },
-    )
-
-
-from typing import Optional
-
-
-def create_app(test_config=None):
-    # create and configure the app
-    app = Flask(__name__, instance_relative_config=True)
-
-    app.register_error_handler(Exception, handle_exception)
-    app.register_error_handler(404, page_not_found)
-
-    app.config.from_mapping(SECRET_KEY="dev")
-
-    @app.route("/", methods=["GET"])
-    def health_check():
-        return "OK", 200
-
-    if test_config is None:
-        # load the instance config (in instance directory), if it exists, when not testing
-        app.config.from_pyfile("config.py", silent=True)
-    else:
-        # load the test config if passed in
-        app.config.from_mapping(test_config)
-
-    # ensure the instance folder exists
-    try:
-        os.makedirs(app.instance_path)
-    except OSError:
-        pass
-
-    # a simple page that says hello
-    # @app.route('/hello')
-    # def hello():
-    #    return 'Hello, World!'
-
-    # register blueprint for the /pid route
-    from . import (
-        route_formatter,
-        route_oidc,
-        route_dynamic,
-        route_oid4vp,
-        preauthorization,
-        revocation,
-    )
-
-    app.register_blueprint(route_formatter.formatter)
-    app.register_blueprint(route_oidc.oidc)
-    app.register_blueprint(revocation.revocation)
-    app.register_blueprint(route_oid4vp.oid4vp)
-    app.register_blueprint(route_dynamic.dynamic)
-    app.register_blueprint(preauthorization.preauth)
-
-    # config session
-    app.config["SESSION_FILE_THRESHOLD"] = 50
-    app.config["SESSION_PERMANENT"] = False
-    app.config["SESSION_TYPE"] = "filesystem"
-    app.config.update(SESSION_COOKIE_SAMESITE="None", SESSION_COOKIE_SECURE=True)
-    Session(app)
-
-    # CORS is a mechanism implemented by browsers to block requests from domains other than the server's one.
-    CORS(app, supports_credentials=True)
-
-    cfgserv.app_logger.info(" - DEBUG - FLASK started")
-
-    """ dir_path = os.path.dirname(os.path.realpath(__file__))
-
-    config = create_from_config_file(
-        Configuration,
-        entity_conf=[
-            {"class": OPConfiguration, "attr": "op", "path": ["op", "server_info"]}
-        ],
-        filename=dir_path + "/app_config/oid_config.py",
-        base_path=dir_path,
-    )
-
-    app.srv_config = config.op
-
-    if config.op is not None:
-        server = Server(config.op, cwd=dir_path)
-    else:
-        raise ValueError("config.op is None — cannot initialize Server.")
-
-    for endp in server.endpoint.values():
-        p = urlparse(endp.endpoint_path)
-        _vpath = p.path.split("/")
-        if _vpath[0] == "":
-            endp.vpath = _vpath[1:]
-        else:
-            endp.vpath = _vpath
-
-    app.server = server """
-
-    return app
-
-
-#
-# Usage examples:
-# flask --app app run --debug
-# flask --app app run --debug --cert=app/certs/certHttps.pem --key=app/certs/key.pem --host=127.0.0.1 --port=4430
-#
+    return jsonify({
+        "error": "Not Found",
+        "error_code": 404,
+        "message": f"The requested path '{request.path}' could not be found.",
+    }), 404

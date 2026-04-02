@@ -25,89 +25,12 @@ NOTE: You should only change it if you understand what you're doing.
 """
 
 import logging
-from concurrent_log_handler import ConcurrentTimedRotatingFileHandler
 import os
 import sys
 
 
 class ConfService:
-    # ------------------------------------------------------------------------------------------------
-    # PID issuer service URL
-    service_url = os.getenv("SERVICE_URL", "https://backend.issuer.eudiw.dev/")
-    # service_url = "https://127.0.0.1:5000/"
-
-    wallet_test_url = os.getenv("WALLET_TEST_URL", "https://tester.issuer.eudiw.dev/")
-
-    revocation_service_url = os.getenv(
-        "REVOCATION_SERVICE_URL", "https://issuer.eudiw.dev/token_status_list/take"
-    )
-
-    revocation_api_key = os.getenv("REVOCATION_API_KEY", "test")
-
-    revoke_service_url = os.getenv(
-        "REVOKE_SERVICE_URL", "https://issuer.eudiw.dev/token_status_list/set"
-    )
-
-    default_frontend = os.getenv(
-        "DEFAULT_FRONTEND", "5d725b3c-6d42-448e-8bfd-1eff1fcf152d"
-    )
-
-    oid4vp_scheme = os.getenv(
-        "OID4VP_SCHEME", "haip-vp://"
-    )
-
-    credential_offer_scheme = os.getenv(
-        "CREDENTIAL_OFFER_SCHEME", "haip-vci://"
-    )
-
-    # ---------------------------------------------------------------------------
-    trusted_CAs_path = os.getenv("TRUSTED_CAS_PATH", "/etc/eudiw/pid-issuer/cert/")
-
-    privKey_path = os.getenv("PRIVKEY_PATH", "/etc/eudiw/pid-issuer/privKey/")
-
-    # Nonce endpoint
-    nonce_key = os.getenv(
-        "NONCE_KEY", "/etc/eudiw/pid-issuer-dev/privKey/nonce_rsa2048.pem"
-    )
-
-    # credential request key
-    credential_request_priv_key = os.getenv(
-        "CREDENTIAL_KEY", "/etc/eudiw/pid-issuer-dev/privKey/credential_request.pem"
-    )
-
-    # ------------------------------------------------------------------------------------------------
-    # OpenID endpoints
-
-    OpenID_first_endpoint = os.getenv(
-        "VERIFY_USER_ENDPOINT", service_url + "oidc/verify/user"
-    )
-
-    authorization_server_internal_url = os.getenv(
-        "AUTH_SERVER_INTERNAL_URL", "http://127.0.0.1:6005"
-    )
-
-    dynamic_presentation_url = os.getenv(
-        "DYNAMIC_PRESENTATION_URL",
-        "https://verifier-backend.eudiw.dev/ui/presentations/",
-    )
-
-    LOG_FILES = os.getenv(
-        "LOG_FILES",
-        "/tmp/oidc_log/logs.log,/tmp/log/logs.log",
-    )
-
-    # Deferred endpoint expiry time (minutes)
-    deffered_expiry = 60
-
-    # transaction code expiry time (minutes)
-    tx_code_expiry = 60
-
-    # transaction code expiry time (minutes)
-    revocation_code_expiry = 60
-
-    # Form data expiry time (minutes)
-    form_expiry = 1440
-
+   
     # IANA registered claims
     Registered_claims = {
         "birth_date": "birthdate",
@@ -129,51 +52,6 @@ class ConfService:
         "portrait": "picture",
         "mobile_phone_number": "phone_number",
         "email_address": "email",
-    }
-
-    auth_method_supported_credencials = {
-        "PID_login": [
-            "eu.europa.ec.eudi.pseudonym_over18_mdoc",
-            "eu.europa.ec.eudi.pseudonym_over18_mdoc_deferred_endpoint",
-            "eu.europa.ec.eudi.por_mdoc",
-            "eu.europa.ec.eudi.iban_mdoc",
-            "eu.europa.ec.eudi.hiid_mdoc",
-            "eu.europa.ec.eudi.tax_mdoc",
-            "eu.europa.ec.eudi.msisdn_mdoc",
-        ],
-        "country_selection": [
-            "eu.europa.ec.eudi.loyalty_mdoc",
-            "eu.europa.ec.eudi.mdl_mdoc",
-            "eu.europa.ec.eudi.pid_vc_sd_jwt",
-            "eu.europa.ec.eudi.pid_mdoc",
-            "eu.europa.ec.eudi.pseudonym_over18_mdoc",
-            "eu.europa.ec.eudi.pseudonym_over18_mdoc_deferred_endpoint",
-            "eu.europa.ec.eudi.photoid",
-            "eu.europa.ec.eudi.por_mdoc",
-            "eu.europa.ec.eudi.iban_mdoc",
-            "eu.europa.ec.eudi.hiid_mdoc",
-            "eu.europa.ec.eudi.tax_mdoc",
-            "eu.europa.ec.eudi.msisdn_mdoc",
-            "eu.europa.ec.eudi.ehic_mdoc",
-            "eu.europa.ec.eudi.pda1_mdoc",
-            "eu.europa.ec.eudi.tax_sd_jwt_vc",
-            "eu.europa.ec.eudi.por_sd_jwt_vc",
-            "eu.europa.ec.eudi.msisdn_sd_jwt_vc",
-            "eu.europa.ec.eudi.hiid_sd_jwt_vc",
-            "eu.europa.ec.eudi.iban_sd_jwt_vc",
-            "eu.europa.ec.eudi.pseudonym_over18_sd_jwt_vc",
-            "eu.europa.ec.eudi.cor_mdoc",
-            "eu.europa.ec.eudi.pda1_sd_jwt_vc",
-            "eu.europa.ec.eudi.ehic_sd_jwt_vc",
-            "org.iso.18013.5.1.reservation_mdoc",
-            "eu.europa.ec.eudi.seafarer_mdoc",
-            "eu.europa.ec.eudi.diploma_vc_sd_jwt",
-            "eu.europa.ec.eudi.tax_residency_vc_sd_jwt",
-            "eu.europa.ec.eudi.employee_mdoc",
-            "eu.europa.ec.eudi.pid_mdoc_deferred",
-            "eu.europa.ec.eudi.age_verification_mdoc",
-            "eu.europa.ec.eudi.age_verification_mdoc_passport"
-        ],
     }
 
     # ------------------------------------------------------------------------------------------------
@@ -250,59 +128,3 @@ class ConfService:
     issuing_authority_logo = "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"
 
     signature_usual_mark_issuing_officer = "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"
-
-    # ------------------------------------------------------------------------------------------------
-    # LOGS
-
-    log_file = os.getenv("LOG_FILE", "/tmp/log/logs.log")
-
-    auth_log_file = os.getenv("AUTH_LOG_FILE", "/tmp/oidc_log/logs.log")
-
-
-    def _setup_app_logger():
-        logger = logging.getLogger("app_logger")
-        
-        # Check if already configured (avoid duplicates)
-        if logger.handlers:
-            return logger
-        
-        env_log_path = os.getenv("LOG_FILE", "/tmp/log/logs.log")
-        log_dir = os.path.dirname(env_log_path)
-        
-        try:
-            os.makedirs(log_dir, mode=0o755, exist_ok=True)
-        except OSError as e:
-            print(f"Warning: Could not create log directory: {e}", file=sys.stderr)
-        
-        formatter = logging.Formatter(
-            "%(asctime)s %(name)s %(levelname)s %(message)s",
-            datefmt="%Y-%m-%d %H:%M:%S"
-        )
-        
-        try:
-            file_handler = ConcurrentTimedRotatingFileHandler(
-                filename=env_log_path,
-                when='midnight',      # Rotate at midnight
-                interval=1,           # Daily rotation
-                backupCount=7,        # Keep 7 days of logs
-                encoding='utf-8',
-                    utc=False
-            )
-            file_handler.setFormatter(formatter)
-            file_handler.setLevel(logging.INFO)
-            logger.addHandler(file_handler)
-        except Exception as e:
-            print(f"Warning: Could not create file handler: {e}", file=sys.stderr)
-        
-        console_handler = logging.StreamHandler(sys.stdout)
-        console_handler.setFormatter(formatter)
-        console_handler.setLevel(logging.INFO)
-        logger.addHandler(console_handler)
-        
-        logger.setLevel(logging.INFO)
-        logger.propagate = False
-        
-        return logger
-    
-
-    app_logger = _setup_app_logger()
