@@ -66,25 +66,22 @@ To run the EUDIW Issuer, please follow these simple steps (some of which may hav
     pip install -r app/requirements.txt
     ```
 
-6. Setup env
-   
-   -  Copy ```app/.env.example``` to ```app/.env``` and modify variables.
+6. Setup configuration
+
+   -  Copy ```app/config_issuer_backend_example.yaml``` to ```etc/issuer_config/config_issuer_backend.yaml``` and modify variables.
 
    ```shell
-   cp app/.env.example app/.env
+   cp app/config_issuer_backend_example.yaml etc/issuer_config/config_issuer_backend.yaml
    ```
 
-7. Service Configuration
+   Configuration location can be changed using environment variable ISSUER_CONFIG_PATH
 
-   - Configure the service according to [documentation](api_docs/configuration.md)  
-
-8. Install Authorization Server
+7. Install Authorization Server
     - Install the service according to [Issuer Authorization Server](https://github.com/eu-digital-identity-wallet/eudi-srv-issuer-oidc-py/blob/main/install.md)
-
-9. Install Issuer Front-End
+8. Install Issuer Front-End
     - Install the service according to [Issuer Front-End](https://github.com/eu-digital-identity-wallet/eudi-srv-web-issuing-frontend-eudiw-py/blob/main/install.md)
 
-10. Run the EUDIW Issuer Back-end
+9. Run the EUDIW Issuer Back-end
 
     On the root directory of the clone repository, insert one of the following command lines to run the EUDIW Issuer.
 

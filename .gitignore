@@ -8,6 +8,8 @@ app/certs/PID-DS-0001_UT.pem
 app/app_config/config_secrets.py
 flask_session/
 nohup.out
+config_issuer_backend.yaml
+config_issuer_backend.*.yaml
 # Created by https://www.toptal.com/developers/gitignore/api/python
 # Edit at https://www.toptal.com/developers/gitignore?templates=python
 

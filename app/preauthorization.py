@@ -35,25 +35,24 @@ from flask_cors import CORS
 import requests
 import urllib.parse
 from datetime import datetime, timedelta, timezone
-
+import logging
 import segno
 
 from app.route_dynamic import form_formatter, presentation_formatter
 from .app_config.config_service import ConfService as cfgservice
-from app_config.config_countries import ConfFrontend
 from app.redirect_func import post_redirect_with_payload
 from app.misc import (
     generate_unique_id,
     getAttributesForm,
     getAttributesForm2,
 )
-
+from app import CONFIGURATION
 from . import session_manager
 
 
 preauth = Blueprint("preauth", __name__, url_prefix="/")
 CORS(preauth)  # enable CORS on the blue print
-
+logger = logging.getLogger(__name__)
 
 @preauth.route("/preauth", methods=["GET"])
 def preauthRed():
@@ -84,7 +83,7 @@ def preauthRed():
         )
     else:
         session_manager.update_frontend_id(
-            session_id=session_id, frontend_id=cfgservice.default_frontend
+            session_id=session_id, frontend_id=CONFIGURATION["frontend"]["default"]
         )
 
     # session["authorization_details"] = authorization_details
@@ -116,14 +115,14 @@ def preauthRed():
 
     current_session = session_manager.get_session(session_id=session_id)
 
-    target_url = ConfFrontend.registered_frontends[current_session.frontend_id]["url"]
+    target_url = CONFIGURATION["frontend"]["frontends_config"][current_session.frontend_id]["url"]
 
     return post_redirect_with_payload(
         target_url=f"{target_url}/display_form",
         data_payload={
             "mandatory_attributes": mandatory_attributes,
             "optional_attributes": optional_attributes_filtered,
-            "redirect_url": f"{cfgservice.service_url}preauth_form",
+            "redirect_url": f"{CONFIGURATION['service_url']}/preauth_form",
             "session_id": session_id,
         },
     )
@@ -132,9 +131,18 @@ def preauthRed():
 @preauth.route("/preauth_form", methods=["GET", "POST"])
 def preauth_form():
 
-    form_data = request.form.to_dict()
+    # form_data = request.form.to_dict()
+    form_data = {}
 
-    cfgservice.app_logger.info(f"form_data: {form_data}")
+    for key in request.form.keys():
+        if key.endswith("[]"):
+            # This is an array field - get all values as a list
+            form_data[key.replace("[]", "")] = request.form.getlist(key)
+        else:
+            # Regular field - get single value
+            form_data[key] = request.form.get(key)
+
+    logger.info(f"form_data: {form_data}")
 
     if "effective_from_date" in form_data:
         dt = datetime.strptime(form_data["effective_from_date"], "%Y-%m-%d").replace(
@@ -147,7 +155,7 @@ def preauth_form():
 
     current_session = session_manager.get_session(session_id=session_id)
 
-    cfgservice.app_logger.info(f"session_id: {session_id}")
+    logger.info(f"session_id: {session_id}")
 
     form_data.pop("proceed")
 
@@ -163,13 +171,13 @@ def preauth_form():
 
     presentation_data = presentation_formatter(cleaned_data=cleaned_data)
 
-    target_url = ConfFrontend.registered_frontends[current_session.frontend_id]["url"]
+    target_url = CONFIGURATION["frontend"]["frontends_config"][current_session.frontend_id]["url"]
 
     return post_redirect_with_payload(
         target_url=f"{target_url}/display_authorization",
         data_payload={
             "presentation_data": presentation_data,
-            "redirect_url": f"{cfgservice.service_url}form_authorize_generate",
+            "redirect_url": f"{CONFIGURATION['service_url']}/form_authorize_generate",
             "session_id": session_id,
         },
     )
@@ -208,15 +216,10 @@ def generate_offer(data):
     transaction_id = generate_unique_id()
 
     if "frontend_id" in session:
-        credential_issuer = ConfFrontend.registered_frontends[session["frontend_id"]][
-            "url"
-        ]
+        credential_issuer = CONFIGURATION["frontend"]["frontends_config"][session["frontend_id"]]["url"]
     else:
-        credential_issuer = ConfFrontend.registered_frontends[cfgservice.default_frontend][
-            "url"
-        ]
+        credential_issuer = CONFIGURATION["frontend"]["frontends_config"][CONFIGURATION["frontend"]["default"]]["url"]
 
-    
     credential_offer = {
         "credential_issuer": credential_issuer,
         "credential_configuration_ids": current_session.credentials_requested,
@@ -251,14 +254,13 @@ def generate_offer(data):
         "utf-8"
     )
 
-    wallet_url = cfgservice.wallet_test_url + "redirect_preauth"
+    wallet_url = f"{CONFIGURATION['wallet_tester_url']}/redirect_preauth"
 
     if "frontend_id" in session:
-        target_url = ConfFrontend.registered_frontends[session["frontend_id"]]["url"]
+        target_url = CONFIGURATION["frontend"]["frontends_config"][session["frontend_id"]]["url"]
     else:
-        target_url = ConfFrontend.registered_frontends[cfgservice.default_frontend][
-            "url"
-        ]
+        target_url = CONFIGURATION["frontend"]["frontends_config"][CONFIGURATION["frontend"]["default"]]["url"]
+
 
     return post_redirect_with_payload(
         target_url=f"{target_url}/display_credential_offer_qr_code",
@@ -319,7 +321,7 @@ def credentialOfferReq2():
     tx_code = current_session.tx_code
 
     credential_offer = {
-        "credential_issuer": ConfFrontend.registered_frontends[cfgservice.default_frontend]["url"],
+        "credential_issuer": CONFIGURATION["frontend"]["frontends_config"][CONFIGURATION["frontend"]["default"]]["url"],
         "credential_configuration_ids": credential_ids,
         "grants": {
             "urn:ietf:params:oauth:grant-type:pre-authorized_code": {
@@ -338,7 +340,7 @@ def credentialOfferReq2():
     json_string = json.dumps(credential_offer)
 
     uri = (
-        f"{cfgservice.credential_offer_scheme}credential_offer?credential_offer="
+        f"{CONFIGURATION['credential_offer_scheme']}credential_offer?credential_offer="
         + urllib.parse.quote(json_string, safe=":/")
     )
 
@@ -347,7 +349,12 @@ def credentialOfferReq2():
 
 
 def request_preauth_token(scope):
-    url = f"{cfgservice.authorization_server_internal_url}/preauth_generate"
+    base = (
+        CONFIGURATION["authorization_server"].get("internal_url")
+        or CONFIGURATION["authorization_server"]["base_url"]
+    )
+
+    url = f"{base}/preauth_generate"
 
     payload = f"scope={scope}"
     headers = {"Content-Type": "application/x-www-form-urlencoded"}
@@ -362,7 +369,10 @@ def request_preauth_token(scope):
 
     tx_code = _response.get("tx_code")
 
-    if scope == "eu.europa.ec.eudi.age_verification_mdoc" or scope == "eu.europa.ec.eudi.age_verification_mdoc_passport":
+    if (
+        scope == "eu.europa.ec.eudi.age_verification_mdoc"
+        or scope == "eu.europa.ec.eudi.age_verification_mdoc_passport"
+    ):
         country = "AV"
     else:
         country = "FC"

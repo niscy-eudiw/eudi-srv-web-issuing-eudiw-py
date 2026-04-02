@@ -27,7 +27,11 @@ from typing import Dict, Optional
 
 from app_config.config_service import ConfService as cfgservice
 import requests
+import logging
 from app import session_manager
+
+logger = logging.getLogger(__name__)
+
 
 credential_offer_references = {}
 revocation_requests = {}
@@ -41,12 +45,12 @@ scheduler_call = 300  # scheduled periodic job will be called every scheduler_ca
 def clear_par():
     for id in credential_offer_references.copy():
         if datetime.now() > credential_offer_references[id]["expires"]:
-            cfgservice.app_logger.info("Removing credential reference id: " + str(id))
+            logger.info("Removing credential reference id: " + str(id))
             credential_offer_references.pop(id)
 
     for id in revocation_requests.copy():
         if datetime.now() > revocation_requests[id]["expires"]:
-            cfgservice.app_logger.info("Removing revpcatopm reference id: " + str(id))
+            logger.info("Removing revpcatopm reference id: " + str(id))
             revocation_requests.pop(id)
 
     session_manager.clean_expired_sessions()

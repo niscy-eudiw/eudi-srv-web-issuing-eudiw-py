@@ -45,10 +45,10 @@ import jwt
 
 
 from misc import doctype2vct, getSubClaims, urlsafe_b64encode_nopad, vct2doctype
-from app_config.config_countries import ConfCountries as cfgcountries
 from app_config.config_service import ConfService as cfgservice
 
 from app import session_manager
+from app import CONFIGURATION
 
 
 def mdocFormatter(
@@ -72,15 +72,13 @@ def mdocFormatter(
     current_session = session_manager.get_session(session_id=session_id)
 
     # Load the private key
-    with open(
-        cfgcountries.supported_countries[country]["pid_mdoc_privkey"], "rb"
-    ) as key_file:
-        private_key = serialization.load_pem_private_key(
-            key_file.read(),
-            password=cfgcountries.supported_countries[country][
-                "pid_mdoc_privkey_passwd"
-            ],
-        )
+
+    key_file = CONFIGURATION["countries"][country]["keys"]["_default"]["private_key"]
+
+    private_key = serialization.load_pem_private_key(
+        key_file,
+        password=CONFIGURATION["countries"][country]["keys"]["_default"]["private_key_password"]
+    )
 
     # Extract the key parameters
     priv_d = private_key.private_numbers().private_value
@@ -137,7 +135,7 @@ def mdocFormatter(
 
     country = current_session.country
 
-    if cfgservice.revocation_api_key and country not in ("AV", "AV2"):
+    if CONFIGURATION["revocation"]["enabled"] and country not in ("AV", "AV2"):
         payload = (
             "doctype="
             + credential_metadata["doctype"]
@@ -148,22 +146,25 @@ def mdocFormatter(
         )
         headers = {
             "Content-Type": "application/x-www-form-urlencoded",
-            "X-Api-Key": cfgservice.revocation_api_key,
+            "X-Api-Key": CONFIGURATION["revocation"]["api_key"],
         }
 
         response = requests.post(
-            cfgservice.revocation_service_url, headers=headers, data=payload
+            CONFIGURATION["revocation"]["take_url"], headers=headers, data=payload
         )
 
         if response.status_code == 200:
             revocation_json = response.json()
+            revocation_json["identifier_list"]["id"] = revocation_json[
+                "identifier_list"
+            ]["id"].encode("utf-8")
 
     mdoci.new(
         doctype=credential_metadata["doctype"],
         data=data,
         validity=validity,
         devicekeyinfo=device_publickey,
-        cert_path=cfgcountries.supported_countries[country]["pid_mdoc_cert"],
+        cert_path=CONFIGURATION["countries"][country]["keys"]["_default"]["certificate_path"], 
         revocation=revocation_json,
     )
 
@@ -233,18 +234,25 @@ def sdjwtNestedClaims(claims, credential_metadata):
                         for attribute, value2 in element.items():
                             subClaimsElement.update({SDObj(value=attribute): value2})
 
-                    subClaims.append(subClaimsElement)
+                        subClaims.append(subClaimsElement)
+
+                    else:
+                        subClaims.append(element)
 
                 nestedDict.update({SDObj(value=claim): subClaims})
 
             elif (
                 isinstance(value, list) and claim != "nationalities" and len(value) == 1
             ):
-                subClaims = {}
+                subClaims = []
                 for element in value:
                     if isinstance(element, dict):
+                        subClaimsElement = {}
                         for attribute, value2 in element.items():
-                            subClaims.update({SDObj(value=attribute): value2})
+                            subClaimsElement.update({SDObj(value=attribute): value2})
+                        subClaims.append(subClaimsElement)
+                    else:
+                        subClaims.append(element)
 
                 nestedDict.update({SDObj(value=claim): subClaims})
 
@@ -271,7 +279,7 @@ def sdjwtNestedClaims(claims, credential_metadata):
     return nestedDict
 
 
-def sdjwtFormatter(PID, country):
+def sdjwtFormatter(PID, country, scope):
     """Construct sd-jwt with the country private key
 
     Keyword arguments:
@@ -300,32 +308,35 @@ def sdjwtFormatter(PID, country):
 
     vct = PID["credential_metadata"]["vct"]  # doctype2vct(doctype)
 
-    #doctype = vct2doctype(vct)
+    # doctype = vct2doctype(vct)
 
     revocation_json = None
 
-    if cfgservice.revocation_api_key:
-        payload = (
-            "doctype=" + vct + "&country=" + country + "&expiry_date=" + validity
-        )
+    if CONFIGURATION["revocation"]["enabled"]:
+        payload = f"doctype={vct}&country={country}&expiry_date={validity}"
         headers = {
             "Content-Type": "application/x-www-form-urlencoded",
-            "X-Api-Key": cfgservice.revocation_api_key,
+            "X-Api-Key": CONFIGURATION["revocation"]["api_key"],
         }
 
         response = requests.post(
-            cfgservice.revocation_service_url, headers=headers, data=payload
+            CONFIGURATION["revocation"]["take_url"], headers=headers, data=payload
         )
 
         if response.status_code == 200:
             revocation_json = response.json()
+            if "identifier_list" in revocation_json:
+                revocation_json.pop("identifier_list")
 
     claims = {
-        "iss": cfgservice.service_url[:-1],
+        "iss": CONFIGURATION["service_url"],
         "iat": iat,
         "exp": exp,
         "vct": vct,
     }
+
+    if scope == "eu.europa.ec.eudi.learning_credential_vc_sd_jwt":
+        claims.update({"jti": str(uuid4())})
 
     if revocation_json:
         claims.update({"status": revocation_json})
@@ -342,24 +353,18 @@ def sdjwtFormatter(PID, country):
 
     claims.update(datafinal)
 
-    with open(
-        cfgcountries.supported_countries[country]["pid_mdoc_cert"], "rb"
-    ) as certificate:
-        certificate_data = certificate.read()
+    certificate_data = CONFIGURATION["countries"][country]["keys"]["_default"]["certificate"]
 
     certificate_base64 = base64.b64encode(certificate_data).decode("utf-8")
     x5c = {"x5c": []}
     x5c["x5c"].append(certificate_base64)
 
-    with open(
-        cfgcountries.supported_countries[country]["pid_mdoc_privkey"], "rb"
-    ) as key_file:
-        private_key = serialization.load_pem_private_key(
-            key_file.read(),
-            password=cfgcountries.supported_countries[country][
-                "pid_mdoc_privkey_passwd"
-            ],
-        )
+    key_file = CONFIGURATION["countries"][country]["keys"]["_default"]["private_key"]
+
+    private_key = serialization.load_pem_private_key(
+        key_file,
+        password=CONFIGURATION["countries"][country]["keys"]["_default"]["private_key_password"]
+    )
 
     priv_d = private_key.private_numbers().private_value
 
