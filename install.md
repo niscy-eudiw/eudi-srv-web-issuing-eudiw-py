@@ -4,9 +4,9 @@
 
 The EUDIW Issuer was tested with
 
-+ Python version 3.9.2
++ Python version 3.13
 
-and should only be used with Python 3.9 or 3.10.
+and should only be used with Python 3.10+.
 
 If you don't have it installed, please download it from <https://www.python.org/downloads/> and follow the [Python Developer's Guide](https://devguide.python.org/getting-started/).
 
@@ -14,11 +14,11 @@ If you don't have it installed, please download it from <https://www.python.org/
 
 The EUDIW Issuer was tested with
 
-+ Flask v. 2.3
++ Flask v. 3.1
 
-and should only be used with Flask v. 2.3 or higher.
+and should only be used with Flask v. 3.1 or higher.
 
-To install [Flask](https://flask.palletsprojects.com/en/2.3.x/), please follow the [Installation Guide](https://flask.palletsprojects.com/en/2.3.x/installation/).
+To install [Flask](https://flask.palletsprojects.com/en/stable/), please follow the [Installation Guide](https://flask.palletsprojects.com/en/stable/installation/).
 
 ## 3. How to run the EUDIW Issuer?
 
