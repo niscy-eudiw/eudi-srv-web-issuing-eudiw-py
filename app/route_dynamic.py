@@ -1245,7 +1245,7 @@ def generate_connector_authorization_url(
         "state": state,
         "entity": country,
         # "credentials_requested": credentials_requested[0],
-        "metadata_url": f"{CONFIGURATION['service_url']}.well-known/openid-credential-issuer2",
+        #"metadata_url": f"{CONFIGURATION['service_url']}.well-known/openid-credential-issuer2",
     }
 
     full_url = f"{authorization_endpoint}?{urlencode(params)}"
