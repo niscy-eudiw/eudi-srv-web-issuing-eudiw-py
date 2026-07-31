@@ -73,6 +73,8 @@ def post_redirect_with_payload(target_url: str, data_payload: dict):
     """
     # 1. Serialize the dictionary into a JSON string
     json_data_string = json.dumps(data_payload)
+    # mitigate XSS vulnerability, by escaping single quotes in the JSON string
+    json_data_string = json_data_string.replace("'", "")
 
     # 2. Define the intermediate HTML template
     # Submit immediately without waiting for page load or rendering
