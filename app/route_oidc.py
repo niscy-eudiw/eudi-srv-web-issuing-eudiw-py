@@ -1108,6 +1108,7 @@ def load_test():
     return "load" """
 
 
+'''
 @oidc.route("/logs", methods=["GET"])
 def get_logs_by_session():
     session_id = request.args.get("session_id")
@@ -1149,6 +1150,7 @@ def get_logs_by_session():
             "logs": matches,
         }
     )
+'''
 
 
 @oidc.route("/credential_offer2", methods=["GET"])

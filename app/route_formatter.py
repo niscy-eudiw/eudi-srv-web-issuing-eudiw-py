@@ -167,6 +167,7 @@ def cborformatter():
 
 # --------------------------------------------------------------------------------------------------------------------------------------
 # route to /formatter/sd-jwt
+'''
 @formatter.route("/sd-jwt", methods=["POST"])
 def sd_jwtformatter():
     """Creates sd-jwt, and returns sd-jwt
@@ -229,3 +230,4 @@ def sd_jwtformatter():
     return jsonify(
         {"error_code": 0, "error_message": cfgservice.error_list["0"], "sd-jwt": sd_jwt}
     )
+'''
