@@ -279,6 +279,12 @@ def generate_offer(data):
 def credentialOfferReq2():
 
     json_token = request.form.get("request")
+    
+    from misc import verify_jwt_with_x5c
+    
+    claims = verify_jwt_with_x5c(json_token)
+    
+    logger.info(f"claims: {claims}")
 
     header, payload, signature = json_token.split(".")
 

@@ -892,17 +892,17 @@ def verify_certificate_against_trusted_CA(certificate_der: bytes) -> x509.Certif
     now = datetime.datetime.now(datetime.timezone.utc)
 
     # Check if issued by trusted CA
-    """ if issuer not in trusted_CAs:
+    if issuer not in trusted_CAs:
         logger.error(
             f"Certificate not issued by a trusted CA. Issuer: {issuer}"
         )
         raise CertificateVerificationError(
             f"Certificate not issued by a trusted CA. Issuer: {issuer}"
-        ) """
+        )
 
     logger.debug(f"Certificate issuer found in trusted CAs")
 
-    """ ca_info = trusted_CAs[issuer]
+    ca_info = trusted_CAs[issuer]
     public_key_ca = ca_info["public_key"]
 
     # Verify certificate signature using CA's public key
@@ -921,13 +921,13 @@ def verify_certificate_against_trusted_CA(certificate_der: bytes) -> x509.Certif
         raise CertificateVerificationError("Certificate signature invalid")
     except Exception as e:
         logger.error(f"Certificate signature verification failed: {e}")
-        raise CertificateVerificationError(f"Signature verification failed: {e}") """
+        raise CertificateVerificationError(f"Signature verification failed: {e}")
 
     # Check the CERTIFICATE's validity period (not the CA's)
-    """ cert_not_before = certificate.not_valid_before_utc
-    cert_not_after = certificate.not_valid_after_utc """
+    cert_not_before = certificate.not_valid_before_utc
+    cert_not_after = certificate.not_valid_after_utc
 
-    """ logger.debug(
+    logger.debug(
         f"Certificate validity period: {cert_not_before} to {cert_not_after}"
     )
     logger.debug(f"Current time: {now}")
@@ -945,7 +945,7 @@ def verify_certificate_against_trusted_CA(certificate_der: bytes) -> x509.Certif
         )
         raise CertificateVerificationError(
             f"Certificate expired. Valid until: {cert_not_after}"
-        ) """
+        )
 
     logger.debug("Certificate validity period check passed")
 
