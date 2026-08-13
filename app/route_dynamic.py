@@ -297,6 +297,17 @@ def red():
         raise ValueError(f"Missing mandatory IdP fields: {l}")
 
     auth_code = request.args.get("code")
+    
+    state = request.args.get("state")
+    
+    # For now we are just checking the state if it exists in the session to avoid breaking existing flows. 
+    # In a production environment, we absolutely need to review this, as we should always validate the state parameter to prevent CSRF attacks.
+    
+    if session["oauth_state"] :
+        current_session_state = session["oauth_state"]
+        
+        if state != current_session_state:
+            raise ValueError(f"OAuth2 state mismatch: expected {current_session_state}, got {state}")
 
     country_config = CONFIGURATION["countries"][current_session.country]
 
