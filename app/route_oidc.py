@@ -665,8 +665,8 @@ def credential():
         return make_response(jsonify({"error": "invalid_request"}), 401)
 
     if not (
-        auth_header.lower().startswith("bearer ")
-        or auth_header.lower().startswith("dpop ")
+        auth_header.lower().startswith("dpop ")# or
+        #auth_header.lower().startswith("bearer ") # Stop accepting Bearer tokens for security reasons
     ):
         return make_response(
             jsonify({"error": "invalid_token"}),
