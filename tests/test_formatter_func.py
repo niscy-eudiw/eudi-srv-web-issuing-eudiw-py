@@ -493,6 +493,10 @@ class TestSDJWTFormatter:
     @patch("app.formatter_func.requests.post")
     @patch("app.formatter_func.CONFIGURATION", { # Mock country config
         "service_url": "Fake_URL",
+        "frontend": {
+            "default": "default-frontend",
+            "frontends_config": {"default-frontend": {"url": "https://issuer.test"}},
+        },
         "countries": {
             "FC": {
                 "name": "FormEU",
@@ -549,7 +553,7 @@ class TestSDJWTFormatter:
         mock_sdjwt_instance.sd_jwt_issuance = "sdjwt_token"
         mock_SDJWTIssuer.return_value = mock_sdjwt_instance
 
-        result = sdjwtFormatter(PID, country, "eu.europa.ec.eudi.learning_credential_vc_sd_jwt")
+        result = sdjwtFormatter(PID, country, "eu.europa.ec.eudi.learning_credential_vc_sd_jwt", "test-session-id")
 
         # Assertions
         mock_load_private_key.assert_called_once()
@@ -558,6 +562,8 @@ class TestSDJWTFormatter:
             PID["data"]["claims"], PID["credential_metadata"]
         )
         mock_SDJWTIssuer.assert_called_once()
+        claims = mock_SDJWTIssuer.call_args.args[0]
+        assert claims["iss"] == "https://issuer.test"
         assert result == "sdjwt_token"
 
     @patch("builtins.open", new_callable=mock_open, read_data=b"fake_cert_data")
@@ -584,6 +590,10 @@ class TestSDJWTFormatter:
     @patch("app.formatter_func.requests.post")
     @patch("app.formatter_func.CONFIGURATION", { # Mock country config
         "service_url": "Fake_URL",
+        "frontend": {
+            "default": "default-frontend",
+            "frontends_config": {"default-frontend": {"url": "https://issuer.test"}},
+        },
         "countries": {
             "FC": {
                 "name": "FormEU",
@@ -649,12 +659,130 @@ class TestSDJWTFormatter:
         mock_sdjwt_instance.sd_jwt_issuance = "sdjwt_token_revocation"
         mock_SDJWTIssuer.return_value = mock_sdjwt_instance
 
-        result = sdjwtFormatter(PID, country, "eu.europa.ec.eudi.learning_credential_vc_sd_jwt")
+        result = sdjwtFormatter(PID, country, "eu.europa.ec.eudi.learning_credential_vc_sd_jwt", "test-session-id")
 
         mock_requests_post.assert_called_once()
         mock_sdjwtNestedClaims.assert_called_once()
         mock_SDJWTIssuer.assert_called_once()
         assert result == "sdjwt_token_revocation"
+
+
+SDJWT_FRONTEND_CONFIGURATION = {
+    "service_url": "https://backend.issuer.test",
+    "frontend": {
+        "default": "default-frontend",
+        "frontends_config": {
+            "default-frontend": {"url": "https://issuer.test"},
+            "other-frontend": {"url": "https://other-issuer.test"},
+        },
+    },
+    "countries": {
+        "FC": {
+            "name": "FormEU",
+            "keys": {
+                "_default": {
+                    "private_key_path": "fake_path",
+                    "private_key": "PK Sample Content",
+                    "private_key_password": None,
+                    "certificate_path": "fake_cert_path",
+                    "certificate": "Fake_Certificate_Content",
+                }
+            },
+        }
+    },
+    "revocation": {"enabled": False},
+}
+
+
+def _sdjwt_pid():
+    return {
+        "data": {"claims": {"name": "Alice"}},
+        "credential_metadata": {
+            "issuer_config": {"validity": 365},
+            "vct": "urn:eudi:pid:1",
+        },
+        "device_publickey": "fake_device_key_base64",
+    }
+
+
+def _patch_sdjwt_dependencies(func):
+    """Stack the crypto/sd-jwt mocks shared by the iss claim tests."""
+    patches = [
+        patch("app.formatter_func.base64.b64encode", side_effect=lambda x: b"encoded_cert"),
+        patch("app.formatter_func.serialization.load_pem_private_key"),
+        patch(
+            "app.formatter_func.base64.urlsafe_b64decode",
+            side_effect=lambda x: b"decoded_device_key",
+        ),
+        patch("app.formatter_func.serialization.load_pem_public_key"),
+        patch(
+            "app.formatter_func.KeyData",
+            side_effect=lambda key, t: ("crv", b"x_bytes", b"y_bytes"),
+        ),
+        patch(
+            "app.formatter_func.get_jwk",
+            return_value={"issuer_key": "issuer_key_obj", "holder_key": "holder_key_obj"},
+        ),
+        patch(
+            "app.formatter_func.sdjwtNestedClaims", return_value={"claim_wrapped": "value"}
+        ),
+    ]
+    for p in patches:
+        func = p(func)
+    return func
+
+
+class TestSDJWTFormatterIssClaim:
+
+    @_patch_sdjwt_dependencies
+    @patch("app.formatter_func.SDJWTIssuer")
+    @patch("app.formatter_func.session_manager")
+    @patch("app.formatter_func.CONFIGURATION", SDJWT_FRONTEND_CONFIGURATION)
+    def test_iss_is_session_frontend_url(
+        self, mock_session_manager, mock_SDJWTIssuer, *_
+    ):
+        mock_session = MagicMock()
+        mock_session.frontend_id = "other-frontend"
+        mock_session.max_credential_exp = None
+        mock_session_manager.get_session.return_value = mock_session
+
+        sdjwtFormatter(_sdjwt_pid(), "FC", "eu.europa.ec.eudi.pid_vc_sd_jwt", "sess-1")
+
+        mock_session_manager.get_session.assert_called_with(session_id="sess-1")
+        claims = mock_SDJWTIssuer.call_args.args[0]
+        assert claims["iss"] == "https://other-issuer.test"
+
+    @_patch_sdjwt_dependencies
+    @patch("app.formatter_func.SDJWTIssuer")
+    @patch("app.formatter_func.session_manager")
+    @patch("app.formatter_func.CONFIGURATION", SDJWT_FRONTEND_CONFIGURATION)
+    def test_iss_falls_back_to_default_frontend_without_frontend_id(
+        self, mock_session_manager, mock_SDJWTIssuer, *_
+    ):
+        mock_session = MagicMock()
+        mock_session.frontend_id = None
+        mock_session.max_credential_exp = None
+        mock_session_manager.get_session.return_value = mock_session
+
+        sdjwtFormatter(_sdjwt_pid(), "FC", "eu.europa.ec.eudi.pid_vc_sd_jwt", "sess-2")
+
+        claims = mock_SDJWTIssuer.call_args.args[0]
+        assert claims["iss"] == "https://issuer.test"
+
+    @_patch_sdjwt_dependencies
+    @patch("app.formatter_func.SDJWTIssuer")
+    @patch("app.formatter_func.session_manager")
+    @patch("app.formatter_func.CONFIGURATION", SDJWT_FRONTEND_CONFIGURATION)
+    def test_iss_falls_back_to_default_frontend_without_session(
+        self, mock_session_manager, mock_SDJWTIssuer, *_
+    ):
+        mock_session_manager.get_session.return_value = None
+
+        sdjwtFormatter(_sdjwt_pid(), "FC", "eu.europa.ec.eudi.pid_vc_sd_jwt", "unknown")
+
+        claims = mock_SDJWTIssuer.call_args.args[0]
+        assert claims["iss"] == "https://issuer.test"
+        assert claims["iss"] != SDJWT_FRONTEND_CONFIGURATION["service_url"]
 
 
 class TestDATA_SDJWT:

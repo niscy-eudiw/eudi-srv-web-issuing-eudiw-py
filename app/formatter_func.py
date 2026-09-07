@@ -304,6 +304,8 @@ def sdjwtFormatter(PID, country, scope, session_id):
     Keyword arguments:
     + PID - doctype data "dictionary" with one or more "namespace": {"namespace data and fields"} tuples
     + country -- Issuing country
+    + scope -- Credential configuration id being issued
+    + session_id -- Issuance session; its frontend_id selects the credential issuer URL used as "iss"
 
     Return: Returns the sd-jwt
     """
@@ -362,8 +364,18 @@ def sdjwtFormatter(PID, country, scope, session_id):
                     key_status=revocation_json,
                 )
 
+    # "iss" must be the credential issuer identifier the wallet talked to,
+    # i.e. the frontend URL the request came from, not this backend's URL.
+    # It must match the identifier bound in the signing certificate (x5c).
+    frontend_id = None
+    if current_session is not None:
+        frontend_id = current_session.frontend_id
+    if not frontend_id:
+        frontend_id = CONFIGURATION["frontend"]["default"]
+    issuer_url = CONFIGURATION["frontend"]["frontends_config"][frontend_id]["url"]
+
     claims = {
-        "iss": CONFIGURATION["service_url"],
+        "iss": issuer_url,
         "iat": iat,
         "exp": exp,
         "vct": vct,
