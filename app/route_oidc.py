@@ -413,12 +413,90 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives import serialization
 
 
-# gets the public key from a JWK
+_BASE58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+
+# multicodec prefix (varint 0x1200) of a compressed P-256 public key
+_MULTICODEC_P256_PUB = b"\x80\x24"
+
+
+def _b58decode(value):
+    number = 0
+    for char in value:
+        number = number * 58 + _BASE58_ALPHABET.index(char)
+
+    decoded = number.to_bytes((number.bit_length() + 7) // 8, "big")
+
+    return b"\x00" * (len(value) - len(value.lstrip("1"))) + decoded
+
+
+def _b64url_uint(number):
+    return base64.urlsafe_b64encode(number.to_bytes(32, "big")).rstrip(b"=").decode()
+
+
+def jwk_from_did_url(did_url):
+    """Resolves the DID URL of a JWT proof 'kid' header to a public JWK.
+
+    Supports the DID methods that carry the key in the identifier itself:
+    did:jwk and did:key (P-256).
+
+    Raises ValueError if the key cannot be resolved.
+    """
+    if not isinstance(did_url, str):
+        raise ValueError("Invalid kid in JWT proof")
+
+    did = did_url.split("#")[0]
+
+    try:
+        if did.startswith("did:jwk:"):
+            encoded_jwk = did[len("did:jwk:") :]
+            jwk = json.loads(
+                base64.urlsafe_b64decode(encoded_jwk + "=" * (-len(encoded_jwk) % 4))
+            )
+            if not isinstance(jwk, dict):
+                raise ValueError("did:jwk does not contain a JWK")
+            return jwk
+
+        if did.startswith("did:key:z"):
+            key_bytes = _b58decode(did[len("did:key:z") :])
+            if not key_bytes.startswith(_MULTICODEC_P256_PUB):
+                raise ValueError("Credential Issuer only supports P-256 curves")
+
+            public_numbers = ec.EllipticCurvePublicKey.from_encoded_point(
+                ec.SECP256R1(), key_bytes[len(_MULTICODEC_P256_PUB) :]
+            ).public_numbers()
+
+            return {
+                "kty": "EC",
+                "crv": "P-256",
+                "x": _b64url_uint(public_numbers.x),
+                "y": _b64url_uint(public_numbers.y),
+            }
+    except ValueError as e:
+        raise ValueError(f"Invalid kid in JWT proof: {e}")
+
+    raise ValueError(
+        "Unsupported kid in JWT proof: supported DID methods are did:jwk and did:key"
+    )
+
+
+# gets the public key from the header of a JWT proof
 def pKfromJWT(jwt_encoded):
     jwt_decoded = jwt.get_unverified_header(jwt_encoded)
-    jwk = jwt_decoded["jwk"]
 
-    return pKfromJWK(jwk)
+    if "jwk" in jwt_decoded:
+        jwk = jwt_decoded["jwk"]
+    elif "kid" in jwt_decoded:
+        jwk = jwk_from_did_url(jwt_decoded["kid"])
+    else:
+        raise ValueError("JWT proof header must contain jwk or kid")
+
+    device_key = pKfromJWK(jwk)
+
+    # pKfromJWK reports an unsupported key as an error response
+    if isinstance(device_key, dict):
+        raise ValueError(device_key["error_description"])
+
+    return device_key
 
 
 def pKfromJWK(jwk):
@@ -590,7 +668,10 @@ def generate_credentials(credential_request, session_id, wia_client_status=None)
             formatter_request.update({"proofs": [{"jwt": device_key}]})
 
         except Exception as e:
-            return ""
+            logger.info(
+                f", Session ID: {session_id}, invalid proof in credential request"
+            )
+            return {"error": "invalid_proof", "error_description": str(e)}
 
     elif "proofs" in credential_request:
         for alg, key_list in credential_request["proofs"].items():

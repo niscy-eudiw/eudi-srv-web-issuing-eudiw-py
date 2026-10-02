@@ -598,6 +598,126 @@ class TestHelperFunctions:
         assert result["error"] == "invalid_proof"
 
 
+class TestProofKeyFromJwtHeader:
+    """pKfromJWT: the key a JWT proof binds the credential to, taken from the
+    'jwk' header or resolved from a DID URL in the 'kid' header."""
+
+    # P-256 test vector from the did:key specification
+    DID_KEY = "did:key:zDnaerDaTF5BXEavCrfRZEk316dpbLsfPDZ3WJ5hRTPFU2169"
+    DID_KEY_JWK = {
+        "kty": "EC",
+        "crv": "P-256",
+        "x": "fyNYMN0976ci7xqiSdag3buk-ZCwgXU4kz9XNkBlNUI",
+        "y": "hW2ojTNfH7Jbi8--CJUo3OCbH3y5n91g-IMA9MLMbTU",
+    }
+
+    @pytest.fixture
+    def holder_jwk(self):
+        return json.loads(jwk.JWK.generate(kty="EC", crv="P-256").export_public())
+
+    @staticmethod
+    def proof_jwt(**header):
+        import jwt as pyjwt
+        from cryptography.hazmat.primitives.asymmetric import ec
+
+        return pyjwt.encode(
+            {"aud": "https://test.issuer.dev", "nonce": "n-0S6_WzA2Mj"},
+            ec.generate_private_key(ec.SECP256R1()),
+            algorithm="ES256",
+            headers={"typ": "openid4vci-proof+jwt", **header},
+        )
+
+    @staticmethod
+    def did_jwk(public_jwk):
+        encoded = base64.urlsafe_b64encode(json.dumps(public_jwk).encode()).decode()
+        return "did:jwk:" + encoded.rstrip("=")
+
+    def test_jwk_header(self, holder_jwk):
+        from app.route_oidc import pKfromJWT, pKfromJWK
+
+        assert pKfromJWT(self.proof_jwt(jwk=holder_jwk)) == pKfromJWK(holder_jwk)
+
+    def test_kid_did_jwk(self, holder_jwk):
+        from app.route_oidc import pKfromJWT, pKfromJWK
+
+        kid = self.did_jwk(holder_jwk) + "#0"
+
+        assert pKfromJWT(self.proof_jwt(kid=kid)) == pKfromJWK(holder_jwk)
+
+    def test_kid_did_jwk_without_fragment(self, holder_jwk):
+        from app.route_oidc import pKfromJWT, pKfromJWK
+
+        kid = self.did_jwk(holder_jwk)
+
+        assert pKfromJWT(self.proof_jwt(kid=kid)) == pKfromJWK(holder_jwk)
+
+    def test_kid_did_key(self):
+        from app.route_oidc import pKfromJWT, pKfromJWK
+
+        kid = f"{self.DID_KEY}#{self.DID_KEY.split(':')[2]}"
+
+        assert pKfromJWT(self.proof_jwt(kid=kid)) == pKfromJWK(self.DID_KEY_JWK)
+
+    @pytest.mark.parametrize(
+        "kid",
+        [
+            "did:web:wallet.example.com#key-1",
+            # did:key holding an Ed25519 key
+            "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+            "did:key:not-multibase",
+            "did:jwk:not-a-jwk",
+            "some-opaque-key-id",
+        ],
+    )
+    def test_kid_that_cannot_be_resolved_is_rejected(self, kid):
+        from app.route_oidc import pKfromJWT
+
+        with pytest.raises(ValueError):
+            pKfromJWT(self.proof_jwt(kid=kid))
+
+    def test_kid_did_jwk_that_is_not_a_jwk_object_is_rejected(self):
+        from app.route_oidc import pKfromJWT
+
+        kid = "did:jwk:" + base64.urlsafe_b64encode(b"123").decode().rstrip("=")
+
+        with pytest.raises(ValueError):
+            pKfromJWT(self.proof_jwt(kid=kid))
+
+    def test_key_on_unsupported_curve_is_rejected(self):
+        from app.route_oidc import pKfromJWT
+
+        p384_jwk = json.loads(jwk.JWK.generate(kty="EC", crv="P-384").export_public())
+
+        with pytest.raises(ValueError, match="P-256"):
+            pKfromJWT(self.proof_jwt(jwk=p384_jwk))
+
+        with pytest.raises(ValueError, match="P-256"):
+            pKfromJWT(self.proof_jwt(kid=self.did_jwk(p384_jwk)))
+
+    def test_header_without_jwk_or_kid_is_rejected(self):
+        from app.route_oidc import pKfromJWT
+
+        with pytest.raises(ValueError):
+            pKfromJWT(self.proof_jwt())
+
+    def test_single_proof_with_unresolvable_key_is_invalid_proof(
+        self, mock_session_manager, mock_cfgservice
+    ):
+        from app.route_oidc import generate_credentials
+
+        credential_request = {
+            "credential_configuration_id": "test-cred",
+            "proof": {
+                "proof_type": "jwt",
+                "jwt": self.proof_jwt(kid="did:web:wallet.example.com#key-1"),
+            },
+        }
+
+        result = generate_credentials(credential_request, "test-session-id")
+
+        assert result["error"] == "invalid_proof"
+
+
 class TestLogs:
     """Test logs endpoint"""
 
