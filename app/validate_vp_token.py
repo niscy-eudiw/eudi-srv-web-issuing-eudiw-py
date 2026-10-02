@@ -244,6 +244,19 @@ def validate_certificate(mdoc):
     validFrom = ValidityInfo["validFrom"]
     validUntil = ValidityInfo["validUntil"]
 
+    # ISO/IEC 18013-5: the timestamps in ValidityInfo shall not use fractions
+    # of seconds and shall use a UTC offset of 00:00.
+    for timestamp in (signed, validFrom, validUntil):
+        if (
+            not isinstance(timestamp, datetime.datetime)
+            or timestamp.microsecond != 0
+            or timestamp.utcoffset() != datetime.timedelta(0)
+        ):
+            return (
+                False,
+                "ValidityInfo timestamps must be in UTC without fractions of seconds",
+            )
+
     if signed < not_valid_before or not_valid_after < signed:
         return False, "Signed date isn't within validity period of the certificate"
 

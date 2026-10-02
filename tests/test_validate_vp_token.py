@@ -172,6 +172,7 @@ class TestValidateCertificate:
     )
     def test_valid_certificate_success(self):
         mock_cert = self.make_mock_cert()
+        now = datetime.now(timezone.utc).replace(microsecond=0)
         mdoc = {
             "issuerSigned": {"issuerAuth": b"auth", "nameSpaces": {"ns": []}},
             "docType": "PID",
@@ -190,11 +191,9 @@ class TestValidateCertificate:
                             "digestAlgorithm": "SHA-256",
                             "valueDigests": {"ns": {}},
                             "validityInfo": {
-                                "signed": datetime.now(timezone.utc),
-                                "validFrom": datetime.now(timezone.utc)
-                                - timedelta(days=2),
-                                "validUntil": datetime.now(timezone.utc)
-                                + timedelta(days=2),
+                                "signed": now,
+                                "validFrom": now - timedelta(days=2),
+                                "validUntil": now + timedelta(days=2),
                             },
                         }
                     ),
@@ -207,6 +206,106 @@ class TestValidateCertificate:
             mock_decode.return_value = message
             result = validate_certificate(mdoc)
         assert result == (True, "")
+
+    def validate_with_validity_info(self, validity_info):
+        """Run validate_certificate on an otherwise valid mdoc whose MSO
+        carries the given validityInfo."""
+        now = datetime.now(timezone.utc)
+        trusted = {
+            "Fake CA": {
+                "public_key": MagicMock(),
+                "not_valid_before": now - timedelta(days=1),
+                "not_valid_after": now + timedelta(days=1),
+            }
+        }
+        mdoc = {
+            "issuerSigned": {"issuerAuth": b"auth", "nameSpaces": {"ns": []}},
+            "docType": "PID",
+        }
+        with patch("app.validate_vp_token.trusted_CAs", trusted), patch(
+            "app.validate_vp_token.Sign1Message.decode"
+        ) as mock_decode, patch(
+            "app.validate_vp_token.x509.load_der_x509_certificate",
+            return_value=self.make_mock_cert(),
+        ):
+            message = MagicMock()
+            message.payload = cbor2.dumps(
+                cbor2.CBORTag(
+                    24,
+                    cbor2.dumps(
+                        {
+                            "docType": "PID",
+                            "digestAlgorithm": "SHA-256",
+                            "valueDigests": {"ns": {}},
+                            "validityInfo": validity_info,
+                        }
+                    ),
+                )
+            )
+            message.phdr = {}
+            message.uhdr = {X5chain: b"chain"}
+            message.signature = b"sig"
+            mock_decode.return_value = message
+            return validate_certificate(mdoc)
+
+    @staticmethod
+    def tdate(moment, suffix="Z"):
+        """A CBOR tag 0 date-time string for `moment`, whole seconds."""
+        return cbor2.CBORTag(0, moment.strftime("%Y-%m-%dT%H:%M:%S") + suffix)
+
+    INVALID_TIMESTAMP_FORMAT = (
+        False,
+        "ValidityInfo timestamps must be in UTC without fractions of seconds",
+    )
+
+    def test_validity_info_whole_second_utc_timestamps_accepted(self):
+        now = datetime.now(timezone.utc)
+        result = self.validate_with_validity_info(
+            {
+                "signed": self.tdate(now),
+                "validFrom": self.tdate(now - timedelta(days=2)),
+                "validUntil": self.tdate(now + timedelta(days=2)),
+            }
+        )
+        assert result == (True, "")
+
+    @pytest.mark.parametrize("field", ["signed", "validFrom", "validUntil"])
+    def test_validity_info_fractional_seconds_rejected(self, field):
+        now = datetime.now(timezone.utc)
+        validity_info = {
+            "signed": self.tdate(now),
+            "validFrom": self.tdate(now - timedelta(days=2)),
+            "validUntil": self.tdate(now + timedelta(days=2)),
+        }
+        validity_info[field] = cbor2.CBORTag(0, validity_info[field].value[:-1] + ".5Z")
+
+        assert (
+            self.validate_with_validity_info(validity_info)
+            == self.INVALID_TIMESTAMP_FORMAT
+        )
+
+    def test_validity_info_non_utc_offset_rejected(self):
+        now = datetime.now(timezone.utc)
+        local = now.astimezone(timezone(timedelta(hours=2)))
+        result = self.validate_with_validity_info(
+            {
+                "signed": self.tdate(now),
+                "validFrom": self.tdate(now - timedelta(days=2)),
+                "validUntil": self.tdate(local + timedelta(days=2), suffix="+02:00"),
+            }
+        )
+        assert result == self.INVALID_TIMESTAMP_FORMAT
+
+    def test_validity_info_untagged_string_rejected(self):
+        now = datetime.now(timezone.utc)
+        result = self.validate_with_validity_info(
+            {
+                "signed": self.tdate(now),
+                "validFrom": self.tdate(now - timedelta(days=2)),
+                "validUntil": (now + timedelta(days=2)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            }
+        )
+        assert result == self.INVALID_TIMESTAMP_FORMAT
 
     def test_decode_failure(self):
         """If Sign1Message.decode fails, the exception should propagate."""
