@@ -846,6 +846,39 @@ class TestCompleteCodeCoverage:
         assert "field1" in call_args
         assert "field2" in call_args
 
+    @patch("app.preauthorization.form_formatter")
+    @patch("app.preauthorization.presentation_formatter")
+    @patch("app.preauthorization.post_redirect_with_payload")
+    def test_preauth_form_without_proceed_does_not_fail(
+        self,
+        mock_post_redirect,
+        mock_pres_formatter,
+        mock_form_formatter,
+        client,
+        mock_session_manager,
+        mock_configuration,
+    ):
+        """The submit button field is client-controlled; its absence is not a server error."""
+        from flask import Response
+
+        mock_form_formatter.return_value = {"clean": "data"}
+        mock_pres_formatter.return_value = {"pres": "data"}
+        mock_post_redirect.return_value = Response("redirect", status=302)
+
+        with client.session_transaction() as sess:
+            sess["session_id"] = "test_session_id"
+
+        response = client.post(
+            "/preauth_form",
+            data={"field1": "value1", "field2": "value2"},
+        )
+
+        assert response.status_code == 302
+        assert mock_form_formatter.call_args[0][0] == {
+            "field1": "value1",
+            "field2": "value2",
+        }
+
     @patch("app.preauthorization.request_preauth_token")
     def test_credential_offer_req2_constructs_authorization_details(
         self, mock_request_token, client, mock_session_manager, mock_configuration

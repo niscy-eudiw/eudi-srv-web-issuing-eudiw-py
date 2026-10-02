@@ -1312,6 +1312,51 @@ class TestAuthMethod:
 
 
 # -----------------------
+# Test: Dynamic Route - Form Submission
+# -----------------------
+class TestDynamicForm:
+    """Test class for the /dynamic/form endpoint"""
+
+    @pytest.fixture
+    def form_mocks(self, mock_config):
+        from flask import Response
+
+        with patch("app.route_dynamic.session_manager") as mock_session_manager, patch(
+            "app.route_dynamic.form_formatter", return_value={"clean": "data"}
+        ) as mock_form_formatter, patch(
+            "app.route_dynamic.presentation_formatter", return_value={"pres": "data"}
+        ), patch(
+            "app.route_dynamic.post_redirect_with_payload",
+            return_value=Response("redirect", status=302),
+        ):
+            mock_session_manager.get_session.return_value = MagicMock(
+                frontend_id="frontend1"
+            )
+            yield mock_form_formatter
+
+    def test_form_post_removes_proceed_before_formatting(self, client, form_mocks):
+        with client.session_transaction() as sess:
+            sess["session_id"] = "test_session_id"
+
+        response = client.post(
+            "/dynamic/form", data={"family_name": "Doe", "proceed": "Submit"}
+        )
+
+        assert response.status_code == 302
+        assert form_mocks.call_args[0][0] == {"family_name": "Doe"}
+
+    def test_form_post_without_proceed_does_not_fail(self, client, form_mocks):
+        """The submit button field is client-controlled; its absence is not a server error."""
+        with client.session_transaction() as sess:
+            sess["session_id"] = "test_session_id"
+
+        response = client.post("/dynamic/form", data={"family_name": "Doe"})
+
+        assert response.status_code == 302
+        assert form_mocks.call_args[0][0] == {"family_name": "Doe"}
+
+
+# -----------------------
 # Test: Form Formatter Function
 # -----------------------
 class TestFormFormatter:
