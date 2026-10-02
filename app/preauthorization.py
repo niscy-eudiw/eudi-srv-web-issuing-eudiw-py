@@ -47,6 +47,7 @@ from app.misc import (
     getAttributesForm2,
 )
 from app import CONFIGURATION
+from app.data_management import credential_offer_references
 from . import session_manager
 
 
@@ -237,14 +238,34 @@ def generate_offer(data):
     }
 
     # create URI
-    json_string = json.dumps(credential_offer)
-
     credential_offer_URI = session["credential_offer_URI"]
 
-    uri = (
-        f"{credential_offer_URI}credential_offer?credential_offer="
-        + urllib.parse.quote(json_string, safe=":/")
-    )
+    if session.get("credential_offer_mode") == "by_reference":
+        reference_id = generate_unique_id()
+        credential_offer_references.update(
+            {
+                reference_id: {
+                    "credential_offer": credential_offer,
+                    "expires": datetime.now()
+                    + timedelta(minutes=CONFIGURATION["expiry"]["form"]),
+                }
+            }
+        )
+        reference_url = (
+            f"{CONFIGURATION['service_url'].rstrip('/')}"
+            f"/credential-offer-reference/{reference_id}"
+        )
+        uri = (
+            f"{credential_offer_URI}credential_offer?credential_offer_uri="
+            + urllib.parse.quote(reference_url, safe="")
+        )
+    else:
+        json_string = json.dumps(credential_offer)
+
+        uri = (
+            f"{credential_offer_URI}credential_offer?credential_offer="
+            + urllib.parse.quote(json_string, safe=":/")
+        )
 
     qrcode = segno.make(uri)
     out = io.BytesIO()

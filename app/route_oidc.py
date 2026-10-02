@@ -1542,11 +1542,16 @@ def credentialOffer():
     form_keys = request.form.keys()
     credential_offer_URI = request.form.get("credential_offer_URI")
 
+    # "by_value" (default) or "by_reference" (credential_offer_uri)
+    credential_offer_mode = request.form.get("credential_offer_mode", "by_value")
+
     if "proceed" in form_keys:
         form = list(form_keys)
         form.remove("proceed")
         form.remove("credential_offer_URI")
         form.remove("Authorization Code Grant")
+        if "credential_offer_mode" in form:
+            form.remove("credential_offer_mode")
         all_exist = all(credential in credentialsSupported for credential in form)
 
         if all_exist:
@@ -1555,6 +1560,7 @@ def credentialOffer():
             credentials_id_list = json.dumps(form)
             if auth_choice == "pre_auth_code":
                 session["credential_offer_URI"] = credential_offer_URI
+                session["credential_offer_mode"] = credential_offer_mode
                 return redirect(
                     url_for("preauth.preauthRed", credentials_id=credentials_id_list)
                 )
@@ -1586,12 +1592,22 @@ def credentialOffer():
                 )
 
                 # create URI
-                json_string = json.dumps(credential_offer)
+                if credential_offer_mode == "by_reference":
+                    reference_url = (
+                        f"{CONFIGURATION['service_url'].rstrip('/')}"
+                        f"/credential-offer-reference/{reference_id}"
+                    )
+                    uri = (
+                        f"{credential_offer_URI}credential_offer?credential_offer_uri="
+                        + urllib.parse.quote(reference_url, safe="")
+                    )
+                else:
+                    json_string = json.dumps(credential_offer)
 
-                uri = (
-                    f"{credential_offer_URI}credential_offer?credential_offer="
-                    + urllib.parse.quote(json_string, safe=":/")
-                )
+                    uri = (
+                        f"{credential_offer_URI}credential_offer?credential_offer="
+                        + urllib.parse.quote(json_string, safe=":/")
+                    )
 
                 # Generate QR code
                 # img = qrcode.make("uri")
@@ -1642,6 +1658,9 @@ def credentialOffer():
 
 @oidc.route("/credential-offer-reference/<string:reference_id>", methods=["GET"])
 def offer_reference(reference_id):
+    if reference_id not in credential_offer_references:
+        return jsonify({"error": "Credential offer not found or expired"}), 404
+
     return credential_offer_references[reference_id]["credential_offer"]
 
 

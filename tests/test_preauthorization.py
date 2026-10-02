@@ -221,6 +221,64 @@ class TestPreauthRed:
         assert "email" not in optional_attrs
 
 
+class TestGenerateOfferMode:
+    """The pre-authorized code offer is passed by value by default and by
+    reference (credential_offer_uri) when the session asks for it."""
+
+    @pytest.fixture
+    def generate(self, client, mock_session_manager, mock_configuration):
+        from flask import Response
+
+        def _generate(**session_values):
+            with client.session_transaction() as sess:
+                sess["session_id"] = "test_session_id"
+                sess["credential_offer_URI"] = "openid-credential-offer://"
+                sess.update(session_values)
+
+            with patch(
+                "app.preauthorization.post_redirect_with_payload",
+                return_value=Response("redirect", status=302),
+            ) as mock_post_redirect:
+                response = client.post(
+                    "/form_authorize_generate", data={"user_id": "test_session_id"}
+                )
+
+            assert response.status_code == 302
+            return mock_post_redirect.call_args.kwargs["data_payload"]
+
+        return _generate
+
+    def test_offer_by_value_by_default(self, generate):
+        from urllib.parse import urlparse, parse_qs
+
+        payload = generate()
+
+        query = parse_qs(urlparse(payload["url_data"]).query)
+        assert "credential_offer_uri" not in query
+        assert json.loads(query["credential_offer"][0]) == payload["credential_offer"]
+
+    def test_offer_by_reference(self, generate):
+        from urllib.parse import urlparse, parse_qs
+        from app.data_management import credential_offer_references
+
+        payload = generate(credential_offer_mode="by_reference")
+
+        query = parse_qs(urlparse(payload["url_data"]).query)
+        assert "credential_offer" not in query
+
+        reference = urlparse(query["credential_offer_uri"][0])
+        assert reference.scheme == "http"
+        assert reference.netloc == "test-service.com"
+        assert reference.path.startswith("/credential-offer-reference/")
+
+        reference_id = reference.path.rsplit("/", 1)[1]
+        stored = credential_offer_references[reference_id]
+        assert stored["credential_offer"] == payload["credential_offer"]
+        assert stored["credential_offer"]["grants"][
+            "urn:ietf:params:oauth:grant-type:pre-authorized_code"
+        ]["pre-authorized_code"] == "test_preauth_code_123"
+
+
 class TestPreauthForm:
     """Test the /preauth_form route."""
 

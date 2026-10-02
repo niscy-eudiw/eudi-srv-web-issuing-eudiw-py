@@ -35,6 +35,7 @@ import uuid
 from unittest.mock import Mock, patch, MagicMock
 from datetime import datetime, timedelta
 from io import BytesIO
+from urllib.parse import urlparse, parse_qs
 
 from flask import Flask, session
 from jwcrypto import jwk, jwe
@@ -994,6 +995,112 @@ class TestOfferReference:
 
         assert response.status_code == 200
         assert response.json == test_offer
+
+
+    def test_offer_reference_unknown(self, client):
+        """An unknown or expired reference is not found"""
+        response = client.get("/credential-offer-reference/does-not-exist")
+
+        assert response.status_code == 404
+
+
+class TestCredentialOfferByReference:
+    """POST /credential_offer: the offer is passed by value by default and by
+    reference (credential_offer_uri) when credential_offer_mode asks for it."""
+
+    CREDENTIAL_ID = "eu.europa.ec.eudi.pid_mdoc"
+
+    @pytest.fixture
+    def submit_offer_form(self, client, mock_cfgservice):
+        from flask import Response
+
+        def _submit(**extra_fields):
+            form = {
+                self.CREDENTIAL_ID: self.CREDENTIAL_ID,
+                "Authorization Code Grant": "auth_code",
+                "credential_offer_URI": "openid-credential-offer://",
+                "proceed": "Submit",
+                **extra_fields,
+            }
+            with patch.dict(
+                "app.route_oidc.oidc_metadata",
+                {"credential_configurations_supported": {self.CREDENTIAL_ID: {}}},
+                clear=True,
+            ), patch.dict(
+                "app.route_oidc.CONFIGURATION",
+                {"wallet_tester_url": "https://tester.wallet.dev"},
+            ), patch(
+                "app.route_oidc.post_redirect_with_payload",
+                return_value=Response("redirect", status=302),
+            ) as mock_post_redirect:
+                response = client.post("/credential_offer", data=form)
+
+            assert response.status_code == 302
+            return mock_post_redirect.call_args.kwargs["data_payload"]
+
+        return _submit
+
+    def test_offer_by_value_by_default(self, submit_offer_form):
+        payload = submit_offer_form()
+
+        url = urlparse(payload["url_data"])
+        query = parse_qs(url.query)
+        assert url.scheme == "openid-credential-offer"
+        assert "credential_offer_uri" not in query
+        assert json.loads(query["credential_offer"][0]) == payload["credential_offer"]
+
+    def test_offer_by_reference(self, submit_offer_form, client):
+        payload = submit_offer_form(credential_offer_mode="by_reference")
+
+        url = urlparse(payload["url_data"])
+        query = parse_qs(url.query)
+        assert url.scheme == "openid-credential-offer"
+        assert "credential_offer" not in query
+
+        reference = urlparse(query["credential_offer_uri"][0])
+        assert reference.scheme == "https"
+        assert reference.netloc == "test.issuer.dev"
+
+        # The wallet dereferences the URI to get the offer itself
+        response = client.get(reference.path)
+        assert response.status_code == 200
+        assert response.json == payload["credential_offer"]
+        assert response.json["credential_configuration_ids"] == [self.CREDENTIAL_ID]
+
+    @pytest.mark.parametrize(
+        "form_mode, expected_mode",
+        [({}, "by_value"), ({"credential_offer_mode": "by_reference"}, "by_reference")],
+    )
+    def test_pre_authorized_flow_keeps_the_mode_for_the_offer(
+        self, client, mock_cfgservice, form_mode, expected_mode
+    ):
+        form = {
+            self.CREDENTIAL_ID: self.CREDENTIAL_ID,
+            "Authorization Code Grant": "pre_auth_code",
+            "credential_offer_URI": "openid-credential-offer://",
+            "proceed": "Submit",
+            **form_mode,
+        }
+        with patch.dict(
+            "app.route_oidc.oidc_metadata",
+            {"credential_configurations_supported": {self.CREDENTIAL_ID: {}}},
+            clear=True,
+        ), patch("app.route_oidc.url_for", return_value="/preauth") as mock_url_for:
+            response = client.post("/credential_offer", data=form)
+
+        assert response.status_code == 302
+        mock_url_for.assert_called_once_with(
+            "preauth.preauthRed", credentials_id=json.dumps([self.CREDENTIAL_ID])
+        )
+        with client.session_transaction() as sess:
+            assert sess["credential_offer_mode"] == expected_mode
+
+    def test_unknown_mode_falls_back_to_by_value(self, submit_offer_form):
+        payload = submit_offer_form(credential_offer_mode="something-else")
+
+        query = parse_qs(urlparse(payload["url_data"]).query)
+        assert "credential_offer" in query
+        assert "credential_offer_uri" not in query
 
 
 class TestBranchCoverage:
