@@ -18,7 +18,9 @@
 ###############################################################################
 import pytest
 import datetime
+from types import SimpleNamespace
 from unittest.mock import patch, MagicMock, mock_open
+from pymdoccbor.mso.issuer import MsoIssuer
 from app.formatter_func import (
     DATA_sd_jwt,
     DatestringFormatter,
@@ -303,6 +305,127 @@ class TestMdocFormatter:
 
 
 # ------------------- Test class for cbor2elems -------------------
+
+
+def _freeze_formatter_clock(moment):
+    """Make datetime.datetime.now() inside formatter_func return `moment` (UTC)."""
+
+    class _FrozenDatetime(datetime.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return moment.astimezone(tz) if tz else moment.replace(tzinfo=None)
+
+    frozen_module = SimpleNamespace(
+        datetime=_FrozenDatetime,
+        timedelta=datetime.timedelta,
+        timezone=datetime.timezone,
+        date=datetime.date,
+    )
+    return patch("app.formatter_func.datetime", frozen_module)
+
+
+class TestMdocFormatterValidityTimestamps:
+    """The MSO validityInfo timestamps must be 'YYYY-MM-DDTHH:MM:SSZ':
+    no fractions of a second and no numeric UTC offset."""
+
+    CEILING = datetime.datetime(2026, 11, 3, 10, 0, 0, tzinfo=datetime.timezone.utc)
+
+    @pytest.fixture
+    def issue_mdoc(self, sample_data, credential_metadata, device_publickey, session_id):
+        configuration = {
+            "countries": {
+                "FC": {
+                    "keys": {
+                        "_default": {
+                            "private_key": "PK Sample Content",
+                            "private_key_password": None,
+                            "certificate_path": "fake_cert_path",
+                        }
+                    }
+                }
+            },
+            "revocation": {"enabled": False},
+        }
+
+        def _issue(now, is_batch=False, max_credential_exp=None):
+            """Run mdocFormatter at `now` and return the validity timestamps
+            as the mdoc library serializes them into the MSO."""
+            mock_session = MagicMock()
+            mock_session.is_batch_credential = is_batch
+            mock_session.country = "FC"
+            mock_session.max_credential_exp = max_credential_exp
+
+            with patch("app.formatter_func.CONFIGURATION", configuration), patch(
+                "app.formatter_func.serialization.load_pem_private_key"
+            ) as mock_load_key, patch(
+                "app.formatter_func.urlsafe_b64encode_nopad", return_value=b"signed_mdoc"
+            ), patch(
+                "app.formatter_func.MdocCborIssuer"
+            ) as mock_MdocCborIssuer, patch(
+                "app.formatter_func.session_manager"
+            ) as mock_session_manager, _freeze_formatter_clock(now):
+                mock_load_key.return_value.private_numbers.return_value.private_value = 12345
+                mock_session_manager.get_session.return_value = mock_session
+
+                mdocFormatter(
+                    data=sample_data,
+                    credential_metadata=credential_metadata,
+                    country="FC",
+                    device_publickey=device_publickey,
+                    session_id=session_id,
+                )
+
+            validity = mock_MdocCborIssuer.return_value.new.call_args.kwargs["validity"]
+            return {
+                name: MsoIssuer.format_datetime_repr(None, value)
+                for name, value in validity.items()
+            }
+
+        return _issue
+
+    @pytest.mark.parametrize("microsecond", [0, 123456])
+    def test_issuance_and_expiry(self, issue_mdoc, microsecond):
+        now = datetime.datetime(
+            2026, 10, 2, 1, 0, 21, microsecond, tzinfo=datetime.timezone.utc
+        )
+
+        assert issue_mdoc(now) == {
+            "issuance_date": "2026-10-02T01:00:21Z",
+            "expiry_date": "2027-10-02T01:00:21Z",
+        }
+
+    @pytest.mark.parametrize("microsecond", [0, 123456])
+    def test_batch_credential(self, issue_mdoc, microsecond):
+        now = datetime.datetime(
+            2026, 10, 2, 1, 0, 21, microsecond, tzinfo=datetime.timezone.utc
+        )
+
+        assert issue_mdoc(now, is_batch=True) == {
+            "issuance_date": "2026-10-02T00:00:00Z",
+            "expiry_date": "2027-10-02T00:00:00Z",
+        }
+
+    @pytest.mark.parametrize("microsecond", [0, 123456])
+    def test_expiry_clamped_to_ceiling(self, issue_mdoc, microsecond):
+        now = datetime.datetime(
+            2026, 10, 2, 1, 0, 21, microsecond, tzinfo=datetime.timezone.utc
+        )
+
+        assert issue_mdoc(now, max_credential_exp=int(self.CEILING.timestamp())) == {
+            "issuance_date": "2026-10-02T01:00:21Z",
+            "expiry_date": "2026-11-03T10:00:00Z",
+        }
+
+    def test_expiry_below_ceiling_is_not_clamped(self, issue_mdoc):
+        now = datetime.datetime(2026, 10, 2, 1, 0, 21, tzinfo=datetime.timezone.utc)
+        far_ceiling = int(
+            datetime.datetime(2030, 1, 1, tzinfo=datetime.timezone.utc).timestamp()
+        )
+
+        assert issue_mdoc(now, max_credential_exp=far_ceiling) == {
+            "issuance_date": "2026-10-02T01:00:21Z",
+            "expiry_date": "2027-10-02T01:00:21Z",
+        }
 
 
 class TestCbor2Elems:

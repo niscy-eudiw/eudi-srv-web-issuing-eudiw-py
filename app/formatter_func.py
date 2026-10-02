@@ -86,12 +86,15 @@ def mdocFormatter(
     # Extract the key parameters
     priv_d = private_key.private_numbers().private_value
 
+    # The mdoc library serializes these as isoformat() cut at the fraction
+    # plus "Z", so they must be naive UTC with whole seconds: a tz-aware
+    # value with no microseconds would come out as "...+00:00Z".
+    issuance_date = datetime.datetime.now(datetime.timezone.utc).replace(
+        microsecond=0, tzinfo=None
+    )
+
     if current_session.is_batch_credential:
-        issuance_date = datetime.datetime.now(datetime.timezone.utc).replace(
-            hour=0, minute=0, second=0
-        )
-    else:
-        issuance_date = datetime.datetime.now(datetime.timezone.utc)
+        issuance_date = issuance_date.replace(hour=0, minute=0, second=0)
 
     expiry_date = issuance_date + datetime.timedelta(
         days=credential_metadata["issuer_config"]["validity"]
@@ -100,13 +103,13 @@ def mdocFormatter(
     if current_session.max_credential_exp is not None:
             max_expiry_date = datetime.datetime.fromtimestamp(
                 current_session.max_credential_exp, tz=datetime.timezone.utc
-            )
+            ).replace(microsecond=0, tzinfo=None)
             if expiry_date >= max_expiry_date:
                 logger.info(
                     f", Session ID: {session_id}, clamping mdoc expiry from "
                     f"{expiry_date.isoformat()} to WIA/KA ceiling {max_expiry_date.isoformat()}"
                 )
-                expiry_date = max_expiry_date.replace(tzinfo=None)
+                expiry_date = max_expiry_date
 
     validity = {
         "issuance_date": issuance_date,
