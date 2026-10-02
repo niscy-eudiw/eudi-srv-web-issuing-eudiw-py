@@ -493,6 +493,74 @@ class TestCredentialEndpoint:
             )
 
 
+class TestCredentialWithoutClientStatus:
+    """verify_introspection returns client_status=None for access tokens that
+    carry no WIA client_status claim (e.g. opaque tokens)."""
+
+    SESSION_ID = "test-session-123"
+
+    def test_credential_request(self, client, mock_dependencies):
+        credential_request = {
+            "credential_configuration_id": "eu.europa.ec.eudi.pid_mdoc",
+            "proof": {"proof_type": "jwt", "jwt": "header.payload.signature"},
+        }
+        mock_dependencies["introspection"].return_value = (self.SESSION_ID, None)
+        mock_dependencies["verify_request"].return_value = credential_request
+        mock_dependencies["generate_credentials"].return_value = {
+            "credentials": [{"credential": "test_credential"}]
+        }
+        mock_dependencies["session_manager"].get_session.return_value = Mock(
+            client_status=None
+        )
+
+        response = client.post(
+            "/credential",
+            json=credential_request,
+            headers={"Authorization": "Bearer opaque_token"},
+        )
+
+        assert response.status_code == 200
+        assert json.loads(response.data)["credentials"] == [
+            {"credential": "test_credential"}
+        ]
+        mock_dependencies["generate_credentials"].assert_called_once_with(
+            credential_request=credential_request,
+            session_id=self.SESSION_ID,
+            wia_client_status=None,
+        )
+
+    def test_deferred_credential_request(self, client, mock_dependencies):
+        transaction_id = str(uuid.uuid4())
+        credential_request = {
+            "credential_configuration_id": "eu.europa.ec.eudi.pid_mdoc",
+            "proof": {"proof_type": "jwt", "jwt": "header.payload.signature"},
+        }
+        mock_dependencies["introspection"].return_value = (self.SESSION_ID, None)
+        mock_dependencies["verify_request"].return_value = credential_request
+        mock_dependencies["generate_credentials"].return_value = {
+            "credentials": [{"credential": "test_credential"}]
+        }
+        mock_dependencies["session_manager"].get_session.return_value = Mock(
+            client_status=None, transaction_id={transaction_id: credential_request}
+        )
+
+        response = client.post(
+            "/deferred_credential",
+            json={"transaction_id": transaction_id},
+            headers={"Authorization": "Bearer opaque_token"},
+        )
+
+        assert response.status_code == 200
+        assert json.loads(response.data)["credentials"] == [
+            {"credential": "test_credential"}
+        ]
+        mock_dependencies["generate_credentials"].assert_called_once_with(
+            credential_request=credential_request,
+            session_id=self.SESSION_ID,
+            wia_client_status=None,
+        )
+
+
 class TestIntegrationScenarios:
     """Integration-style tests for complete flows"""
 

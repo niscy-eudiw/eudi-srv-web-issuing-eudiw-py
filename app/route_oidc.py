@@ -951,8 +951,10 @@ def credential():
 
     current_session = session_manager.get_session(session_id=session_id)
 
-    session_manager.update_client_status_status(session_id, wia_client_status.get("status"))
-    session_manager.update_client_status_exp(session_id, wia_client_status.get("exp"))
+    # No WIA client_status claim in the access token (e.g. opaque token)
+    if wia_client_status is not None:
+        session_manager.update_client_status_status(session_id, wia_client_status.get("status"))
+        session_manager.update_client_status_exp(session_id, wia_client_status.get("exp"))
 
     _response = generate_credentials(
         credential_request=validated_credential_request, session_id=session_id, wia_client_status=wia_client_status
@@ -1208,8 +1210,10 @@ def deferred_credential():
 
     current_session = session_manager.get_session(session_id=session_id)
 
-    session_manager.update_client_status_status(session_id, wia_client_status.get("status"))
-    session_manager.update_client_status_exp(session_id, wia_client_status.get("exp"))
+    # No WIA client_status claim in the access token (e.g. opaque token)
+    if wia_client_status is not None:
+        session_manager.update_client_status_status(session_id, wia_client_status.get("status"))
+        session_manager.update_client_status_exp(session_id, wia_client_status.get("exp"))
 
     _response = generate_credentials(
         credential_request=validated_credential_request, session_id=session_id, wia_client_status=wia_client_status
