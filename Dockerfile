@@ -36,10 +36,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Copy compiled packages from builder
 COPY --from=builder /install /usr/local
 
-COPY . .
+# Only the application code: no tests, docs, test keys or local state.
+COPY app/ ./app/
 
-RUN mkdir -p /etc/eudiw/pid-issuer-dev/cert/ \
-             /etc/eudiw/pid-issuer-dev/privKey/
+# Unprivileged user (fixed UID so host-mounted log directories can be
+# granted to it: chown 10001 <log dir>). It owns /app for flask_session/ and
+# instance/.
+RUN useradd --system --uid 10001 --no-create-home --shell /usr/sbin/nologin issuer \
+ && mkdir -p /etc/eudiw/pid-issuer-dev/cert/ /etc/eudiw/pid-issuer-dev/privKey/ /tmp/log_dev /tmp/log_prod \
+ && chown -R issuer:issuer /app /tmp/log_dev /tmp/log_prod
+
+USER issuer
 
 ENV FLASK_APP="app:create_app"
 

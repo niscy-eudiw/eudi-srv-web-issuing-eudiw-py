@@ -33,6 +33,7 @@ from typing import Any, Tuple
 import jwt
 from flask import Blueprint, Response, jsonify, request
 
+from app.core.config import CONFIGURATION
 from app.core.security import require_api_key
 from app.core.log_utils import safe
 from app.services.frontend_metadata import UnknownFrontendError, build_frontend_metadata, sign_frontend_metadata
@@ -90,17 +91,21 @@ def metadata_signer() -> Tuple[Response, int]:
         if not isinstance(metadata_content, dict):
             return _error("metadata must be a JSON object", 400)
 
+        if issuer_frontend_id not in (CONFIGURATION.get("frontend", {}).get("frontends_config") or {}):
+            return _unknown_frontend(issuer_frontend_id)
+
         signed = sign_issuer_metadata(metadata_content, issuer_frontend_id, iss=data.get("iss"))
         return jsonify({"signed_metadata": signed}), 200
 
     except MetadataSigningError as e:
-        return _error(e.message, 500, e.details)
-    except jwt.PyJWTError as e:
+        logger.error(f"Metadata signing failed: {safe(e.message)}: {safe(e.details)}")
+        return _error(e.message, 500)
+    except jwt.PyJWTError:
         logger.exception("JWT encoding error")
-        return _error("JWT encoding failed", 500, str(e))
-    except Exception as e:
+        return _error("JWT encoding failed", 500)
+    except Exception:
         logger.exception("General exception while signing metadata")
-        return _error("Internal server error", 500, str(e))
+        return _error("Internal server error", 500)
 
 
 def _unknown_frontend(frontend_id: str) -> Tuple[Response, int]:
@@ -113,7 +118,7 @@ def _unknown_frontend(frontend_id: str) -> Tuple[Response, int]:
         ``(json_response, 404)``.
     """
     logger.warning(f"Metadata requested for unknown frontend_id {safe(frontend_id, 64)}")
-    return _error("unknown_frontend", 404, f"Frontend '{frontend_id}' is not configured")
+    return _error("unknown_frontend", 404)
 
 
 @metadata.route("<frontend_id>", methods=["GET"])
@@ -158,5 +163,6 @@ def frontend_signed_metadata(frontend_id: str) -> Tuple[Response, int]:
     except UnknownFrontendError:
         return _unknown_frontend(frontend_id)
     except MetadataSigningError as e:
-        return _error(e.message, 500, e.details)
+        logger.error(f"Signed metadata for {safe(frontend_id, 64)} failed: {safe(e.message)}: {safe(e.details)}")
+        return _error(e.message, 500)
     return jsonify({"signed_metadata": signed}), 200

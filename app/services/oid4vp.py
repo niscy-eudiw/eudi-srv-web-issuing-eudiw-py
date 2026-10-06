@@ -21,22 +21,22 @@ Used by the PID authentication flow (``/oid4vp``), the revocation flow and
 ``/pid_authorization`` to request a presentation from the wallet and fetch
 the verifier's result.
 
-Attributes:
-    PRESENTATION_NONCE: Nonce sent to the verifier.
-
-Security note:
-    The nonce is a fixed value, as in the original implementation; it should
-    be generated per transaction (see ``REFACTORING.md``).
+Each presentation request gets a fresh random nonce, and a result is only
+fetched for a transaction this session created (see
+:func:`result_url_from_request`), so a recorded presentation cannot be
+replayed and another user's transaction cannot be read.
 """
 
 from __future__ import annotations
 
+import hmac
 import json
 import logging
 import re
+import secrets
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
-from urllib.parse import urlparse
+from urllib.parse import urlencode, urlparse
 
 import requests
 
@@ -45,7 +45,6 @@ from app.utils.http import DEFAULT_TIMEOUT
 
 logger = logging.getLogger(__name__)
 
-PRESENTATION_NONCE = "hiCV7lZi5qAeCy7NFzUWSR4iCfSmRb99HfIvCkPaCLc="
 _PRESENTATION_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 _JSON_HEADERS = {"Content-Type": "application/json"}
 
@@ -59,12 +58,24 @@ class PresentationRequest:
         same_device: Verifier response for the same-device request.
         deeplink_url: Wallet deeplink for the same-device flow.
         qr_code_url: URL to encode in the cross-device QR code.
+        nonce: Nonce sent with both requests.
     """
 
     cross_device: Dict[str, Any]
     same_device: Dict[str, Any]
     deeplink_url: str
     qr_code_url: str
+    nonce: str
+
+    @property
+    def same_device_id(self) -> str:
+        """Same-device verifier transaction id."""
+        return self.same_device["transaction_id"]
+
+    @property
+    def cross_device_id(self) -> str:
+        """Cross-device verifier transaction id."""
+        return self.cross_device["transaction_id"]
 
 
 def build_dcql_query(
@@ -112,8 +123,17 @@ def build_dcql_query(
     return {"credentials": credentials}, formats
 
 
+def new_presentation_nonce() -> str:
+    """Generates the nonce of one presentation request.
+
+    Returns:
+        32 random bytes, base64url encoded.
+    """
+    return secrets.token_urlsafe(32)
+
+
 def oid4vp_verifier_requests(
-    dcql_query: Dict[str, Any], response_redirect_uri: str
+    dcql_query: Dict[str, Any], response_redirect_uri: str, nonce: str
 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     """Creates a cross-device and a same-device presentation request.
 
@@ -121,6 +141,7 @@ def oid4vp_verifier_requests(
         dcql_query: DCQL query.
         response_redirect_uri: Wallet response redirect template (same
             device only), containing ``{RESPONSE_CODE}``.
+        nonce: Fresh nonce (:func:`new_presentation_nonce`).
 
     Returns:
         ``(cross_device_response, same_device_response)`` verifier JSON.
@@ -140,7 +161,7 @@ def oid4vp_verifier_requests(
 
     payload: Dict[str, Any] = {
         "type": "vp_token",
-        "nonce": PRESENTATION_NONCE,
+        "nonce": nonce,
         "request_uri_method": "get",
         "dcql_query": dcql_query,
     }
@@ -192,12 +213,14 @@ def start_presentation(dcql_query: Dict[str, Any], response_redirect_uri: str) -
     Returns:
         The :class:`PresentationRequest`.
     """
-    cross, same = oid4vp_verifier_requests(dcql_query, response_redirect_uri)
+    nonce = new_presentation_nonce()
+    cross, same = oid4vp_verifier_requests(dcql_query, response_redirect_uri, nonce)
     return PresentationRequest(
         cross_device=cross,
         same_device=same,
         deeplink_url=_wallet_url(same),
         qr_code_url=_wallet_url(cross),
+        nonce=nonce,
     )
 
 
@@ -230,30 +253,57 @@ def presentation_result_url(presentation_id: str, response_code: Optional[str] =
     Returns:
         The result URL.
     """
-    base_url = CONFIGURATION["dynamic_presentation_url"].rstrip("/")
-    url = f"{base_url}/{presentation_id}?nonce={PRESENTATION_NONCE}"
-    return f"{url}&response_code={response_code}" if response_code is not None else url
+    url = f"{CONFIGURATION['dynamic_presentation_url'].rstrip('/')}/{presentation_id}"
+    if response_code is None:
+        return url
+    return f"{url}?{urlencode({'response_code': response_code})}"
 
 
-def result_url_from_request(args: Mapping[str, str], same_device_transaction_id: Optional[str]) -> Optional[str]:
+def _same_id(candidate: Optional[str], expected: Optional[str]) -> bool:
+    """Compares a transaction id from the request with the stored one.
+
+    Args:
+        candidate: Id from the request.
+        expected: Id stored for the session.
+
+    Returns:
+        ``True`` when both are set and equal.
+    """
+    return bool(candidate and expected) and hmac.compare_digest(candidate.encode(), expected.encode())
+
+
+def result_url_from_request(
+    args: Mapping[str, str], same_device_transaction_id: Optional[str], cross_device_transaction_id: Optional[str]
+) -> Optional[str]:
     """Chooses the same- or cross-device result URL from callback arguments.
+
+    Only the transactions created for the caller's session can be fetched:
+    the cross-device ``presentation_id`` must be the one stored for it.
 
     Args:
         args: Request query arguments.
         same_device_transaction_id: Transaction id stored for the
             same-device request.
+        cross_device_transaction_id: Transaction id stored for the
+            cross-device request.
 
     Returns:
         The result URL, or ``None`` when neither ``response_code`` +
         ``session_id`` nor ``presentation_id`` is present.
 
     Raises:
-        ValueError: If ``presentation_id`` is present but invalid.
+        ValueError: If ``presentation_id`` is invalid or not this session's,
+            or the session has no same-device transaction.
     """
     if "response_code" in args and "session_id" in args:
+        if not same_device_transaction_id:
+            raise ValueError("No presentation was requested in this session")
         return presentation_result_url(same_device_transaction_id, args.get("response_code"))
     if "presentation_id" in args:
-        return presentation_result_url(validate_presentation_id(args.get("presentation_id")))
+        presentation_id = validate_presentation_id(args.get("presentation_id"))
+        if not _same_id(presentation_id, cross_device_transaction_id):
+            raise ValueError("Presentation id does not belong to this session")
+        return presentation_result_url(presentation_id)
     return None
 
 

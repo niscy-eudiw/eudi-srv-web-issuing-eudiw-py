@@ -264,3 +264,45 @@ _14 Aug 2026_
 
 ### Fixed
 - Fixed invalid `validUntil` timestamp format in the issuance of some mso_mdoc credentials.
+
+## [0.9.9]
+
+_06 Oct 2026_
+
+### Added
+- `GET /metadata/<frontend_id>` and `GET /metadata/<frontend_id>/signed` (API key protected): the backend builds each frontend's metadata, so frontends no longer assemble and sign it themselves.
+- `test_features` configuration (`form_countries`, `passport_age_verification`, `tx_code_in_offer`), all off by default: these demo flows issue credentials from self-asserted data.
+- `secret_key` configuration: the session cookie signing key; start-up fails when it is missing, a placeholder or shorter than 32 characters, because a known key lets anyone forge sessions.
+- `authorization_server.api_key`, `jwks_uri`, `jwks_path` and `issuer` configuration, used to call the authorization server and to verify its `session_token`.
+- Per-client rate limits (`rate_limiting`, Flask-Limiter) on the endpoints that issue, sign or look up data, with `trusted_proxies` for deployments behind nginx: no endpoint was throttled.
+- DPoP proof verification on `/credential`, `/deferred_credential` and `/notification` when introspection reports `cnf.jkt`, so a DPoP-bound token can no longer be replayed as a bearer token.
+- Regression tests replaying each finding of the 2026-07 security assessments (`tests/test_security_regressions.py`).
+
+### Changed
+- `/auth_choice` takes the session id, scope and authorization details only from the `session_token` signed by the authorization server, and refuses a session already bound to another browser: query parameters allowed session fixation.
+- `/credentialOfferReq2` returns `{"credential_offer", "tx_code"}` and the offer no longer contains the tx_code (unless `tx_code_in_offer`), since the tx_code is a second factor delivered out of band; the request JWT must carry `exp` and `iat` (lifetime at most 1 h).
+- OID4VP presentation requests use a random nonce per presentation instead of a fixed value, which allowed replaying recorded presentations.
+- `/credential` only issues the credential configurations the access token was authorized for.
+- `/logs` only accepts a session UUID and matches it as a whole token: a substring returned every user's log lines.
+- `/revocation/revoke` only accepts the identifier issued to the same browser session, and checks its expiry.
+- `metadata_signer` no longer lets the metadata override `sub`, `iat`, `iss`, `exp`, `nbf`, `aud` or `jti`, and no longer returns internal error details; an unknown frontend gets 404.
+- x5c-signed JWTs (key attestations, offer requests) only accept asymmetric algorithms by default, and intermediate certificates must be CAs.
+- Responses carry a Content-Security-Policy and `Referrer-Policy`; the auto-submit page only posts to configured frontends.
+- The browser session is cleared when the user is handed back to the wallet.
+- Placeholder `backend_api_key` values (`change-me`) are treated as unset.
+- The Docker image runs as an unprivileged user (UID 10001) and only copies `app/`.
+- CI: SonarCloud runs on `pull_request` instead of `pull_request_target` (fork PR code ran with repository secrets) and actions are pinned to commit SHAs.
+- Removed the `/formatter/cbor` and `/formatter/sd-jwt` routes, which signed caller-supplied data with the issuer keys; issuance calls the formatters directly.
+
+### Fixed
+- Reflected XSS in the auto-submit page: the payload was rendered unescaped inside a single-quoted attribute.
+- `credential_offer_URI` is validated, so it cannot inject script-capable URLs.
+- `/getpidoid4vp` and the revocation flow fetched any `presentation_id`, exposing other users' presentations; it must now belong to the caller's session.
+- PID presentations must contain exactly one PID document, and the document signer certificate's validity is checked.
+- The attribute form cannot change values read from a verified PID.
+- `/form_authorize_generate` used a posted `user_id` instead of the browser session.
+- `/dynamic/redirect` checks a random, single-use OAuth `state`; the OpenID connectors used the session id as state.
+- Huge list indices in form field names no longer allocate unbounded memory.
+- SD-JWT issuance no longer reseeds Python's global random generator with a constant.
+- `Session.__repr__` masks codes, tokens and personal data.
+- Requests with only `credential_identifier` no longer fail with a server error.

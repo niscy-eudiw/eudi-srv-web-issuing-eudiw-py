@@ -17,6 +17,10 @@
 ###############################################################################
 """Validation of PID mdoc presentations received over OpenID4VP.
 
+Holder binding (``deviceSigned`` / DeviceAuth over the OpenID4VP session
+transcript and nonce) is checked by the verifier backend that receives the
+wallet response; this module re-checks the issuer side of the PID.
+
 Note:
     The two public functions use *opposite* boolean conventions, kept for
     backwards compatibility: :func:`validate_vp_token` returns
@@ -40,12 +44,14 @@ from pycose.keys import EC2Key
 from pycose.messages import Sign1Message
 
 from app.core.state import trusted_CAs
-from app.utils.crypto import ec_coordinates
+from app.utils.crypto import certificate_validity, ec_coordinates
 
 logger = logging.getLogger(__name__)
 
 #: MSO digest algorithm name -> hashlib constructor.
 DIGEST_ALGORITHMS = {"SHA-256": hashlib.sha256, "SHA-512": hashlib.sha512}
+#: The only document type accepted as a PID presentation.
+PID_DOCTYPE = "eu.europa.ec.eudi.pid.1"
 _UNTRUSTED_CA = "Certificate wasn't emitted by a Trusted CA "
 
 
@@ -83,7 +89,11 @@ def validate_vp_token(response_json: Dict[str, Any], credentials_requested: Iter
     if mdoc_cbor["status"] != 0:
         return True, "Status invalid:" + str(mdoc_cbor["status"])
 
-    valid, error_msg = validate_certificate(mdoc_cbor["documents"][0])
+    documents = mdoc_cbor.get("documents") or []
+    if len(documents) != 1 or documents[0].get("docType") != PID_DOCTYPE:
+        return True, "The presentation must contain exactly one PID document"
+
+    valid, error_msg = validate_certificate(documents[0])
     if valid is False:
         return True, error_msg
 
@@ -115,11 +125,14 @@ def validate_certificate(mdoc: Dict[str, Any]) -> Tuple[bool, str]:
     x, y = ec_coordinates(certificate.public_key(), min_length=0)
     message.key = EC2Key(x=x, y=y, crv=1)
 
-    not_valid_after = ca_info["not_valid_after"].replace(tzinfo=datetime.timezone.utc)
-    not_valid_before = ca_info["not_valid_before"].replace(tzinfo=datetime.timezone.utc)
+    ca_not_after = ca_info["not_valid_after"].replace(tzinfo=datetime.timezone.utc)
+    ca_not_before = ca_info["not_valid_before"].replace(tzinfo=datetime.timezone.utc)
+    not_valid_before, not_valid_after = certificate_validity(certificate)
     now = datetime.datetime.now(datetime.timezone.utc)
-    if now < not_valid_before or not_valid_after < now:
+    if now < ca_not_before or ca_not_after < now:
         return False, "Certificate not valid"
+    if now < not_valid_before or not_valid_after < now:
+        return False, "Document signer certificate not valid"
 
     # pycose returns False for a bad signature (it only raises on malformed input),
     # so the result must be checked explicitly.

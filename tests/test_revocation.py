@@ -38,7 +38,6 @@ from app.core.errors import CertificateVerificationError
 from app.utils.encoding import b64url_decode_strict as b64url_decode
 from app.services.trust import verify_and_decode_sdjwt, x5c_leaf_certificate
 from app.services.revocation_status import get_status_sdjwt, get_status_mdoc, is_issuer_certificate
-from app.services.oid4vp import PRESENTATION_NONCE
 from config_helpers import set_configuration
 
 
@@ -67,6 +66,8 @@ def client():
     app.register_blueprint(revocation.revocation)
 
     with app.test_client() as client:
+        # The cross-device transaction oid4vp_call created for this browser.
+        _set_session(client, oid4vp_cross_device_id="valid_id")
         yield client
 
 
@@ -574,6 +575,8 @@ class TestOid4vpCall:
             mock_post.return_value.status_code = 200
             mock_redirect.return_value = "redirect_response"
 
+            _set_session(client, revocation_id=revocation_id)
+
             response = client.post(
                 "/revocation/revoke", data={"revocation_identifier": revocation_id}
             )
@@ -600,6 +603,7 @@ class TestOid4vpCall:
     def test_revoke_invalid_identifier(self, client, mock_config):
         """Test revoke endpoint with invalid identifier."""
         with patch("app.routes.revocation.revocation_requests", {}):
+            _set_session(client, revocation_id="invalid_id")
             response = client.post(
                 "/revocation/revoke", data={"revocation_identifier": "invalid_id"}
             )
@@ -636,6 +640,8 @@ class TestOid4vpCall:
             mock_post.return_value.text = "Server error"
             mock_redirect.return_value = "redirect_response"
 
+            _set_session(client, revocation_id=revocation_id)
+
             response = client.post(
                 "/revocation/revoke", data={"revocation_identifier": revocation_id}
             )
@@ -671,6 +677,8 @@ class TestOid4vpCall:
 
             mock_post.side_effect = requests.ConnectionError("Connection error")
             mock_redirect.return_value = "redirect_response"
+
+            _set_session(client, revocation_id=revocation_id)
 
             response = client.post(
                 "/revocation/revoke", data={"revocation_identifier": revocation_id}
@@ -712,6 +720,8 @@ class TestOid4vpCall:
 
             mock_post.return_value.status_code = 200
             mock_redirect.return_value = "redirect_response"
+
+            _set_session(client, revocation_id=revocation_id)
 
             response = client.post(
                 "/revocation/revoke", data={"revocation_identifier": revocation_id}
@@ -764,6 +774,8 @@ class TestOid4vpCall:
             mock_post.return_value.status_code = 200
             mock_redirect.return_value = "redirect_response"
 
+            _set_session(client, revocation_id=revocation_id)
+
             response = client.post(
                 "/revocation/revoke", data={"revocation_identifier": revocation_id}
             )
@@ -799,6 +811,8 @@ class TestOid4vpCall:
             # Verify identifier exists before
             assert revocation_id in mock_revoc_req
 
+            _set_session(client, revocation_id=revocation_id)
+
             response = client.post(
                 "/revocation/revoke", data={"revocation_identifier": revocation_id}
             )
@@ -819,7 +833,7 @@ class TestEdgeCases:
         ) as mock_id, patch(
             "app.routes.revocation.revocation_requests", {}
         ), patch(
-            "app.routes.revocation.session", {}
+            "app.routes.revocation.session", {"oid4vp_cross_device_id": "valid_id"}
         ) as mock_session:
 
             mock_id.return_value = "unique_id"
@@ -888,6 +902,8 @@ class TestEdgeCases:
 
             mock_redirect.return_value = "redirect_response"
 
+            _set_session(client, revocation_id=revocation_id)
+
             response = client.post(
                 "/revocation/revoke", data={"revocation_identifier": revocation_id}
             )
@@ -925,6 +941,8 @@ class TestEdgeCases:
             # no need to patch revocation_api_key separately
             mock_post.return_value.status_code = 200
             mock_redirect.return_value = "redirect_response"
+
+            _set_session(client, revocation_id=revocation_id)
 
             response = client.post(
                 "/revocation/revoke", data={"revocation_identifier": revocation_id}
@@ -1169,8 +1187,9 @@ class TestOid4vpGet:
     def test_oid4vp_get_invalid_presentation_id(self, client, mock_config):
         """A presentation_id with unexpected characters is rejected."""
         _set_session(client, session_id="session_abc123")
-        with pytest.raises(ValueError, match="Invalid Presentation id format"):
-            client.get("/revocation/getoid4vp?presentation_id=invalid/id!")
+        response = client.get("/revocation/getoid4vp?presentation_id=invalid/id!")
+        assert response.status_code == 400
+        assert "Invalid Presentation id format" in response.get_json()["error_description"]
 
     def test_oid4vp_get_missing_parameters(self, client, mock_config):
         """Neither same-device nor cross-device parameters -> 400 (no session needed)."""
@@ -1189,9 +1208,7 @@ class TestOid4vpGet:
 
             assert response.status_code == 400
             assert response.get_json() == {"error": "500"}
-            assert mock_request.call_args[0][1] == (
-                f"http://test.com/presentation/valid_id?nonce={PRESENTATION_NONCE}"
-            )
+            assert mock_request.call_args[0][1] == "http://test.com/presentation/valid_id"
 
     def test_oid4vp_get_same_device_uses_stored_transaction(self, client, mock_config):
         """The same-device flow fetches the result of the transaction stored by oid4vp_call."""
@@ -1202,8 +1219,7 @@ class TestOid4vpGet:
             client.get("/revocation/getoid4vp?response_code=rc123&session_id=session_abc123")
 
             url = mock_request.call_args[0][1]
-            assert "/tx_same?nonce=" in url
-            assert url.endswith("&response_code=rc123")
+            assert url.endswith("/tx_same?response_code=rc123")
 
     def test_oid4vp_get_mixed_credentials(self, client, mock_config):
         """SD-JWT and mdoc presentations are both turned into revocation entries."""

@@ -126,6 +126,12 @@ class TestValidateCertificate:
         valid, reason = vp_validation.validate_certificate(document)
         assert valid is False and reason.startswith("Missing digests")
 
+    def test_expired_document_signer_rejected(self, issued_document, trusted):
+        """The DS certificate's own validity is checked, not only the CA's."""
+        past = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=1)
+        with patch.object(vp_validation, "certificate_validity", return_value=(past - datetime.timedelta(days=30), past)):
+            assert vp_validation.validate_certificate(issued_document) == (False, "Document signer certificate not valid")
+
     def test_validity_info_expired(self, issued_document, trusted):
         future = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=365)
 
@@ -134,8 +140,12 @@ class TestValidateCertificate:
             def now(cls, tz=None):
                 return future
 
-        # Keep the CA itself valid at the frozen time; only the MSO validity has expired.
-        with patch.object(vp_validation.datetime, "datetime", FrozenDatetime), patch.dict(
+        # Keep the CA and DS certificates valid at the frozen time; only the MSO validity has expired.
+        with patch.object(vp_validation.datetime, "datetime", FrozenDatetime), patch.object(
+            vp_validation,
+            "certificate_validity",
+            return_value=(future - datetime.timedelta(days=400), future + datetime.timedelta(days=1)),
+        ), patch.dict(
             "app.core.state.trusted_CAs",
             {
                 k: {**v, "not_valid_after": future + datetime.timedelta(days=1)}

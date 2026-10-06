@@ -19,9 +19,12 @@
 
 from __future__ import annotations
 
+import json
 import logging
-from typing import Any, Dict, Optional
+import threading
+from typing import Any, Dict, List, Optional
 
+import jwt
 import requests
 
 from app.core.config import CONFIGURATION
@@ -34,6 +37,17 @@ _FORM_HEADERS = {"Content-Type": "application/x-www-form-urlencoded"}
 
 #: Status-list validator context for wallet / key storage status lists.
 WALLET_STATUS_CONTEXT = "WalletOrKeyStorageStatus"
+
+#: ``aud`` of the session token the authorization server hands to ``/auth_choice``.
+SESSION_TOKEN_AUDIENCE = "eudiw-issuer-backend"
+SESSION_TOKEN_ALGORITHMS = ["ES256"]
+
+_jwk_clients: Dict[str, jwt.PyJWKClient] = {}
+_jwk_clients_lock = threading.Lock()
+
+
+class SessionTokenError(ValueError):
+    """Raised when the session token from the authorization server is invalid."""
 
 
 def authorization_server_url() -> str:
@@ -61,11 +75,12 @@ def introspect(bearer_token: str) -> requests.Response:
     Raises:
         requests.RequestException: On network errors.
     """
+    api_key = CONFIGURATION["authorization_server"].get("api_key")
     return requests.request(
         "POST",
         f"{authorization_server_url()}/introspection",
-        headers=_FORM_HEADERS,
-        data=f"token={bearer_token}",
+        headers={**_FORM_HEADERS, "X-Api-Key": str(api_key or "")},
+        data={"token": bearer_token},
         timeout=DEFAULT_TIMEOUT,
     )
 
@@ -82,14 +97,117 @@ def generate_preauth_code(scope: str) -> Dict[str, Any]:
     Raises:
         requests.RequestException: On network errors.
     """
+    api_key = CONFIGURATION["authorization_server"].get("api_key")
     response = requests.request(
         "POST",
         f"{authorization_server_url()}/preauth_generate",
-        headers=_FORM_HEADERS,
-        data=f"scope={scope}",
+        headers={**_FORM_HEADERS, "X-Api-Key": str(api_key or "")},
+        data={"scope": scope},
         timeout=DEFAULT_TIMEOUT,
     )
+    response.raise_for_status()
     return response.json()
+
+
+def _jwks_uri() -> str:
+    """Returns where the authorization server publishes its signing keys.
+
+    Returns:
+        ``authorization_server.jwks_uri``, by default ``<base>/static/jwks.json``.
+    """
+    return CONFIGURATION["authorization_server"].get("jwks_uri") or f"{authorization_server_url()}/static/jwks.json"
+
+
+def _signing_key(token: str) -> Any:
+    """Finds the authorization server key that signed ``token``.
+
+    Keys come from ``authorization_server.jwks_path`` (a local JWKS file)
+    when set, otherwise from the cached JWKS at :func:`_jwks_uri`.
+
+    Args:
+        token: Compact JWT.
+
+    Returns:
+        The verification key.
+    """
+    jwks_path = CONFIGURATION["authorization_server"].get("jwks_path")
+    if jwks_path:
+        with open(jwks_path, encoding="utf-8") as f:
+            key_set = jwt.PyJWKSet.from_dict(json.load(f))
+        kid = jwt.get_unverified_header(token).get("kid")
+        candidates = [k for k in key_set.keys if kid is None or k.key_id == kid]
+        if not candidates:
+            raise jwt.PyJWKError(f"No key {kid} in {jwks_path}")
+        return candidates[0].key
+    uri = _jwks_uri()
+    with _jwk_clients_lock:
+        client = _jwk_clients.get(uri)
+        if client is None:
+            client = _jwk_clients[uri] = jwt.PyJWKClient(uri, cache_keys=True, lifespan=300, timeout=10)
+    return client.get_signing_key_from_jwt(token).key
+
+
+def verify_session_token(token: Optional[str]) -> Dict[str, Any]:
+    """Verifies the signed session hand-off from the authorization server.
+
+    Args:
+        token: ``session_token`` query parameter of ``/auth_choice``.
+
+    Returns:
+        The claims: ``session_id`` and optionally ``scope``,
+        ``authorization_details`` and ``frontend_id``.
+
+    Raises:
+        SessionTokenError: If the token is missing, not signed by the
+            authorization server, expired or for another audience.
+    """
+    if not token:
+        raise SessionTokenError("Missing session_token")
+    issuer = CONFIGURATION["authorization_server"].get("issuer")
+    try:
+        claims = jwt.decode(
+            token,
+            _signing_key(token),
+            algorithms=SESSION_TOKEN_ALGORITHMS,
+            audience=SESSION_TOKEN_AUDIENCE,
+            issuer=issuer,
+            leeway=30,
+            options={"require": ["exp", "iat", "session_id"] + (["iss"] if issuer else [])},
+        )
+    except (jwt.PyJWTError, OSError, ValueError) as e:
+        raise SessionTokenError(f"Invalid session_token: {e}") from e
+    if not isinstance(claims.get("session_id"), str) or not claims["session_id"]:
+        raise SessionTokenError("Invalid session_token: no session_id")
+    return claims
+
+
+def authorization_details_claim(value: Any) -> List[Any]:
+    """Normalizes the ``authorization_details`` claim of a session token.
+
+    The authorization server forwards the wallet's value, which is a JSON
+    list or a (possibly double-encoded) JSON string.
+
+    Args:
+        value: Claim value.
+
+    Returns:
+        The authorization details list.
+
+    Raises:
+        SessionTokenError: If the value is not a list once decoded.
+    """
+    for _ in range(3):
+        if not isinstance(value, str):
+            break
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError as e:
+            raise SessionTokenError("Invalid authorization_details") from e
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise SessionTokenError("Invalid authorization_details")
+    return value
 
 
 class StatusCheckError(Exception):

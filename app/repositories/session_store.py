@@ -37,6 +37,19 @@ logger = logging.getLogger(__name__)
 
 # Session attributes that are always present in ``to_dict`` output.
 _ALWAYS_SERIALIZED = ("session_id", "expiry_time", "is_batch_credential")
+# Attributes never printed by ``repr`` (codes, tokens, personal data).
+_MASKED_IN_REPR = frozenset(
+    {
+        "pre_authorized_code",
+        "pre_authorized_code_ref",
+        "tx_code",
+        "jws_token",
+        "user_data",
+        "verified_attributes",
+        "oid4vp_nonce",
+        "client_status",
+    }
+)
 # Collection attributes that are serialized / shown only when non-empty.
 _SERIALIZED_WHEN_TRUTHY = ("transaction_id", "notification_ids")
 
@@ -61,9 +74,13 @@ class Session:
         transaction_id: Deferred issuance transaction ids -> credential request.
         notification_ids: Notification ids issued in this session.
         is_batch_credential: Whether the session is for a batch credential.
-        oid4vp_transaction_id: Identifier of an OID4VP transaction.
+        oid4vp_transaction_id: Same-device OID4VP transaction id.
+        oid4vp_cross_device_id: Cross-device (QR code) OID4VP transaction id.
+        oid4vp_nonce: Nonce of this session's OID4VP presentation request.
         max_credential_exp: TS3 2.4.3 credential expiry ceiling (epoch seconds).
         client_status: WIA / key attestation status tree.
+        verified_attributes: Attributes read from a verified PID presentation;
+            the attribute form cannot change them.
     """
 
     session_id: str
@@ -82,8 +99,11 @@ class Session:
     notification_ids: List[str] = field(default_factory=list)
     is_batch_credential: bool = False
     oid4vp_transaction_id: Optional[str] = None
+    oid4vp_cross_device_id: Optional[str] = None
+    oid4vp_nonce: Optional[str] = None
     max_credential_exp: Optional[int] = None
     client_status: Optional[Dict] = None
+    verified_attributes: Optional[Dict[str, Any]] = None
 
     def __post_init__(self) -> None:
         """Normalizes ``None`` collections passed explicitly by callers."""
@@ -125,8 +145,15 @@ class Session:
         return data
 
     def __repr__(self) -> str:
-        """Returns a readable representation including the truthy optional fields."""
-        optional_parts = [f"{name}='{value}'" for name, value in self._optional_items() if value]
+        """Returns a readable representation including the truthy optional fields.
+
+        Secrets and personal data are shown as ``<set>`` only.
+        """
+        optional_parts = [
+            f"{name}=<set>" if name in _MASKED_IN_REPR else f"{name}='{value}'"
+            for name, value in self._optional_items()
+            if value
+        ]
         return (
             f"Session(session_id='{self.session_id}', "
             f"is_batch_credential={self.is_batch_credential}, "
@@ -442,13 +469,43 @@ class SessionManager:
         self._set_attribute(session_id, "max_credential_exp", max_credential_exp)
 
     def update_oid4vp_transaction_id(self, session_id: str, oid4vp_transaction_id: str) -> None:
-        """Updates the OID4VP transaction id.
+        """Updates the same-device OID4VP transaction id.
 
         Args:
             session_id: Target session.
             oid4vp_transaction_id: Verifier transaction id.
         """
         self._set_attribute(session_id, "oid4vp_transaction_id", oid4vp_transaction_id)
+
+    def update_oid4vp_presentation(
+        self, session_id: str, same_device_id: str, cross_device_id: str, nonce: str
+    ) -> None:
+        """Records the OID4VP presentation requested for this session.
+
+        Args:
+            session_id: Target session.
+            same_device_id: Same-device verifier transaction id.
+            cross_device_id: Cross-device verifier transaction id.
+            nonce: Nonce sent to the verifier.
+        """
+        with self._sessions_lock:
+            session_obj = self._sessions.get(session_id)
+            if session_obj is None:
+                logger.warning(f"Attempted to update OID4VP presentation for non-existent session_id: {session_id}")
+                return
+            session_obj.oid4vp_transaction_id = same_device_id
+            session_obj.oid4vp_cross_device_id = cross_device_id
+            session_obj.oid4vp_nonce = nonce
+            logger.debug(f"Updated OID4VP presentation for session_id {session_id}")
+
+    def update_verified_attributes(self, session_id: str, verified_attributes: Dict[str, Any]) -> None:
+        """Records the attributes of a verified PID presentation.
+
+        Args:
+            session_id: Target session.
+            verified_attributes: Attribute name -> verified value.
+        """
+        self._set_attribute(session_id, "verified_attributes", verified_attributes, log_value=False)
 
     def update_client_status(self, session_id: str, client_status: Dict) -> None:
         """Replaces the whole ``client_status`` structure.

@@ -127,6 +127,7 @@ class TestRevocationRejectsForeignCredentials:
         with client.session_transaction() as sess:
             sess["session_id"] = "s1"
             sess["oid4vp_transaction_id"] = "tx"
+            sess["oid4vp_cross_device_id"] = "tx"
             sess["q0"] = fmt
         verifier = Mock(status_code=200)
         verifier.json.return_value = {"vp_token": {"q0": [credential]}}

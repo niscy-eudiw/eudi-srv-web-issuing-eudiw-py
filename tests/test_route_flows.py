@@ -16,7 +16,11 @@ CONFIG = {
     "dynamic_presentation_url": "https://verifier.test/presentations",
     "authorization_server": {"user_verify_endpoint": "https://as.test/verify"},
     "frontend": {"default": "fe", "frontends_config": {"fe": {"url": "https://fe.test"}}},
-    "countries": {"ZZ": {"connection_type": "saml"}, "OO": {"connection_type": "openid", "auth": {}}},
+    "countries": {
+        "ZZ": {"name": "Zed", "connection_type": "saml", "supported_credential_ids": ["pid"]},
+        "OO": {"name": "Oh", "connection_type": "openid", "auth": {}, "supported_credential_ids": ["pid"]},
+    },
+    "test_features": {"form_countries": True, "passport_age_verification": True},
 }
 
 
@@ -42,6 +46,8 @@ def _session(**overrides):
         "credentials_requested": ["pid"],
         "authorization_details": [{"credential_configuration_id": "pid"}],
         "oid4vp_transaction_id": "tx",
+        "oid4vp_cross_device_id": "abc",
+        "verified_attributes": None,
     }
     values.update(overrides)
     return MagicMock(**values)
@@ -67,7 +73,11 @@ class TestDynamicFlows:
             response = client.post("/dynamic/country_selected", data={"country": "OO"})
 
         assert response.headers["Location"] == "https://idp.test/authorize"
-        url.assert_called_once_with("OO", state="s1")
+        # A random state (not the session id), kept for the redirect check.
+        state = url.call_args.kwargs["state"]
+        assert state != "s1" and len(state) >= 43
+        with client.session_transaction() as s:
+            assert s["oauth_state"] == state
 
     def test_unsupported_connection_type(self, client):
         with patch.object(dynamic_routes.session_manager, "get_session", return_value=_session()), patch.object(

@@ -28,7 +28,6 @@ from __future__ import annotations
 import json
 import logging
 import re
-import urllib.parse
 import uuid
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple, Union
@@ -53,7 +52,15 @@ from app.services.attributes import (
     scope2details,
     vct2id,
 )
-from app.services.auth_server import StatusCheckError, check_status_list_revocation, introspect
+from app.services.auth_server import (
+    SessionTokenError,
+    StatusCheckError,
+    authorization_details_claim,
+    check_status_list_revocation,
+    introspect,
+    verify_session_token,
+)
+from app.services.dpop import DPoPError, expected_htu, verify_dpop_request
 from app.services.credential_issuance import (
     DEFERRED_ONLY_CONFIGURATION,
     create_c_nonce,
@@ -61,7 +68,7 @@ from app.services.credential_issuance import (
     decrypt_jwe_credential_request,
     generate_credentials,
 )
-from app.services.credential_offer import authorization_code_offer, credential_offer_uri
+from app.services.credential_offer import authorization_code_offer, credential_offer_uri, is_valid_offer_prefix
 from app.services.oid4vp import fetch_presentation_result, presentation_result_url, validate_presentation_id
 from app.utils.frontend import frontend_url
 from app.utils.http import post_redirect_with_payload
@@ -76,6 +83,8 @@ HandlerResult = Union[Response, Tuple[Any, int]]
 
 DEFERRED_INTERVAL_SECONDS = 30
 _ANSI_ESCAPE = re.compile(r"\x1B\[[0-?]*[ -/]*[@-~]")
+#: Issuance session ids are UUIDs (authorization server / revocation flow).
+_SESSION_ID_RE = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
 
 
 # ---------------------------------------------------------------------------
@@ -147,6 +156,8 @@ def verify_introspection(bearer_token: str) -> Any:
 
     When the access token is a JWT carrying a WIA ``client_status`` and the
     status validator is enabled, the WIA revocation status is checked too.
+    When introspection reports ``cnf.jkt`` (a DPoP-bound token), the request
+    must carry a valid DPoP proof for that key (:mod:`app.services.dpop`).
 
     Args:
         bearer_token: Access token.
@@ -174,6 +185,23 @@ def verify_introspection(bearer_token: str) -> Any:
     if not username:
         logger.warning("Token is active but introspection returned no username.")
         return jsonify({"error": "invalid_token"}), 401
+
+    jkt = (introspection_data.get("cnf") or {}).get("jkt")
+    if jkt:
+        try:
+            verify_dpop_request(
+                authorization=request.headers.get("Authorization", ""),
+                proof=request.headers.get("DPoP"),
+                access_token=bearer_token,
+                jkt=jkt,
+                method=request.method,
+                htu=expected_htu(request.path, request.base_url),
+            )
+        except DPoPError as e:
+            logger.warning(f"DPoP check failed for session tied to {safe(username)}: {safe(e)}")
+            response = jsonify({"error": "invalid_dpop_proof", "error_description": "Invalid DPoP proof"})
+            response.headers["WWW-Authenticate"] = 'DPoP error="invalid_dpop_proof"'
+            return response, 401
 
     # Introspection already confirmed the token is active/well-formed, so an
     # unverified decode here is just claim extraction, not a trust decision.
@@ -230,7 +258,57 @@ def verify_credential_request(credential_request: Dict[str, Any]) -> Dict[str, A
         if proof_type is None or (proof_type in ("attestation", "jwt") and proof_type not in proof):
             raise OAuthEndpointError("invalid_proof")
 
+    if "credential_configuration_id" not in credential_request:
+        # This issuer's credential identifiers are its configuration ids.
+        credential_request["credential_configuration_id"] = credential_request["credential_identifier"]
+
     return credential_request
+
+
+def _authorized_configuration_ids(current_session: Any) -> set:
+    """Lists the credential configurations an issuance session was authorized for.
+
+    Args:
+        current_session: The access token's issuance session.
+
+    Returns:
+        Ids from ``credentials_requested``, ``authorization_details`` and ``scope``.
+    """
+    def as_list(value: Any) -> List[Any]:
+        return list(value) if isinstance(value, (list, tuple)) else []
+
+    authorized = {c for c in as_list(getattr(current_session, "credentials_requested", None)) if isinstance(c, str)}
+    details = [d for d in as_list(getattr(current_session, "authorization_details", None)) if isinstance(d, dict)]
+    authorized.update(c for c in requested_credential_ids(details, resolve_vct=vct2id) if isinstance(c, str))
+    scope = getattr(current_session, "scope", None)
+    if isinstance(scope, str):
+        authorized.update(scope.split())
+    return authorized
+
+
+def require_authorized_configuration(session_id: str, credential_request: Dict[str, Any]) -> None:
+    """Rejects a credential the access token was not authorized for.
+
+    Args:
+        session_id: The access token's issuance session.
+        credential_request: Validated credential request.
+
+    Raises:
+        OAuthEndpointError: ``401 invalid_token`` for an unknown session,
+            ``400 unknown_credential_configuration`` for a credential that was
+            not part of the authorization (scope / authorization_details).
+    """
+    current_session = session_manager.get_session(session_id=session_id)
+    if current_session is None:
+        raise OAuthEndpointError("invalid_token", status=401)
+    if credential_request.get("credential_configuration_id") not in _authorized_configuration_ids(current_session):
+        logger.warning(
+            f", Session ID: {session_id}, Credential not authorized: "
+            f"{safe(credential_request.get('credential_configuration_id'), 100)}"
+        )
+        raise OAuthEndpointError(
+            "unknown_credential_configuration", description="Credential not authorized for this access token"
+        )
 
 
 def encrypt_response(credential_request: Dict[str, Any], credential_response: Dict[str, Any]) -> Response:
@@ -388,20 +466,27 @@ def auth_choice() -> HandlerResult:
         ValueError: If no credential was requested.
     """
     token = request.args.get("token")
-    session_id = request.args.get("session_id")
-    scope = request.args.get("scope")
-    authorization_details_str = request.args.get("authorization_details")
-    frontend_id = request.args.get("frontend_id") or CONFIGURATION["frontend"]["default"]
+    # session_id, scope and authorization_details come only from the token
+    # signed by the authorization server: query parameters could be forged
+    # to fix or take over another user's session.
+    try:
+        claims = verify_session_token(request.args.get("session_token"))
+        authorization_details: List[Any] = authorization_details_claim(claims.get("authorization_details"))
+    except SessionTokenError as e:
+        logger.warning(f"auth_choice rejected: {safe(e)}")
+        return jsonify({"error": "invalid_request", "error_description": "Invalid or missing session_token"}), 400
+
+    session_id = claims["session_id"]
+    scope = claims.get("scope")
+    frontend_id = claims.get("frontend_id")
+    if frontend_id not in (CONFIGURATION["frontend"].get("frontends_config") or {}):
+        frontend_id = CONFIGURATION["frontend"]["default"]
+
+    if session_manager.get_session(session_id) is not None and session.get("session_id") != session_id:
+        logger.warning(f", Session ID: {session_id}, auth_choice rejected: session already bound to another browser")
+        return jsonify({"error": "invalid_request", "error_description": "Session already in use"}), 400
 
     session["session_id"] = session_id
-
-    authorization_details: List[Any] = []
-    if authorization_details_str:
-        try:
-            authorization_details = json.loads(json.loads(urllib.parse.unquote(authorization_details_str)))
-        except json.JSONDecodeError as e:
-            logger.error(f"Error parsing authorization_details JSON: {safe(e)}")
-            return jsonify({"error": "Invalid authorization_details parameter"}), 400
 
     credential_configuration_id = None
     if scope:
@@ -485,6 +570,7 @@ def credential() -> HandlerResult:
 
     validated_request = verify_credential_request(credential_request)
     logger.info(f", Session ID: {session_id}, Credential Request, {summarize_credential_request(validated_request)}")
+    require_authorized_configuration(session_id, validated_request)
 
     response = _issue(validated_request, session_id, wia_client_status)
     _add_notification_id(session_id, response)
@@ -535,8 +621,8 @@ def notification() -> HandlerResult:
     auth_header = request.headers.get("Authorization")
     if not auth_header:
         return jsonify({"error": "Authorization header is missing"}), 401
-    if not auth_header.startswith("Bearer "):
-        return jsonify({"error": "Authorization header must be a Bearer token"}), 401
+    if not auth_header.lower().startswith(("bearer ", "dpop ")):
+        return jsonify({"error": "Authorization header must be a Bearer or DPoP token"}), 401
     bearer_token = _bearer_token(auth_header)
     if bearer_token is None:
         return jsonify({"error": "Invalid Authorization header format"}), 401
@@ -690,6 +776,10 @@ def get_logs_by_session() -> HandlerResult:
     session_id = request.args.get("session_id")
     if not session_id:
         return jsonify({"error": "Missing required parameter: session_id"}), 400
+    if not _SESSION_ID_RE.fullmatch(session_id):
+        return jsonify({"error": "Invalid session_id: a session UUID is expected"}), 400
+    # Whole-token match: the id must not be part of a longer word.
+    session_pattern = re.compile(rf"(?<![0-9A-Za-z-]){re.escape(session_id)}(?![0-9A-Za-z-])", re.IGNORECASE)
 
     log_files = [CONFIGURATION["logging"]["backend_path"]]
     if "authorization_server_path" in CONFIGURATION["logging"]:
@@ -701,7 +791,7 @@ def get_logs_by_session() -> HandlerResult:
         try:
             with open(log_file, "r") as f:
                 for line in f:
-                    if session_id not in line:
+                    if not session_pattern.search(line):
                         continue
                     stripped_line = _ANSI_ESCAPE.sub("", line).strip()
                     if stripped_line not in seen_lines:
@@ -779,6 +869,9 @@ def credentialOffer() -> HandlerResult:
 
     if not all(credential in credentials_supported for credential in credentials_id):
         return jsonify({"error": "invalid_request", "error_description": "Unsupported credential"}), 400
+
+    if not is_valid_offer_prefix(credential_offer_URI):
+        return jsonify({"error": "invalid_request", "error_description": "Invalid credential offer URI"}), 400
 
     session["credentials_id"] = credentials_id
 

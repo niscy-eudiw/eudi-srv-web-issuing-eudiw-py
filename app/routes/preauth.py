@@ -26,19 +26,20 @@ from __future__ import annotations
 
 import json
 import logging
+from http import HTTPStatus
 from typing import Any, Dict, Tuple, Union
 
 import jwt
 from flask import Blueprint, Response, jsonify, request, session
 
-from app.core.config import CONFIGURATION
+from app.core.config import CONFIGURATION, feature_enabled
 from app.core.log_utils import safe
 from app.core.security import require_frontend_origin
 from app.core.state import session_manager
 from app.services.attributes import getAttributesForm, getAttributesForm2, optional_only, requested_credential_ids
 from app.services.auth_server import generate_preauth_code
 from app.services.credential_offer import credential_offer_uri, pre_authorized_offer
-from app.services.presentation import form_formatter, presentation_formatter
+from app.services.presentation import InvalidFormError, form_formatter, presentation_formatter
 from app.core.errors import CertificateVerificationError
 from app.services.trust import CREDENTIAL_OFFER_REQUEST_CONTEXT, trust_context, trust_use_case, verify_jwt_with_x5c
 from app.utils.forms import parse_form
@@ -49,6 +50,9 @@ from app.utils.qr import qr_data_uri
 
 preauth = Blueprint("preauth", __name__, url_prefix="/")
 logger = logging.getLogger(__name__)
+
+#: Longest accepted ``exp - iat`` of a credentialOfferReq2 request JWT (seconds).
+OFFER_REQUEST_MAX_LIFETIME = 3600
 
 AGE_VERIFICATION_SCOPES = (
     "eu.europa.ec.eudi.age_verification_mdoc",
@@ -100,6 +104,9 @@ def preauthRed() -> str:
     Returns:
         The attribute form page.
     """
+    if not feature_enabled("form_countries"):
+        return "Pre-authorized form issuance is disabled", HTTPStatus.FORBIDDEN
+
     credential_list = json.loads(request.args.get("credentials_id"))
     session_id = request_preauth_token(scope=" ".join(credential_list))
     session["session_id"] = session_id
@@ -136,6 +143,9 @@ def preauth_form() -> str:
     Returns:
         The consent page.
     """
+    if not feature_enabled("form_countries"):
+        return "Pre-authorized form issuance is disabled", HTTPStatus.FORBIDDEN
+
     form_data = parse_form(request.form)
 
     session_id = session["session_id"]
@@ -143,8 +153,12 @@ def preauth_form() -> str:
     logger.info(f", Session ID: {session_id}, Pre-authorized attribute form submitted")
     logger.debug(f", Session ID: {session_id}, Form fields: {safe(sorted(form_data), 500)}")
 
-    form_data.pop("proceed")
-    cleaned_data = form_formatter(form_data, issuing_country=current_session.country)
+    form_data.pop("proceed", None)
+    try:
+        cleaned_data = form_formatter(form_data, issuing_country=current_session.country)
+    except InvalidFormError as e:
+        logger.warning(f", Session ID: {session_id}, Attribute form rejected: {safe(e)}")
+        return "Invalid attribute form", HTTPStatus.BAD_REQUEST
     session_manager.update_user_data(session_id=session_id, user_data=cleaned_data)
 
     presentation_data = presentation_formatter(
@@ -170,7 +184,12 @@ def form_authorize_generate() -> str:
     Returns:
         The credential offer QR code page.
     """
-    current_session = session_manager.get_session(request.form.to_dict()["user_id"])
+    if not feature_enabled("form_countries"):
+        return "Pre-authorized form issuance is disabled", HTTPStatus.FORBIDDEN
+
+    current_session = session_manager.get_session(session.get("session_id", ""))
+    if current_session is None or not current_session.user_data:
+        return "Unknown or expired session", HTTPStatus.BAD_REQUEST
     return generate_offer(current_session.user_data)
 
 
@@ -210,17 +229,20 @@ def generate_offer(data: Dict[str, Any]) -> str:
 
 @preauth.route("/credentialOfferReq2", methods=["POST"])
 def credentialOfferReq2() -> Union[Dict[str, Any], Tuple[Response, int]]:
-    """Creates a pre-authorized offer (with embedded ``tx_code``) from a signed request.
+    """Creates a pre-authorized offer from a signed request.
 
     The ``request`` JWT must carry an ``x5c`` chain trusted by the trust
     validator or the local trusted CAs (see :mod:`app.services.trust`); its
-    signature (and ``exp``, when present) is verified.
+    signature is verified, and ``exp`` and ``iat`` are required (lifetime at
+    most :data:`OFFER_REQUEST_MAX_LIFETIME`).
 
     Form parameters:
         request: JWT whose payload has ``credentials: [{credential_configuration_id, data}]``.
 
     Returns:
-        The credential offer, ``400`` when ``request`` is missing or malformed,
+        ``{"credential_offer", "tx_code"}`` (the bare offer with the
+        ``tx_code`` value inside when the ``tx_code_in_offer`` test feature is
+        on), ``400`` when ``request`` is missing or malformed,
         or ``401`` when the JWT is not signed by a trusted certificate.
     """
     json_token = request.form.get("request")
@@ -232,7 +254,10 @@ def credentialOfferReq2() -> Union[Dict[str, Any], Tuple[Response, int]]:
             json_token,
             verification_context=trust_context("credential_offer_request", CREDENTIAL_OFFER_REQUEST_CONTEXT),
             use_case=trust_use_case("credential_offer_request"),
+            required_claims=("exp", "iat"),
         )
+        if json_payload["exp"] - json_payload["iat"] > OFFER_REQUEST_MAX_LIFETIME:
+            raise jwt.InvalidTokenError(f"Request JWT lifetime exceeds {OFFER_REQUEST_MAX_LIFETIME} s")
     except CertificateVerificationError as e:
         logger.warning(f"credentialOfferReq2 rejected: untrusted signer: {safe(e)}")
         return jsonify({"error": "invalid_request", "error_description": "Untrusted request signer"}), 401
@@ -254,10 +279,21 @@ def credentialOfferReq2() -> Union[Dict[str, Any], Tuple[Response, int]]:
     session_manager.update_user_data(session_id=session_id, user_data=credentials[0]["data"])
 
     current_session = session_manager.get_session(session_id=session_id)
-    return pre_authorized_offer(
+    if feature_enabled("tx_code_in_offer"):
+        return pre_authorized_offer(
+            credential_issuer=frontend_url(),
+            credential_configuration_ids=credential_ids,
+            issuer_state=session_id,
+            pre_authorized_code=current_session.pre_authorized_code,
+            tx_code_value=current_session.tx_code,
+        )
+
+    # The tx_code is a second factor: the caller hands it to the user out of
+    # band, so it must not travel inside the offer (QR code / deeplink).
+    offer = pre_authorized_offer(
         credential_issuer=frontend_url(),
         credential_configuration_ids=credential_ids,
         issuer_state=session_id,
         pre_authorized_code=current_session.pre_authorized_code,
-        tx_code_value=current_session.tx_code,
     )
+    return {"credential_offer": offer, "tx_code": current_session.tx_code}

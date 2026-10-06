@@ -191,10 +191,10 @@ def mock_oidc_metadata():
 
 @pytest.fixture(autouse=True)
 def setup_mocks_for_module(mock_oidc_metadata):
-    """Sets up global mocks (oidc_metadata, cfgservice) before any test runs."""
+    """Sets up global mocks (oidc_metadata, trusted CAs) before any test runs."""
     with patch.dict("app.services.attributes.oidc_metadata", mock_oidc_metadata, clear=True), patch(
-        "app.core.errors.cfgservice", MagicMock()
-    ), patch("app.core.state.trusted_CAs", {}):
+        "app.core.state.trusted_CAs", {}
+    ):
         yield
 
 
@@ -410,7 +410,7 @@ class TestAdditionalCoverage:
             algorithms=["ES256"],
             audience="aud",
             issuer="iss",
-            options={"verify_exp": False},
+            options={"verify_exp": False, "require": []},
         )
 
     # ---------------------------

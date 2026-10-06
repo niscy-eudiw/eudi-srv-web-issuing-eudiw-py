@@ -133,6 +133,25 @@ def test_sdjwt_issued_and_verified(issuer_config, device_key):
     assert payload["_sd"]  # claims are selectively disclosable
 
 
+def test_sdjwt_issuance_does_not_reseed_the_global_prng(issuer_config, device_key):
+    """sd_jwt's demo get_jwk() reseeded ``random`` with a constant on every issuance."""
+    import random
+    from unittest.mock import patch
+
+    pid = {
+        "credential_metadata": {
+            "vct": VCT,
+            "issuer_config": {"validity": 30},
+            "credential_metadata": {"claims": [{"path": ["family_name"]}]},
+        },
+        "data": {"claims": {"family_name": "Doe"}},
+        "device_publickey": device_key,
+    }
+    with patch.object(random, "seed") as seed:
+        sdjwtFormatter(pid, "FC", scope=None, session_id=None)
+    seed.assert_not_called()
+
+
 def test_country_key_round_trip(issuer_config):
     from app.services.formatters import KeyData, load_country_signing_key
 

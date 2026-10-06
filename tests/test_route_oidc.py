@@ -48,6 +48,14 @@ from proof_helpers import nonce_key_pem, p256_jwk, proof_jwt
 
 API_KEY_HEADERS = {"X-Api-Key": "test-api-key"}
 
+
+@pytest.fixture(autouse=True)
+def _credential_types_authorized():
+    """These tests cover other parts of /credential; the authorization check
+    of the requested credential type is tested in test_security_regressions."""
+    with patch("app.routes.oidc.require_authorized_configuration"):
+        yield
+
 @pytest.fixture
 def app():
     """Create Flask app for testing"""
@@ -155,6 +163,7 @@ class TestAuthChoice:
     def test_auth_choice_with_scope(
         self, client, mock_session_manager, mock_cfgservice
     ):
+        mock_session_manager.get_session.return_value = None  # new session
         mock_oidc_metadata = {
             "credential_configurations_supported": {
                 "eu.europa.ec.eudi.pid_mdoc": {
@@ -182,14 +191,13 @@ class TestAuthChoice:
             mock_oidc_metadata,
             clear=True
         ):
-            response = client.get(
-                "/auth_choice",
-                query_string={
+            query = {
                     "token": "test-token",
                     "session_id": "test-session",
                     "scope": "openid eu.europa.ec.eudi.pid_mdoc",
-                },
-            )
+                }
+            with patch("app.routes.oidc.verify_session_token", return_value={k: v for k, v in query.items() if k != "token"}):
+                response = client.get("/auth_choice", query_string={"token": query["token"], "session_token": "signed"})
 
             # Should redirect to auth method display
             assert response.status_code in [200, 302]
@@ -197,6 +205,7 @@ class TestAuthChoice:
     def test_auth_choice_with_authorization_details(
         self, client, mock_session_manager, mock_cfgservice
     ):
+        mock_session_manager.get_session.return_value = None  # new session
         """Test auth_choice with authorization_details"""
         auth_details = json.dumps(
             [{"credential_configuration_id": "eu.europa.ec.eudi.pid_mdoc"}]
@@ -211,14 +220,13 @@ class TestAuthChoice:
             }
         }):
 
-            response = client.get(
-                "/auth_choice",
-                query_string={
+            query = {
                     "token": "test-token",
                     "session_id": "test-session",
                     "authorization_details": json.dumps(auth_details),
-                },
-            )
+                }
+            with patch("app.routes.oidc.verify_session_token", return_value={k: v for k, v in query.items() if k != "token"}):
+                response = client.get("/auth_choice", query_string={"token": query["token"], "session_token": "signed"})
 
             assert response.status_code in [200, 302]
 
@@ -702,18 +710,18 @@ class TestLogs:
         """Test retrieving logs by session ID"""
         mock_file = MagicMock()
         mock_file.__enter__.return_value.__iter__.return_value = [
-            "INFO - Session ID: test-session, Started Request\n",
-            "INFO - Session ID: test-session, Credential Issuance Succesfull\n",
+            "INFO - Session ID: 0c6f8a52-1b2c-4d3e-8f90-123456789abc, Started Request\n",
+            "INFO - Session ID: 0c6f8a52-1b2c-4d3e-8f90-123456789abc, Credential Issuance Succesfull\n",
         ]
         mock_open.return_value = mock_file
 
         response = client.get(
-            "/logs", query_string={"session_id": "test-session"}, headers=API_KEY_HEADERS
+            "/logs", query_string={"session_id": "0c6f8a52-1b2c-4d3e-8f90-123456789abc"}, headers=API_KEY_HEADERS
         )
 
         assert response.status_code == 200
         assert response.json["count"] == 2
-        assert response.json["session_id"] == "test-session"
+        assert response.json["session_id"] == "0c6f8a52-1b2c-4d3e-8f90-123456789abc"
 
     def test_get_logs_missing_session_id(self, client, mock_cfgservice):
         """Test logs endpoint without session_id"""
@@ -983,6 +991,7 @@ class TestAuthChoiceFlow:
     def test_auth_choice_redirect_to_oid4vp(
         self, client, mock_session_manager, mock_cfgservice
     ):
+        mock_session_manager.get_session.return_value = None  # new session
         mock_oidc_metadata = {
             "credential_configurations_supported": {
                 "eu.europa.ec.eudi.pid_mdoc": {
@@ -1002,15 +1011,14 @@ class TestAuthChoiceFlow:
             clear=True
         ):
             """Test redirect to OID4VP"""
-            response = client.get(
-                "/auth_choice",
-                query_string={
+            query = {
                     "token": "test",
                     "session_id": "test-session",
                     "scope": "openid eu.europa.ec.eudi.pid_mdoc",
                     "frontend_id": "test-frontend",
-                },
-            )
+                }
+            with patch("app.routes.oidc.verify_session_token", return_value={k: v for k, v in query.items() if k != "token"}):
+                response = client.get("/auth_choice", query_string={"token": query["token"], "session_token": "signed"})
 
             # Should handle the request
             assert response.status_code in [200, 302, 307]
@@ -1035,7 +1043,7 @@ class TestPidAuthorization:
         assert "message" in response.json
         # Fixed behaviour: "/" between dynamic_presentation_url and the id
         url = mock_request.call_args.args[1]
-        assert "/test-presentation-123?nonce=" in url
+        assert url.endswith("/test-presentation-123")
 
     def test_pid_authorization_missing_id(self, client):
         """Test PID authorization without presentation_id"""

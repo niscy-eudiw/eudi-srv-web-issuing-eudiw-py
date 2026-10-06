@@ -17,8 +17,8 @@
 ###############################################################################
 """Shared exceptions and error responses.
 
-Centralizes the OpenID4VCI credential error body, the OAuth error redirect,
-the formatter error body and the application-wide Flask error handlers.
+Centralizes the OpenID4VCI credential error body, the OAuth error redirect
+and the application-wide Flask error handlers.
 """
 
 from __future__ import annotations
@@ -30,7 +30,6 @@ from typing import Any, Optional, Tuple
 from flask import Response, jsonify, redirect, request
 from werkzeug.exceptions import HTTPException
 
-from app.core.constants import ConfService as cfgservice
 from app.utils.http import url_get
 
 logger = logging.getLogger(__name__)
@@ -117,29 +116,6 @@ def auth_error_redirect(return_uri: str, error: str, error_description: Optional
     if error_description is not None:
         error_msg["error_description"] = error_description
     return redirect(url_get(return_uri, error_msg), code=302)
-
-
-def formatter_result(error_code: int, field: str = "mdoc", value: str = "") -> Response:
-    """Builds the JSON body returned by the ``/formatter`` endpoints.
-
-    The endpoints always answer HTTP 200; failures are signalled through
-    ``error_code`` (``0`` = success).
-
-    Args:
-        error_code: Key into :attr:`ConfService.error_list`.
-        field: Name of the credential field in the body.
-        value: The credential (empty on error).
-
-    Returns:
-        The JSON response.
-    """
-    return jsonify(
-        {
-            "error_code": error_code,
-            "error_message": cfgservice.error_list[str(error_code)],
-            field: value,
-        }
-    )
 
 
 def handle_exception(e: Exception) -> Any:

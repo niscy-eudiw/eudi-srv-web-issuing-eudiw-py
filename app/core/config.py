@@ -152,3 +152,19 @@ def _detect_test_env() -> bool:
 CONFIGURATION: dict[str, Any] = mock_config() if os.getenv("MOCK_CONFIGURATION") else load_config()
 
 IS_TEST_ENV: bool = _detect_test_env()
+
+
+def feature_enabled(name: str) -> bool:
+    """Tells whether a test-only feature is switched on.
+
+    Test features (``test_features.<name>`` in the configuration) let a demo
+    issuer accept self-asserted data. They are off unless set to ``true``.
+
+    Args:
+        name: Feature name, for example ``form_countries``.
+
+    Returns:
+        ``True`` only when the configuration sets the feature to ``true``.
+    """
+    features = CONFIGURATION.get("test_features") if isinstance(CONFIGURATION, dict) else None
+    return isinstance(features, dict) and features.get(name) is True

@@ -23,6 +23,14 @@ from flask import Flask, jsonify, make_response
 from app.routes.oidc import oidc
 
 
+
+@pytest.fixture(autouse=True)
+def _credential_types_authorized():
+    """These tests cover other parts of /credential; the authorization check
+    of the requested credential type is tested in test_security_regressions."""
+    with patch("app.routes.oidc.require_authorized_configuration"):
+        yield
+
 @pytest.fixture
 def app():
     """Create a Flask app for testing"""

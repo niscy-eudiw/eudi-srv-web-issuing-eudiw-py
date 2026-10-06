@@ -312,6 +312,10 @@ def setup_trusted_cas(trusted_cas_path: Optional[str] = None) -> None:
 # ---------------------------------------------------------------------------
 
 
+#: JWT claims the signer controls; metadata may not set them.
+_REGISTERED_CLAIMS = frozenset({"sub", "iat", "iss", "exp", "nbf", "aud", "jti"})
+
+
 class MetadataSigningError(Exception):
     """Raised when issuer metadata cannot be signed.
 
@@ -355,8 +359,9 @@ def sign_issuer_metadata(metadata: Dict[str, Any], issuer_frontend_id: str, iss:
     """Signs issuer metadata as a JWT with the frontend's metadata key.
 
     The payload holds ``sub`` (credential issuer identifier), ``iat``,
-    optional ``iss`` and every metadata parameter as a top-level claim; the
-    signing certificate is sent in ``x5c``.
+    optional ``iss`` and every other metadata parameter as a top-level claim
+    (metadata values for ``sub``, ``iat``, ``iss``, ``exp``, ``nbf``, ``aud``
+    and ``jti`` are dropped); the signing certificate is sent in ``x5c``.
 
     Args:
         metadata: Issuer metadata.
@@ -373,13 +378,12 @@ def sign_issuer_metadata(metadata: Dict[str, Any], issuer_frontend_id: str, iss:
         jwt.PyJWTError: If encoding fails.
     """
     frontend = frontend_config(issuer_frontend_id)
-    payload: Dict[str, Any] = {
-        "sub": frontend["url"],
-        "iat": int(datetime.datetime.now(datetime.timezone.utc).timestamp()),
-    }
+    # The registered claims are set last: metadata cannot override them.
+    payload: Dict[str, Any] = {k: v for k, v in metadata.items() if k not in _REGISTERED_CLAIMS}
+    payload["sub"] = frontend["url"]
+    payload["iat"] = int(datetime.datetime.now(datetime.timezone.utc).timestamp())
     if iss:
         payload["iss"] = iss
-    payload.update(metadata)
 
     try:
         private_key = serialization.load_pem_private_key(

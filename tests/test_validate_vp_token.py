@@ -61,7 +61,7 @@ class TestValidateVpToken:
         assert result == (True, "Status invalid:1")
 
     def test_vp_token_calls_validate_certificate(self):
-        mdoc_cbor = {"status": 0, "documents": [{}]}
+        mdoc_cbor = {"status": 0, "documents": [{"docType": "eu.europa.ec.eudi.pid.1"}]}
         encoded = base64.urlsafe_b64encode(cbor2.dumps(mdoc_cbor)).decode()
         data = {"vp_token": {"query_0": [encoded]}}
         with patch(
@@ -181,6 +181,9 @@ class TestValidateCertificate:
         with patch("app.services.vp_validation.Sign1Message.decode") as mock_decode, patch(
             "app.services.vp_validation.x509.load_der_x509_certificate",
             return_value=mock_cert,
+        ), patch(
+            "app.services.vp_validation.certificate_validity",
+            return_value=(datetime.now(timezone.utc) - timedelta(days=10), datetime.now(timezone.utc) + timedelta(days=10)),
         ):
             message = MagicMock()
             message.payload = cbor2.dumps(

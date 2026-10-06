@@ -25,6 +25,7 @@ Attributes:
 from __future__ import annotations
 
 import json
+import re
 import urllib.parse
 from typing import Any, Dict, Iterable, Optional
 
@@ -32,6 +33,27 @@ PRE_AUTHORIZED_GRANT = "urn:ietf:params:oauth:grant-type:pre-authorized_code"
 TX_CODE_DESCRIPTION = "Please provide the one-time code."
 
 CredentialOffer = Dict[str, Any]
+
+#: Offer URI prefixes a user may choose: ``scheme://`` plus an optional path,
+#: with no characters that could leave an HTML attribute or a URL.
+_OFFER_PREFIX = re.compile(r"[a-z][a-z0-9+.\-]{0,31}://[A-Za-z0-9._~:/?#\[\]@!$&()*+,;=%\-]{0,200}")
+#: Schemes that run code or read local data when a link is opened.
+_FORBIDDEN_OFFER_SCHEMES = frozenset({"javascript", "data", "vbscript", "file", "blob", "about"})
+
+
+def is_valid_offer_prefix(prefix: Optional[str]) -> bool:
+    """Tells whether a user-chosen credential offer URI prefix is acceptable.
+
+    Args:
+        prefix: For example ``openid-credential-offer://`` or
+            ``https://wallet.example/``.
+
+    Returns:
+        ``True`` for a ``scheme://...`` prefix whose scheme cannot run code.
+    """
+    if not prefix or not _OFFER_PREFIX.fullmatch(prefix):
+        return False
+    return prefix.split(":", 1)[0] not in _FORBIDDEN_OFFER_SCHEMES
 
 
 def authorization_code_offer(

@@ -155,6 +155,25 @@ def _check_validity(certificate: x509.Certificate, now: datetime.datetime, label
         raise CertificateVerificationError(f"{label} expired. Valid until: {not_after}")
 
 
+def _check_is_ca(certificate: x509.Certificate, label: str) -> None:
+    """Checks that a certificate may sign other certificates.
+
+    Args:
+        certificate: Intermediate certificate from the chain.
+        label: Description used in errors.
+
+    Raises:
+        CertificateVerificationError: Without ``basicConstraints`` ``cA=TRUE``
+            (a leaf certificate must not act as an issuer).
+    """
+    try:
+        is_ca = certificate.extensions.get_extension_for_class(x509.BasicConstraints).value.ca
+    except x509.ExtensionNotFound:
+        is_ca = False
+    if not is_ca:
+        raise CertificateVerificationError(f"{label} is not a CA certificate")
+
+
 def _check_issued_by(certificate: x509.Certificate, issuer: x509.Certificate, label: str) -> None:
     """Checks that ``certificate`` was signed by ``issuer``.
 
@@ -232,6 +251,7 @@ def verify_chain_against_trusted_CAs(chain_der: Sequence[bytes]) -> x509.Certifi
             raise CertificateVerificationError(
                 f"Certificate not issued by a trusted CA. Issuer: {certificate.issuer}"
             )
+        _check_is_ca(chain[position + 1], f"Chain certificate {position + 1}")
         _check_issued_by(certificate, chain[position + 1], label)
 
     raise CertificateVerificationError("Certificate chain does not lead to a trusted CA")
@@ -372,13 +392,18 @@ def verify_x5c_chain(
 # ---------------------------------------------------------------------------
 
 
+#: Signature algorithms accepted for x5c-signed JWTs when the caller sets no
+#: narrower list (asymmetric only: never ``none`` or HMAC).
+X5C_SIGNING_ALGORITHMS = ("ES256", "ES384", "ES512", "PS256", "PS384", "PS512", "RS256", "RS384", "RS512", "EdDSA")
+
+
 def _x5c_header(jwt_raw: str, allowed_algorithms: Optional[List[str]]) -> Tuple[str, List[str]]:
     """Validates the JOSE header of an ``x5c``-signed JWT.
 
     Args:
         jwt_raw: Compact JWT.
-        allowed_algorithms: Permitted ``alg`` values; any when ``None``
-            (less secure, logged as a warning).
+        allowed_algorithms: Permitted ``alg`` values; :data:`X5C_SIGNING_ALGORITHMS`
+            when ``None``.
 
     Returns:
         ``(alg, x5c_chain)``.
@@ -396,12 +421,10 @@ def _x5c_header(jwt_raw: str, allowed_algorithms: Optional[List[str]]) -> Tuple[
         logger.error("Algorithm not specified in JWT header")
         raise ValueError("Algorithm not specified in JWT header")
 
-    if allowed_algorithms:
-        if alg not in allowed_algorithms:
-            logger.error(f"Algorithm '{alg}' not in allowed list: {allowed_algorithms}")
-            raise ValueError(f"Algorithm '{alg}' not allowed. Permitted algorithms: {allowed_algorithms}")
-    else:
-        logger.warning("No algorithm whitelist specified - accepting any algorithm (less secure)")
+    allowed = list(allowed_algorithms or X5C_SIGNING_ALGORITHMS)
+    if alg not in allowed:
+        logger.error(f"Algorithm '{alg}' not in allowed list: {allowed}")
+        raise ValueError(f"Algorithm '{alg}' not allowed. Permitted algorithms: {allowed}")
 
     x5c_chain = unverified_header.get("x5c")
     if not x5c_chain:
@@ -423,7 +446,8 @@ def extract_public_key_from_x5c(
 
     Args:
         jwt_raw: Compact JWT.
-        allowed_algorithms: Permitted ``alg`` values; any when ``None``.
+        allowed_algorithms: Permitted ``alg`` values; :data:`X5C_SIGNING_ALGORITHMS`
+            when ``None``.
         verification_context: Trust validator context.
         use_case: Optional trust validator use case.
 
@@ -447,6 +471,7 @@ def verify_jwt_with_x5c(
     verify_exp: bool = True,
     verification_context: str = KEY_ATTESTATION_CONTEXT,
     use_case: Optional[str] = None,
+    required_claims: Sequence[str] = (),
 ) -> Dict[str, Any]:
     """Verifies a JWT signed with a trusted ``x5c`` certificate chain.
 
@@ -458,6 +483,7 @@ def verify_jwt_with_x5c(
         verify_exp: Whether to verify expiration.
         verification_context: Trust validator context.
         use_case: Optional trust validator use case.
+        required_claims: Claims that must be present (e.g. ``exp``, ``iat``).
 
     Returns:
         The decoded claims.
@@ -475,9 +501,9 @@ def verify_jwt_with_x5c(
         algorithms=[alg],
         audience=audience,
         issuer=issuer,
-        options={"verify_exp": verify_exp},
+        options={"verify_exp": verify_exp, "require": list(required_claims)},
     )
-    logger.debug(f"JWT signature and claims verified successfully: {claims}")
+    logger.debug("JWT signature and claims verified successfully")
     return claims
 
 
@@ -522,6 +548,8 @@ def verify_and_decode_sdjwt(sd_jwt: str, is_trusted_signer: Callable[[x509.Certi
     """
     issuer_jwt = SDJWTHolder(sd_jwt)._unverified_input_sd_jwt
     certificate, alg = x5c_leaf_certificate(issuer_jwt)
+    if alg not in X5C_SIGNING_ALGORITHMS:
+        raise ValueError(f"Algorithm '{alg}' not allowed")
     if not is_trusted_signer(certificate):
         raise CertificateVerificationError(f"Untrusted SD-JWT signer: {certificate.subject.rfc4514_string()}")
     public_key = certificate.public_key()

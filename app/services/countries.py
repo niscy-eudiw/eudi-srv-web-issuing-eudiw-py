@@ -142,7 +142,7 @@ def openid_authorization_url(country: str, state: str) -> str:
 
     Args:
         country: Country code (``connection_type: openid``).
-        state: OAuth ``state`` (the issuance session id).
+        state: Random OAuth ``state``, checked on the redirect back.
 
     Returns:
         The authorization URL.

@@ -25,14 +25,16 @@ mdoc) and SD-JWT format.
 
 from __future__ import annotations
 
+import hmac
 import logging
+import secrets
 from http import HTTPStatus
-from typing import Any, Dict, Tuple, Union
+from typing import Any, Dict, Optional, Tuple, Union
 from uuid import uuid4
 
 from flask import Blueprint, Response, redirect, request, session
 
-from app.core.config import CONFIGURATION
+from app.core.config import CONFIGURATION, feature_enabled
 from app.core.security import require_frontend_origin
 from app.core.constants import ConfService as cfgserv
 from app.core.log_utils import safe
@@ -47,7 +49,7 @@ from app.services.countries import (
     is_form_country,
     openid_authorization_url,
 )
-from app.services.presentation import form_formatter, presentation_formatter
+from app.services.presentation import InvalidFormError, form_formatter, presentation_formatter
 from app.utils.forms import parse_form
 from app.utils.frontend import frontend_url
 from app.utils.http import post_redirect_with_payload, url_get
@@ -110,6 +112,43 @@ def _display_authorization(current_session: Session, presentation_data: Dict[str
     )
 
 
+def _selectable_countries(current_session: Session) -> Dict[str, str]:
+    """Lists the countries the user may choose for this session.
+
+    A country must support every requested credential. Form countries, where
+    the user types the attributes, are only offered when the
+    ``form_countries`` test feature is on.
+
+    Args:
+        current_session: Issuance session.
+
+    Returns:
+        Country code -> display name.
+    """
+    allow_forms = feature_enabled("form_countries")
+    return {
+        str(country): str(config["name"])
+        for country, config in CONFIGURATION["countries"].items()
+        if all(c in config["supported_credential_ids"] for c in current_session.credentials_requested)
+        and (allow_forms or not is_form_country(country))
+    }
+
+
+def _bind_verified_attributes(form_data: Dict[str, Any], verified: Optional[Dict[str, Any]]) -> None:
+    """Restores the verified PID values in a submitted attribute form.
+
+    The form is pre-filled from a verified PID presentation; the user may
+    add attributes but cannot change the verified ones.
+
+    Args:
+        form_data: Parsed form, updated in place.
+        verified: Attribute name -> verified value.
+    """
+    for name, value in (verified or {}).items():
+        if name in form_data and isinstance(value, (str, int, float)) and not isinstance(value, bool):
+            form_data[name] = str(value)
+
+
 @dynamic.route("/", methods=["GET", "POST"])
 @require_frontend_origin
 def Supported_Countries() -> HandlerResult:
@@ -123,16 +162,14 @@ def Supported_Countries() -> HandlerResult:
     """
     session_id, current_session = _current_session()
 
-    if AGE_VERIFICATION_PASSPORT in current_session.credentials_requested:
+    if AGE_VERIFICATION_PASSPORT in current_session.credentials_requested and feature_enabled(
+        "passport_age_verification"
+    ):
         session_manager.update_user_data(session_id=session_id, user_data={"age_over_18": True})
         session_manager.update_country(session_id=session_id, country="AV")
         return _redirect_to_user_verification(session_id, current_session.jws_token)
 
-    display_countries = {
-        str(country): str(config["name"])
-        for country, config in CONFIGURATION["countries"].items()
-        if all(c in config["supported_credential_ids"] for c in current_session.credentials_requested)
-    }
+    display_countries = _selectable_countries(current_session)
 
     if len(display_countries) == 1:
         country = next(iter(display_countries))
@@ -158,8 +195,12 @@ def country_selected() -> HandlerResult:
     Returns:
         See :func:`dynamic_R1`.
     """
+    _, current_session = _current_session()
     form_country = request.form.get("country")
-    logger.info(f", Session ID: {session['session_id']}, Authorization selection, Type: {safe(form_country, 20)}")
+    if form_country not in _selectable_countries(current_session):
+        logger.warning(f", Session ID: {current_session.session_id}, Country not selectable: {safe(form_country, 20)}")
+        return "Country not supported", HTTPStatus.BAD_REQUEST
+    logger.info(f", Session ID: {current_session.session_id}, Authorization selection, Type: {safe(form_country, 20)}")
     return dynamic_R1(form_country)
 
 
@@ -196,7 +237,7 @@ def dynamic_R1(country: str) -> HandlerResult:
 
     match country_config(country)["connection_type"]:
         case "oauth":
-            state = str(uuid4())
+            state = secrets.token_urlsafe(32)
             session["oauth_state"] = state
             return redirect(
                 generate_connector_authorization_url(
@@ -207,7 +248,9 @@ def dynamic_R1(country: str) -> HandlerResult:
                 )
             )
         case "openid":
-            return redirect(openid_authorization_url(country, state=current_session.session_id))
+            state = secrets.token_urlsafe(32)
+            session["oauth_state"] = state
+            return redirect(openid_authorization_url(country, state=state))
         case other:
             return f"Unsupported connection type: {other}", HTTPStatus.BAD_REQUEST
 
@@ -219,6 +262,7 @@ def red() -> HandlerResult:
     GET parameters:
         code (mandatory): Authorization code to retrieve the attributes
             consented by the user.
+        state (mandatory): The ``state`` sent with the authorization request.
 
     Returns:
         The consent page.
@@ -231,6 +275,14 @@ def red() -> HandlerResult:
     valid, missing = validate_mandatory_args(request.args, ["code"])
     if not valid:
         raise ValueError(f"Missing mandatory IdP fields: {missing}")
+
+    # The state binds the IdP response to the authorization request this
+    # browser started; it is single use.
+    expected_state = session.pop("oauth_state", None)
+    received_state = request.args.get("state") or ""
+    if not expected_state or not hmac.compare_digest(received_state.encode(), expected_state.encode()):
+        logger.warning(f", Session ID: {session_id}, IdP redirect rejected: state mismatch")
+        return "Invalid state", HTTPStatus.BAD_REQUEST
 
     access_token = exchange_authorization_code(current_session.country, request.args.get("code"))
     session["access_token"] = access_token
@@ -285,12 +337,23 @@ def Dynamic_form() -> HandlerResult:
         # The form is only ever POSTed by the frontend.
         return "Error 101: " + cfgserv.error_list["101"] + "\n", HTTPStatus.BAD_REQUEST
 
+    if not is_form_country(current_session.country) or not (
+        feature_enabled("form_countries") or current_session.verified_attributes
+    ):
+        logger.warning(f", Session ID: {session_id}, Attribute form not allowed for this session")
+        return "Attribute form not allowed", HTTPStatus.FORBIDDEN
+
     form_data = parse_form(request.form)
-    form_data.pop("proceed")
+    form_data.pop("proceed", None)
+    _bind_verified_attributes(form_data, current_session.verified_attributes)
     logger.info(f", Session ID: {session_id}, Attribute form submitted")
     logger.debug(f", Session ID: {session_id}, Form fields: {safe(sorted(form_data), 500)}")
 
-    cleaned_data = form_formatter(form_data, issuing_country=current_session.country)
+    try:
+        cleaned_data = form_formatter(form_data, issuing_country=current_session.country)
+    except InvalidFormError as e:
+        logger.warning(f", Session ID: {session_id}, Attribute form rejected: {safe(e)}")
+        return "Invalid attribute form", HTTPStatus.BAD_REQUEST
     session_manager.update_user_data(session_id=session_id, user_data=cleaned_data)
 
     presentation_data = presentation_formatter(
@@ -310,4 +373,7 @@ def redirect_wallet() -> Response:
         The redirect response.
     """
     session_id, current_session = _current_session()
+    # The browser part of the flow ends here: a copied session cookie must
+    # not reopen the attribute form or the consent page.
+    session.clear()
     return _redirect_to_user_verification(session_id, current_session.jws_token)

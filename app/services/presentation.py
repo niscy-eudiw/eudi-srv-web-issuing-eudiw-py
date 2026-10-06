@@ -57,6 +57,31 @@ _SAMPLE_IMAGES = {"Port1": cfgserv.portrait1, "Port2": cfgserv.portrait2}
 EHIC_CONFIGURATION = "eu.europa.ec.eudi.ehic_sd_jwt_vc"
 SEAFARER_CONFIGURATION = "eu.europa.ec.eudi.seafarer_mdoc"
 MDL_SCOPE = "org.iso.18013.5.1.mDL"
+#: Largest list index accepted in a form key such as ``capacities[3][code]``.
+MAX_FORM_INDEX = 99
+
+
+class InvalidFormError(ValueError):
+    """Raised when a submitted attribute form is malformed."""
+
+
+def _form_index(part: str) -> int:
+    """Converts a bracketed list index of a form key, within bounds.
+
+    Args:
+        part: Digits from the key.
+
+    Returns:
+        The index.
+
+    Raises:
+        InvalidFormError: Above :data:`MAX_FORM_INDEX` (a huge index would
+            allocate a huge list).
+    """
+    idx = int(part)
+    if idx > MAX_FORM_INDEX:
+        raise InvalidFormError(f"Form list index {idx} exceeds {MAX_FORM_INDEX}")
+    return idx
 
 
 def _set_nested(target: Dict[str, Any], key: str, value: Any) -> None:
@@ -69,12 +94,15 @@ def _set_nested(target: Dict[str, Any], key: str, value: Any) -> None:
         target: Root dict (mutated).
         key: Bracketed form key.
         value: Value to store.
+
+    Raises:
+        InvalidFormError: If a list index is too large.
     """
     parts = _KEY_PARTS.findall(key)
     current: Any = target
     for i, part in enumerate(parts[:-1]):
         if part.isdigit():
-            idx = int(part)
+            idx = _form_index(part)
             while len(current) <= idx:
                 current.append({})
             current = current[idx]
@@ -84,7 +112,7 @@ def _set_nested(target: Dict[str, Any], key: str, value: Any) -> None:
 
     final_key = parts[-1]
     if final_key.isdigit() and isinstance(current, list):
-        idx = int(final_key)
+        idx = _form_index(final_key)
         while len(current) <= idx:
             current.append(None)
         current[idx] = value

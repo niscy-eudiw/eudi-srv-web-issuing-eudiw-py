@@ -51,14 +51,21 @@ API_KEY_HEADER = "X-Api-Key"
 F = TypeVar("F", bound=Callable[..., Any])
 
 
+#: Placeholder keys from the example configurations; treated as unset.
+PLACEHOLDER_API_KEYS = frozenset({"change-me", "changeme", "secret"})
+
+
 def configured_api_key() -> Optional[str]:
     """Returns the configured backend API key.
 
     Returns:
-        ``CONFIGURATION["backend_api_key"]``, or ``None`` when unset / empty.
+        ``CONFIGURATION["backend_api_key"]``, or ``None`` when unset, empty
+        or still an example placeholder.
     """
     key = CONFIGURATION.get("backend_api_key")
-    return str(key) if key else None
+    if not key or str(key) in PLACEHOLDER_API_KEYS:
+        return None
+    return str(key)
 
 
 def is_valid_api_key(candidate: Optional[str]) -> bool:

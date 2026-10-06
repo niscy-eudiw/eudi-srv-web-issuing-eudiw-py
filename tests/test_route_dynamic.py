@@ -212,9 +212,11 @@ class TestSupportedCountries:
 class TestCountrySelected:
     """Test class for /dynamic/country_selected route"""
 
+    @patch("app.routes.dynamic._selectable_countries", return_value={"EU": "EU"})
+    @patch("app.routes.dynamic.session_manager")
     @patch("app.routes.dynamic.dynamic_R1")
     @patch("app.services.presentation.cfgserv", new=MockConfService)
-    def test_country_selected_calls_dynamic_r1(self, mock_dynamic_r1, client):
+    def test_country_selected_calls_dynamic_r1(self, mock_dynamic_r1, _session_manager, _countries, client):
         """Test that selecting a country calls dynamic_R1"""
         mock_dynamic_r1.return_value = b"dynamic_r1_called"
 
@@ -250,7 +252,7 @@ class TestDynamicR1:
         self.cleanups.append(patcher_get_session.stop)
 
         # Mock session dict
-        self.session_dict = {"session_id": "test_session"}
+        self.session_dict = {"session_id": "test_session", "oauth_state": "state1"}
         patch("app.routes.dynamic.session", self.session_dict).start()
 
         # Mock cfgserv
@@ -364,7 +366,7 @@ class TestDynamicR1:
 
         from app.routes.dynamic import dynamic_R1
 
-        with patch("app.routes.dynamic.uuid4", return_value="uuid_state_1"):
+        with patch("app.routes.dynamic.secrets.token_urlsafe", return_value="uuid_state_1"):
             result = dynamic_R1("EU")
 
         assert "redirect:" in result
@@ -468,7 +470,9 @@ class TestDynamicR1:
             assert "response_type=code" in redirect_url
 
             # The 'state' should be correctly appended for EE
-            assert "state=EE.token123" in redirect_url
+            # A random state, not the (guessable) session id.
+            assert "state=EE.token123" not in redirect_url
+            assert f"state={self.session_dict['oauth_state']}" in redirect_url
 
             patch.stopall()
 
@@ -487,7 +491,7 @@ class TestDynamicRedirect:
         self.mock_get_session = patcher_get_session.start()
 
         # Mock session dict
-        self.session_dict = {"session_id": "test_session"}
+        self.session_dict = {"session_id": "test_session", "oauth_state": "state1"}
         patch("app.routes.dynamic.session", self.session_dict).start()
 
         # Mock configuration
@@ -601,6 +605,7 @@ class TestDynamicRedirect:
 
         with client.session_transaction() as sess:
             sess["session_id"] = "test_session"
+            sess["oauth_state"] = "state1"
 
         response = client.get(
             "/dynamic/redirect",

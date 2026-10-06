@@ -32,19 +32,18 @@ from __future__ import annotations
 import base64
 import copy
 import datetime
-import hashlib
 import logging
 from typing import Any, Dict, List, Optional, Tuple
 from uuid import uuid4
 
 import cbor2
 import jwt
+from jwcrypto.jwk import JWK
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from pymdoccbor.mdoc.issuer import MdocCborIssuer
 from sd_jwt.common import SDObj
 from sd_jwt.issuer import SDJWTIssuer
-from sd_jwt.utils.demo_utils import get_jwk
 
 from app.core.config import CONFIGURATION
 from app.core.state import session_manager
@@ -117,7 +116,7 @@ def mdocFormatter(
     Note:
         The signing key comes from ``country``, while the certificate and
         status list reservation use the *session* country when a session
-        exists (standalone ``/formatter`` calls have none).
+        exists.
 
     Args:
         data: Doctype data, ``{namespace: {element: value}}``.
@@ -308,8 +307,6 @@ def sdjwtFormatter(PID: Dict[str, Any], country: str, scope: Optional[str], sess
     Returns:
         The SD-JWT issuance (compact serialization).
     """
-    # NOTE: sha256 of empty input -> constant seed, as in the original code.
-    seed = int(hashlib.sha256().hexdigest(), 16)
 
     today = datetime.date.today()
     iat = DatestringFormatter(format_date(today))
@@ -362,24 +359,18 @@ def sdjwtFormatter(PID: Dict[str, Any], country: str, scope: Optional[str], sess
     public_key_curve, public_key_x, public_key_y = KeyData(public_key, "public")
 
     b64 = lambda raw: jwt.utils.base64url_encode(raw).decode("utf-8")  # noqa: E731
-    jwk_kwargs = {
-        "issuer_key": {
-            "kty": "EC",
-            "d": b64(private_value_bytes(private_key)),
-            "crv": private_key_curve,
-            "x": b64(private_key_x),
-            "y": b64(private_key_y),
-        },
-        "holder_key": {
-            "kty": "EC",
-            "crv": public_key_curve,
-            "x": b64(public_key_x),
-            "y": b64(public_key_y),
-        },
-        "key_size": 256,
-        "kty": "EC",
+    # Built directly: sd_jwt's demo get_jwk(..., no_randomness=True) reseeds
+    # the global random module with a constant.
+    keys = {
+        "issuer_key": JWK(
+            kty="EC",
+            d=b64(private_value_bytes(private_key)),
+            crv=private_key_curve,
+            x=b64(private_key_x),
+            y=b64(private_key_y),
+        ),
+        "holder_key": JWK(kty="EC", crv=public_key_curve, x=b64(public_key_x), y=b64(public_key_y)),
     }
-    keys = get_jwk(jwk_kwargs, True, seed)
 
     SDJWTIssuer.unsafe_randomness = False
     SDJWTIssuer.SD_JWT_HEADER = "dc+sd-jwt"

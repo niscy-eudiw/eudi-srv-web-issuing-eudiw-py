@@ -21,6 +21,7 @@ from pki_helpers import ca_entry, make_cert, x5c
 from cryptography.hazmat.primitives.asymmetric import ec
 import jwt
 import json
+import time
 import base64
 import io
 from unittest.mock import Mock, patch, MagicMock, call
@@ -87,7 +88,8 @@ def mock_configuration():
         "authorization_server": {
             "base_url": "http://127.0.0.1:6005"
         },
-        "credential_offer_scheme": "haip-vci://"
+        "credential_offer_scheme": "haip-vci://",
+        "test_features": {"form_countries": True, "tx_code_in_offer": True},
     }
     
     with patch.dict("app.routes.preauth.CONFIGURATION", mock_cfg):
@@ -341,7 +343,11 @@ def trusted_request_signer():
     """
     def decode(token, **kwargs):
         payload = token.split(".")[1]
-        return json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+        claims = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+        # A verified request always carries exp and iat (required_claims).
+        claims.setdefault("iat", int(time.time()))
+        claims.setdefault("exp", claims["iat"] + 300)
+        return claims
 
     with patch("app.routes.preauth.verify_jwt_with_x5c", side_effect=decode) as verify:
         yield verify
@@ -493,8 +499,8 @@ class TestRequestPreauthToken:
         mock_requests.assert_called_once_with(
             "POST",
             expected_url,
-            headers={"Content-Type": "application/x-www-form-urlencoded"},
-            data="scope=credential_1 credential_2",
+            headers={"Content-Type": "application/x-www-form-urlencoded", "X-Api-Key": ""},
+            data={"scope": "credential_1 credential_2"},
             timeout=30,
         )
         mock_session_manager.add_session.assert_called_once_with(
@@ -522,7 +528,7 @@ class TestRequestPreauthToken:
 
         assert result == "test_id"
         call_args = mock_requests.call_args
-        assert "scope=" in call_args[1]["data"]
+        assert call_args[1]["data"] == {"scope": ""}
 
     @patch("app.services.auth_server.requests.request")
     def test_request_preauth_token_with_special_chars(
@@ -930,7 +936,11 @@ class TestCompleteCodeCoverage:
 class TestCredentialOfferReq2Trust:
     """credentialOfferReq2 only accepts requests signed by a trusted certificate."""
 
-    PAYLOAD = {"credentials": [{"credential_configuration_id": "cred_1", "data": {"name": "Test"}}]}
+    PAYLOAD = {
+        "credentials": [{"credential_configuration_id": "cred_1", "data": {"name": "Test"}}],
+        "iat": int(time.time()),
+        "exp": int(time.time()) + 300,
+    }
 
     @pytest.fixture
     def pki(self):

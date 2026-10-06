@@ -194,7 +194,7 @@ class TestDeferredAndNotification:
         "headers, error",
         [
             ({}, "Authorization header is missing"),
-            ({"Authorization": "DPoP t"}, "Authorization header must be a Bearer token"),
+            ({"Authorization": "Basic t"}, "Authorization header must be a Bearer or DPoP token"),
             ({"Authorization": "Bearer "}, None),
         ],
     )
@@ -208,7 +208,10 @@ class TestDeferredAndNotification:
 
 class TestAuthChoice:
     def _get(self, client, **params):
-        return client.get("/auth_choice?" + urllib.parse.urlencode({"session_id": "s1", "token": "t", **params}))
+        """Calls /auth_choice; the session claims stand in for a verified session_token."""
+        claims = {"session_id": "s1", **params}
+        with patch.object(oidc_routes, "verify_session_token", return_value=claims):
+            return client.get("/auth_choice?" + urllib.parse.urlencode({"token": "t", "session_token": "signed"}))
 
     def test_invalid_authorization_details(self, client, config):
         response = self._get(client, authorization_details="{not json")
@@ -257,19 +260,19 @@ class TestAuthChoice:
 class TestLogs:
     def test_collects_dedupes_and_strips(self, client, config, tmp_path):
         (tmp_path / "backend.log").write_text(
-            "\x1b[32mINFO s1 started\x1b[0m\nINFO s1 started\nINFO s2 other\nINFO s1 Credential Issuance Successful\n"
+            "\x1b[32mINFO 0c6f8a52-1b2c-4d3e-8f90-123456789abc started\x1b[0m\nINFO 0c6f8a52-1b2c-4d3e-8f90-123456789abc started\nINFO 9d1e2f30-4a5b-4c6d-8e7f-abcdefabcdef other\nINFO 0c6f8a52-1b2c-4d3e-8f90-123456789abc Credential Issuance Successful\n"
         )
-        (tmp_path / "as.log").write_text("AS s1 token issued\n")
+        (tmp_path / "as.log").write_text("AS 0c6f8a52-1b2c-4d3e-8f90-123456789abc token issued\n")
         config["logging"]["authorization_server_path"] = str(tmp_path / "as.log")
 
-        body = client.get("/logs?session_id=s1", headers=API_KEY).get_json()
+        body = client.get("/logs?session_id=0c6f8a52-1b2c-4d3e-8f90-123456789abc", headers=API_KEY).get_json()
 
-        assert body["logs"] == ["INFO s1 started", "INFO s1 Credential Issuance Successful", "AS s1 token issued"]
+        assert body["logs"] == ["INFO 0c6f8a52-1b2c-4d3e-8f90-123456789abc started", "INFO 0c6f8a52-1b2c-4d3e-8f90-123456789abc Credential Issuance Successful", "AS 0c6f8a52-1b2c-4d3e-8f90-123456789abc token issued"]
         assert body["count"] == 3 and body["successful"] is True
 
     def test_missing_log_files(self, client, config):
-        body = client.get("/logs?session_id=s1", headers=API_KEY).get_json()
-        assert body == {"session_id": "s1", "count": 0, "successful": False, "logs": []}
+        body = client.get("/logs?session_id=0c6f8a52-1b2c-4d3e-8f90-123456789abc", headers=API_KEY).get_json()
+        assert body == {"session_id": "0c6f8a52-1b2c-4d3e-8f90-123456789abc", "count": 0, "successful": False, "logs": []}
 
 
 class TestCredentialOffers:
@@ -339,11 +342,12 @@ class TestMetadataSignerValidation:
         response = client.post("/metadata/metadata_signer", json={}, headers=API_KEY)
         assert response.status_code == 400 and response.get_json()["error"] == "No JSON data provided"
 
-    def test_unknown_frontend_is_server_error(self, client, config):
+    def test_unknown_frontend_is_not_found(self, client, config):
         response = client.post("/metadata/metadata_signer", json={"metadata": {"a": 1}, "issuer_frontend_id": "nope"}, headers=API_KEY)
-        assert response.status_code == 500 and response.get_json()["error"] == "Internal server error"
+        assert response.status_code == 404 and response.get_json() == {"error": "unknown_frontend"}
 
     def test_jwt_error(self, client, config):
         with patch("app.routes.metadata.sign_issuer_metadata", side_effect=jwt.PyJWTError("boom")):
             response = client.post("/metadata/metadata_signer", json={"metadata": {"a": 1}, "issuer_frontend_id": "fe"}, headers=API_KEY)
-        assert response.status_code == 500 and response.get_json() == {"error": "JWT encoding failed", "details": "boom"}
+        # Internal details are logged, never returned.
+        assert response.status_code == 500 and response.get_json() == {"error": "JWT encoding failed"}

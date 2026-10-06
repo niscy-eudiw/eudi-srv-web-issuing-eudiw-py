@@ -82,3 +82,25 @@ def allowed_cors_origins() -> List[str]:
     urls = [cfg.get("url", "") for cfg in frontends.values()]
     urls += CONFIGURATION.get("cors_allowed_origins") or []
     return sorted({origin for origin in map(_origin, urls) if origin})
+
+
+def frontend_origins() -> List[str]:
+    """Lists the origins of the configured frontend URLs.
+
+    Returns:
+        Sorted, de-duplicated origins.
+    """
+    frontends = (CONFIGURATION.get("frontend") or {}).get("frontends_config") or {}
+    return sorted({origin for origin in (_origin(cfg.get("url", "")) for cfg in frontends.values()) if origin})
+
+
+def is_frontend_url(url: str) -> bool:
+    """Tells whether ``url`` is on the origin of a configured frontend.
+
+    Args:
+        url: Absolute URL.
+
+    Returns:
+        ``True`` when its scheme and host match a frontend URL.
+    """
+    return bool(url) and _origin(url) in frontend_origins()

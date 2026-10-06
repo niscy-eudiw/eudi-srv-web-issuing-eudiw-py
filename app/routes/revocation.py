@@ -24,6 +24,7 @@ flipped to *revoked*.
 
 from __future__ import annotations
 
+import hmac
 import logging
 import uuid
 from datetime import datetime, timedelta
@@ -121,7 +122,9 @@ def oid4vp_call() -> str:
     presentation = start_presentation(dcql_query, response_redirect_uri)
     # The revocation flow has no SessionManager session; keep the same-device
     # transaction id in the browser session for oid4vp_get.
-    session["oid4vp_transaction_id"] = presentation.same_device["transaction_id"]
+    session["oid4vp_transaction_id"] = presentation.same_device_id
+    session["oid4vp_cross_device_id"] = presentation.cross_device_id
+    session["oid4vp_nonce"] = presentation.nonce
 
     return post_redirect_with_payload(
         target_url=f"{frontend_url()}/display_revocation_qr_code",
@@ -167,7 +170,13 @@ def oid4vp_get() -> Any:
     same_device = "response_code" in request.args and "session_id" in request.args
     logger.info(f", Session ID: {session_id}, oid4vp flow: {'same_device' if same_device else 'cross_device'}")
 
-    url = result_url_from_request(request.args, session.get("oid4vp_transaction_id"))
+    try:
+        url = result_url_from_request(
+            request.args, session.get("oid4vp_transaction_id"), session.get("oid4vp_cross_device_id")
+        )
+    except ValueError as e:
+        logger.warning(f", Session ID: {session_id}, OID4VP result rejected: {safe(e)}")
+        return jsonify({"error": "invalid_request", "error_description": str(e)}), 400
     if url is None:
         return jsonify({"error": "Missing required parameters"}), 400
 
@@ -190,6 +199,8 @@ def oid4vp_get() -> Any:
         "status_lists": statuses,
         "expires": datetime.now() + timedelta(minutes=CONFIGURATION["expiry"]["revocation_code"]),
     }
+    # Only the browser that presented the credential may confirm.
+    session["revocation_id"] = revocation_id
 
     return post_redirect_with_payload(
         target_url=f"{frontend_url()}/display_revocation_authorization",
@@ -212,13 +223,21 @@ def revoke() -> str:
 
     Raises:
         werkzeug.exceptions.BadRequest: If the identifier is missing.
+        werkzeug.exceptions.Forbidden: If it was issued to another browser session.
         werkzeug.exceptions.NotFound: If it is unknown or expired.
     """
     revocation_identifier = request.form.get("revocation_identifier")
     if not revocation_identifier:
         abort(400, description="Missing revocation identifier")
-    if revocation_identifier not in revocation_requests:
+    expected = session.get("revocation_id")
+    if not expected or not hmac.compare_digest(revocation_identifier.encode(), expected.encode()):
+        logger.warning("Revocation rejected: identifier not issued to this browser session")
+        abort(403, description="Revocation identifier does not belong to this session")
+    pending = revocation_requests.get(revocation_identifier)
+    if pending is None or pending["expires"] < datetime.now():
+        revocation_requests.pop(revocation_identifier, None)
         abort(404, description="Invalid or expired revocation identifier")
+    session.pop("revocation_id", None)
 
     revoked = 0
     for statuses in revocation_requests[revocation_identifier]["status_lists"].values():

@@ -45,6 +45,7 @@ def mock_session_data():
     mock = MagicMock()
     mock.frontend_id = "test_frontend"
     mock.oid4vp_transaction_id = "tx123"
+    mock.oid4vp_cross_device_id = "validID123"
     mock.credentials_requested = ["eu.europa.ec.eudi.pid_mdoc"]
     mock.authorization_details = (
         [{"credential_configuration_id": "eu.europa.ec.eudi.pid_mdoc"}],
@@ -56,7 +57,7 @@ def mock_session_data():
 # --- Test Classes ---
 class TestOid4vpRouteSuccess:
     @patch("app.routes.oid4vp.session_manager.get_session")
-    @patch("app.routes.oid4vp.session_manager.update_oid4vp_transaction_id")
+    @patch("app.routes.oid4vp.session_manager.update_oid4vp_presentation")
     @patch("app.services.oid4vp.requests.request")
     @patch_configuration({  # Mock configuration (all modules)
         "service_url": "https://service.com/",
@@ -130,9 +131,14 @@ class TestOid4vpRouteSuccess:
 
         resp = client.get("/oid4vp")
         assert resp.data == b"REDIRECT_CALLED"
-        mock_update_tx.assert_called_once_with(
-            session_id="123", oid4vp_transaction_id="txY"
-        )
+        mock_update_tx.assert_called_once()
+        stored = mock_update_tx.call_args.kwargs
+        assert stored["session_id"] == "123" and stored["same_device_id"] == "txY"
+        assert stored["cross_device_id"] == mock_response_cross["transaction_id"]
+        # A fresh random nonce, sent to the verifier in both requests.
+        assert len(stored["nonce"]) >= 43
+        for call in mock_requests.call_args_list:
+            assert json.loads(call.kwargs["data"])["nonce"] == stored["nonce"]
         mock_segno.assert_called_once()
 
 
@@ -270,8 +276,9 @@ class TestGetPidOid4vp:
         mock_get_session.return_value = mock_session_data
 
         resp = client.get("/getpidoid4vp?presentation_id=invalid*id")
-        # Invalid format
-        assert resp.status_code == 500
+        # Invalid format: rejected before the verifier is called
+        assert resp.status_code == 400
+        mock_requests.assert_not_called()
 
 
 class TestGetPidOid4vpAdditional:

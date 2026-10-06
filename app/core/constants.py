@@ -59,7 +59,6 @@ class ConfService:
         "304": "PID attribute(s) missing.",
         "305": "Certificate not available.",
         "306": "Date is not in the correct format. Should be YYYY-MM-DD.",
-        "401": "Missing mandatory formatter fields.",
         "501": "Missing mandatory IdP fields",
     }
 

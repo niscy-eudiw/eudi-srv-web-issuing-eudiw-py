@@ -455,7 +455,8 @@ class TestCreateApp:
         app = create_app()
 
         assert app is not None
-        assert app.config["SECRET_KEY"] == "dev"
+        # No key configured: tests get a random one, never a known default.
+        assert app.config["SECRET_KEY"] != "dev" and len(app.config["SECRET_KEY"]) >= 32
 
     def test_create_app_with_test_config(self, mock_config_service):
         """Test app creation with test config"""
@@ -470,7 +471,7 @@ class TestCreateApp:
 
     def test_create_app_blueprints_registered(self, app):
         """Test that all blueprints are registered"""
-        assert "formatter" in app.blueprints
+        assert "formatter" not in app.blueprints
         assert "oidc" in app.blueprints
         assert "revocation" in app.blueprints
         assert "oid4vp" in app.blueprints

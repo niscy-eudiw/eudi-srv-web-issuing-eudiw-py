@@ -520,10 +520,7 @@ class TestSDJWTFormatter:
         "app.services.formatters.KeyData",
         side_effect=lambda key, t: ("crv", b"x_bytes", b"y_bytes"),
     )
-    @patch(
-        "app.services.formatters.get_jwk",
-        return_value={"issuer_key": "issuer_key_obj", "holder_key": "holder_key_obj"},
-    )
+    @patch("app.services.formatters.JWK")
     @patch("app.services.formatters.SDJWTIssuer")
     @patch(
         "app.services.formatters.sdjwtNestedClaims", return_value={"claim_wrapped": "value"}
@@ -621,10 +618,7 @@ class TestSDJWTFormatter:
         "app.services.formatters.KeyData",
         side_effect=lambda key, t: ("crv", b"x_bytes", b"y_bytes"),
     )
-    @patch(
-        "app.services.formatters.get_jwk",
-        return_value={"issuer_key": "issuer_key_obj", "holder_key": "holder_key_obj"},
-    )
+    @patch("app.services.formatters.JWK")
     @patch("app.services.formatters.SDJWTIssuer")
     @patch(
         "app.services.formatters.sdjwtNestedClaims", return_value={"claim_wrapped": "value"}

@@ -30,6 +30,7 @@ from uuid import uuid4
 from flask import Blueprint, Response, jsonify, request, session
 
 from app.core.config import CONFIGURATION
+from app.core.log_utils import safe
 from app.core.state import oidc_metadata, session_manager
 from app.services.attributes import getAttributesForm, getAttributesForm2
 from app.services.formatters import cbor2elems
@@ -68,8 +69,11 @@ def openid4vp() -> str:
     )
     presentation = start_presentation(dcql_query, response_redirect_uri)
 
-    session_manager.update_oid4vp_transaction_id(
-        session_id=session_id, oid4vp_transaction_id=presentation.same_device["transaction_id"]
+    session_manager.update_oid4vp_presentation(
+        session_id=session_id,
+        same_device_id=presentation.same_device_id,
+        cross_device_id=presentation.cross_device_id,
+        nonce=presentation.nonce,
     )
     current_session = session_manager.get_session(session_id=session_id)
 
@@ -127,7 +131,13 @@ def getpidoid4vp() -> HandlerResult:
     same_device = "response_code" in request.args and "session_id" in request.args
     logger.info(f", Session ID: {session_id}, oid4vp flow: {'same_device' if same_device else 'cross_device'}")
 
-    url = result_url_from_request(request.args, current_session.oid4vp_transaction_id)
+    try:
+        url = result_url_from_request(
+            request.args, current_session.oid4vp_transaction_id, current_session.oid4vp_cross_device_id
+        )
+    except ValueError as e:
+        logger.warning(f", Session ID: {session_id}, OID4VP result rejected: {safe(e)}")
+        return jsonify({"error": "invalid_request", "error_description": str(e)}), 400
     if url is None:
         return jsonify({"error": "Missing required parameters"}), 400
 
@@ -144,8 +154,11 @@ def getpidoid4vp() -> HandlerResult:
     if not current_session.authorization_details:
         return jsonify({"error": "No authorization details in session"}), 400
 
-    mandatory, optional = _prefill_forms(
-        current_session.credentials_requested, cbor2elems(response_json["vp_token"]["query_0"][0] + "==")
+    pid_elements = cbor2elems(response_json["vp_token"]["query_0"][0] + "==")
+    mandatory, optional = _prefill_forms(current_session.credentials_requested, pid_elements)
+    session_manager.update_verified_attributes(
+        session_id=session_id,
+        verified_attributes={name: value for elements in pid_elements.values() for name, value in elements},
     )
     session_manager.update_country(session_id=session_id, country="FC")
 

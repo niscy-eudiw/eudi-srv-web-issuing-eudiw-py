@@ -23,17 +23,29 @@ Attributes:
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import logging
 import urllib.parse
 from typing import Any, Mapping
 
 from flask import json, render_template_string
 
+from app.utils.frontend import is_frontend_url
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_TIMEOUT = 30
 
-_AUTO_SUBMIT_HTML = """
+#: Inline script of the auto-submit page; allowed by its hash in the CSP.
+AUTO_SUBMIT_SCRIPT = "document.getElementById('redirect_form').submit();"
+#: CSP ``script-src`` source matching :data:`AUTO_SUBMIT_SCRIPT`.
+AUTO_SUBMIT_SCRIPT_HASH = "'sha256-" + base64.b64encode(hashlib.sha256(AUTO_SUBMIT_SCRIPT.encode()).digest()).decode() + "'"
+
+# ``data`` and ``url`` are autoescaped: render_template_string always escapes,
+# and the attribute values are double-quoted.
+_AUTO_SUBMIT_HTML = (
+    """
     <!DOCTYPE html>
     <html lang="en">
     <head>
@@ -46,7 +58,7 @@ _AUTO_SUBMIT_HTML = """
     </head>
     <body>
         <form id="redirect_form" method="POST" action="{{ url }}">
-            <input type="hidden" name="payload" value='{{ data | safe }}'>
+            <input type="hidden" name="payload" value="{{ data }}">
             <noscript>
                 <div style="font-family: sans-serif; padding: 20px; text-align: center;">
                     <p>JavaScript is required. Please click the button below:</p>
@@ -56,13 +68,13 @@ _AUTO_SUBMIT_HTML = """
                 </div>
             </noscript>
         </form>
-        <script>
-            // Submit immediately without waiting for full page load
-            document.getElementById('redirect_form').submit();
-        </script>
+        <script>"""
+    + AUTO_SUBMIT_SCRIPT
+    + """</script>
     </body>
     </html>
     """
+)
 
 
 def url_get(url_path: str, args: Mapping[str, Any]) -> str:
@@ -90,7 +102,10 @@ def post_redirect_with_payload(target_url: str, data_payload: Mapping[str, Any])
 
     Returns:
         The rendered intermediate HTML page.
+
+    Raises:
+        ValueError: If ``target_url`` is not on a configured frontend.
     """
-    return render_template_string(
-        _AUTO_SUBMIT_HTML, url=target_url, data=json.dumps(data_payload)
-    )
+    if not is_frontend_url(target_url):
+        raise ValueError(f"POST-redirect target is not a configured frontend: {target_url}")
+    return render_template_string(_AUTO_SUBMIT_HTML, url=target_url, data=json.dumps(data_payload))
