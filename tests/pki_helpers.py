@@ -7,6 +7,8 @@ from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.x509.oid import NameOID
 
+from app.utils.crypto import certificate_validity
+
 NOW = datetime.datetime.now(datetime.timezone.utc)
 
 
@@ -37,10 +39,10 @@ def x5c(*certs):
 
 def ca_entry(cert):
     """Builds a trusted CA store entry for ``app.core.state.trusted_CAs``."""
+    not_valid_before, not_valid_after = certificate_validity(cert)
     return {
         "certificate": cert,
         "public_key": cert.public_key(),
-        "not_valid_before": cert.not_valid_before,
-        "not_valid_after": cert.not_valid_after,
-        "ec_key": None,
+        "not_valid_before": not_valid_before,
+        "not_valid_after": not_valid_after,
     }

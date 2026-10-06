@@ -16,6 +16,7 @@
 # limitations under the License.
 #
 ###############################################################################
+import cbor2
 import pytest
 import datetime
 from unittest.mock import patch, MagicMock, mock_open
@@ -345,7 +346,7 @@ class TestMdocFormatter:
 
 class TestCbor2Elems:
 
-    @patch("app.services.formatters.cbor2.decoder.loads")
+    @patch("app.services.formatters.cbor2.loads")
     @patch("app.services.formatters.base64.urlsafe_b64decode")
     def test_basic_elements(self, mock_b64decode, mock_cbor_loads):
         """Test normal elements and date elements"""
@@ -374,7 +375,7 @@ class TestCbor2Elems:
             {"elementIdentifier": "name", "elementValue": "Alice"},
             {
                 "elementIdentifier": "birth_date",
-                "elementValue": MagicMock(value="2000-01-01"),
+                "elementValue": cbor2.CBORTag(1004, "2000-01-01"),  # cbor2 < 5.5
             },
         ]
 
@@ -384,7 +385,7 @@ class TestCbor2Elems:
         assert ("name", "Alice") in result["ns1"]
         assert ("birth_date", "2000-01-01") in result["ns1"]
 
-    @patch("app.services.formatters.cbor2.decoder.loads")
+    @patch("app.services.formatters.cbor2.loads")
     @patch("app.services.formatters.base64.urlsafe_b64decode")
     def test_multiple_namespaces(self, mock_b64decode, mock_cbor_loads):
         """Test multiple namespaces with different elements"""
@@ -412,7 +413,7 @@ class TestCbor2Elems:
             {"elementIdentifier": "id", "elementValue": "123"},
             {
                 "elementIdentifier": "expiry_date",
-                "elementValue": MagicMock(value="2030-12-31"),
+                "elementValue": datetime.date(2030, 12, 31),  # cbor2 >= 5.5
             },
         ]
 

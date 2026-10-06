@@ -36,10 +36,9 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 import jwt
 import requests
 import werkzeug
-from authlib.jose import JsonWebEncryption, JsonWebKey
+from jwcrypto import jwk
 from flask import Blueprint, Response, jsonify, redirect, request, session, url_for
 from flask.helpers import make_response
-from flask_cors import CORS
 
 from app.core.config import CONFIGURATION
 from app.core.security import require_api_key
@@ -56,6 +55,7 @@ from app.services.auth_server import StatusCheckError, check_status_list_revocat
 from app.services.credential_issuance import (
     DEFERRED_ONLY_CONFIGURATION,
     create_c_nonce,
+    encrypt_jwe,
     decrypt_jwe_credential_request,
     generate_credentials,
 )
@@ -67,7 +67,6 @@ from app.utils.ids import generate_unique_id
 from app.utils.qr import qr_data_uri, qr_png_base64
 
 oidc = Blueprint("oidc", __name__, url_prefix="/")
-CORS(oidc)  # enable CORS on the blue print
 
 logger = logging.getLogger(__name__)
 
@@ -225,6 +224,9 @@ def verify_credential_request(credential_request: Dict[str, Any]) -> Any:
 def encrypt_response(credential_request: Dict[str, Any], credential_response: Dict[str, Any]) -> Response:
     """Encrypts a credential response as a compact JWE.
 
+    The wallet key's ``kid`` (if any) is echoed in the JWE header so the
+    wallet can select its decryption key.
+
     Args:
         credential_request: Request containing ``credential_response_encryption``
             (``jwk``, ``enc`` and ``alg`` in the config or the JWK).
@@ -250,10 +252,13 @@ def encrypt_response(credential_request: Dict[str, Any], credential_response: Di
         return error("Missing alg field in credential_response_encryption.")
 
     try:
-        jwe_token = JsonWebEncryption().serialize_compact(
-            {"alg": alg, "enc": encryption_config["enc"]},
-            json.dumps(credential_response),
-            JsonWebKey.import_key(encryption_config["jwk"]),
+        wallet_key = jwk.JWK(**encryption_config["jwk"])
+        jwe_token = encrypt_jwe(
+            credential_response,
+            wallet_key,
+            alg=alg,
+            enc=encryption_config["enc"],
+            kid=encryption_config["jwk"].get("kid"),
         )
     except Exception:
         return error("Failed to encrypt with the provided key.")

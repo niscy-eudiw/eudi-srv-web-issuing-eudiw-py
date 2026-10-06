@@ -44,11 +44,10 @@ from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec, ed25519, rsa
 from cryptography.hazmat.primitives.serialization import load_pem_private_key
-from pycose.keys.ec2 import EC2Key
 
 from app.core import state
 from app.core.config import CONFIGURATION
-from app.utils.crypto import ec_coordinates
+from app.utils.crypto import certificate_validity
 from app.utils.encoding import b64url_uint, urlsafe_b64encode_nopad
 from app.utils.frontend import frontend_config
 
@@ -262,23 +261,18 @@ def _load_trusted_ca(pem_data: bytes) -> tuple[x509.Name, Dict[str, Any]]:
 
     Returns:
         ``(subject_name, ca_info)`` where ``ca_info`` holds the certificate,
-        its public key, validity bounds and a COSE ``EC2Key``.
+        its public key and its validity bounds (UTC).
 
     Raises:
-        ValueError: If the CA key is not an elliptic curve key.
+        ValueError: If ``pem_data`` is not a PEM certificate.
     """
     certificate = x509.load_pem_x509_certificate(pem_data, default_backend())
-    public_key = certificate.public_key()
-    if not isinstance(public_key, ec.EllipticCurvePublicKey):
-        raise ValueError("Only elliptic curve keys supported for EC2Key")
-
-    x, y = ec_coordinates(public_key, min_length=0)
+    not_valid_before, not_valid_after = certificate_validity(certificate)
     return certificate.subject, {
         "certificate": certificate,
-        "public_key": public_key,
-        "not_valid_before": certificate.not_valid_before,
-        "not_valid_after": certificate.not_valid_after,
-        "ec_key": EC2Key(x=x, y=y, crv=1),  # SECP256R1 curve is equivalent to P-256
+        "public_key": certificate.public_key(),
+        "not_valid_before": not_valid_before,
+        "not_valid_after": not_valid_after,
     }
 
 
@@ -291,7 +285,7 @@ def setup_trusted_cas(trusted_cas_path: Optional[str] = None) -> None:
 
     Raises:
         FileNotFoundError: If the directory does not exist.
-        ValueError: If a CA key is not an EC key.
+        ValueError: If a file is not a valid PEM certificate.
     """
     directory = trusted_cas_path or CONFIGURATION["trusted_CAs_path"]
     try:

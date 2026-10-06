@@ -196,6 +196,25 @@ def mdocFormatter(
     return urlsafe_b64encode_nopad(mdoci.dump())
 
 
+def _date_element_value(value: Any) -> Any:
+    """Normalizes an mdoc date element to its ``YYYY-MM-DD`` text form.
+
+    cbor2 < 5.5 returns full-date (tag 1004) values as :class:`cbor2.CBORTag`;
+    newer releases decode them to :class:`datetime.date`.
+
+    Args:
+        value: Decoded ``elementValue``.
+
+    Returns:
+        The date as text (or ``value`` unchanged if it is neither form).
+    """
+    if isinstance(value, cbor2.CBORTag):
+        return value.value
+    if isinstance(value, (datetime.date, datetime.datetime)):
+        return value.isoformat()
+    return value
+
+
 def cbor2elems(mdoc: str) -> Dict[str, List[Tuple[str, Any]]]:
     """Lists the ``(element, value)`` pairs of each namespace of an mdoc.
 
@@ -206,17 +225,17 @@ def cbor2elems(mdoc: str) -> Dict[str, List[Tuple[str, Any]]]:
         E.g. ``{'ns1': [('e1', 'v1'), ('e2', 'v2')], 'ns2': [('e3', 'v3')]}``.
         Tagged date values are unwrapped.
     """
-    namespaces = cbor2.decoder.loads(base64.urlsafe_b64decode(mdoc))["documents"][0]["issuerSigned"][
+    namespaces = cbor2.loads(base64.urlsafe_b64decode(mdoc))["documents"][0]["issuerSigned"][
         "nameSpaces"
     ]
     result: Dict[str, List[Tuple[str, Any]]] = {}
     for namespace, elements in namespaces.items():
         items = []
         for tagged in elements:
-            item = cbor2.decoder.loads(tagged.value)
+            item = cbor2.loads(tagged.value)
             identifier = item["elementIdentifier"]
             value = item["elementValue"]
-            items.append((identifier, value.value if identifier in MDOC_DATE_ELEMENTS else value))
+            items.append((identifier, _date_element_value(value) if identifier in MDOC_DATE_ELEMENTS else value))
         result[namespace] = items
     return result
 

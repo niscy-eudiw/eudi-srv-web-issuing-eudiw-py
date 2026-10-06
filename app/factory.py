@@ -39,6 +39,7 @@ from flask_session import Session
 from app.core import config as app_config
 from app.core.errors import handle_exception, page_not_found
 from app.core.logging_setup import configure_logging
+from app.utils.frontend import allowed_cors_origins
 
 #: Blueprints registered by :func:`create_app`, as ``(module, attribute)``.
 BLUEPRINTS = (
@@ -131,9 +132,9 @@ def create_app(test_config: Optional[Mapping[str, Any]] = None) -> Flask:
     app.config.update(SESSION_COOKIE_SAMESITE="None", SESSION_COOKIE_SECURE=True)
     Session(app)
 
-    # CORS is a mechanism implemented by browsers to block requests from
-    # domains other than the server's one.
-    CORS(app, supports_credentials=True)
+    # Only the configured frontends (and cors_allowed_origins) may call the
+    # backend cross-origin with credentials (cookies).
+    CORS(app, origins=allowed_cors_origins(), supports_credentials=True)
 
     app.logger.info(" - DEBUG - FLASK started")
     return app

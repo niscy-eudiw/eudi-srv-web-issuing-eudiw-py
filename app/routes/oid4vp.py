@@ -28,7 +28,6 @@ from typing import Any, Dict, Tuple, Union
 from uuid import uuid4
 
 from flask import Blueprint, Response, jsonify, request, session
-from flask_cors import CORS
 
 from app.core.config import CONFIGURATION
 from app.core.state import oidc_metadata, session_manager
@@ -46,7 +45,6 @@ from app.utils.http import post_redirect_with_payload
 from app.utils.qr import qr_data_uri
 
 oid4vp = Blueprint("oid4vp", __name__, url_prefix="/")
-CORS(oid4vp)  # enable CORS on the blue print
 logger = logging.getLogger(__name__)
 
 PID_CREDENTIAL = "eu.europa.ec.eudi.pid_mdoc"

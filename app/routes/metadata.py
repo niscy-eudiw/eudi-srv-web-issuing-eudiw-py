@@ -32,14 +32,12 @@ from typing import Any, Tuple
 
 import jwt
 from flask import Blueprint, Response, jsonify, request
-from flask_cors import CORS
 
 from app.core.security import require_api_key
 from app.services.frontend_metadata import UnknownFrontendError, build_frontend_metadata, sign_frontend_metadata
 from app.services.metadata import MetadataSigningError, sign_issuer_metadata
 
 metadata = Blueprint("metadata", __name__, url_prefix="/metadata")
-CORS(metadata)
 
 logger = logging.getLogger(__name__)
 

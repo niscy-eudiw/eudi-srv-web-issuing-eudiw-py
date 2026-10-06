@@ -32,8 +32,6 @@ import time
 from typing import Any, Dict, List, Optional
 
 import jwt
-import requests
-from authlib.jose import JsonWebEncryption
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from jwcrypto import jwe, jwk
@@ -41,6 +39,7 @@ from jwcrypto import jwe, jwk
 from app.core.config import CONFIGURATION
 from app.core.state import oidc_metadata, session_manager
 from app.services.auth_server import StatusCheckError, check_status_list_revocation
+from app.services.dynamic_formatter import issue_credentials_for_session
 from app.services.trust import KEY_ATTESTATION_CONTEXT, trust_context, trust_use_case, verify_jwt_with_x5c
 from app.utils.encoding import b64url_decode
 
@@ -48,7 +47,6 @@ logger = logging.getLogger(__name__)
 
 DEFERRED_ONLY_CONFIGURATION = "eu.europa.ec.eudi.pid_mdoc_deferred"
 NONCE_LIFETIME_SECONDS = 3600
-_DYNAMIC_R2_TIMEOUT = 120
 
 
 class CredentialValidityError(Exception):
@@ -396,8 +394,9 @@ def generate_credentials(
     """Issues the credential(s) for a validated credential request.
 
     Holder keys are extracted from the proofs, the expiry ceiling is stored
-    in the session, and the request is forwarded to ``/dynamic/dynamic_R2``,
-    which formats and signs the credentials with the session's user data.
+    in the session, and the credentials are formatted and signed with the
+    session's user data
+    (:func:`app.services.dynamic_formatter.issue_credentials_for_session`).
 
     Args:
         credential_request: Validated credential request.
@@ -405,8 +404,8 @@ def generate_credentials(
         wia_client_status: ``client_status`` claim of the access token.
 
     Returns:
-        The ``dynamic_R2`` JSON response (``credentials`` or ``error``),
-        an error dict, or ``""`` when a single JWT proof cannot be decoded.
+        ``{"credentials": [...]}``, an error dict (``credential_request_denied``
+        when signing fails), or ``""`` when a single JWT proof cannot be decoded.
     """
     configuration_id = credential_request["credential_configuration_id"]
     pub_keys: List[Dict[str, Any]] = []
@@ -439,12 +438,11 @@ def generate_credentials(
     if max_exp is not None:
         session_manager.update_max_credential_exp(session_id=session_id, max_credential_exp=max_exp)
 
-    return requests.post(
-        f"{CONFIGURATION['service_url']}/dynamic/dynamic_R2",
-        data=json.dumps({"credential_requests": formatter_request, "user_id": session_id}),
-        headers={"Content-Type": "application/json"},
-        timeout=_DYNAMIC_R2_TIMEOUT,
-    ).json()
+    try:
+        return issue_credentials_for_session(session_id, formatter_request)
+    except Exception:
+        logger.exception(f", Session ID: {session_id}, credential creation failed")
+        return {"error": "credential_request_denied", "error_description": "The credential could not be issued"}
 
 
 # ---------------------------------------------------------------------------
@@ -487,8 +485,33 @@ def decrypt_jwe_credential_request(jwt_token: str) -> Dict[str, Any]:
         raise ValueError(f"Failed to decrypt JWE: {str(e)}") from e
 
 
+def encrypt_jwe(payload: Dict[str, Any], key: jwk.JWK, alg: str, enc: str, **header: Any) -> str:
+    """Encrypts a JSON payload as a compact JWE.
+
+    Args:
+        payload: JSON-serializable payload.
+        key: Recipient key (public, or private whose public part is used).
+        alg: Key management algorithm (e.g. ``ECDH-ES``, ``RSA-OAEP``).
+        enc: Content encryption algorithm (e.g. ``A256GCM``).
+        **header: Extra protected header parameters (e.g. ``kid``, ``typ``).
+
+    Returns:
+        The compact serialization.
+
+    Raises:
+        jwcrypto.common.JWException: If the key / algorithms are unusable.
+    """
+    protected = {"alg": alg, "enc": enc, **{k: v for k, v in header.items() if v is not None}}
+    token = jwe.JWE(json.dumps(payload).encode("utf-8"), protected=json.dumps(protected))
+    token.add_recipient(key)
+    return token.serialize(compact=True)
+
+
 def create_c_nonce() -> str:
     """Creates an encrypted ``c_nonce`` JWT bound to the credential endpoint.
+
+    The payload is encrypted to the issuer's own ``nonce_key`` (RSA-OAEP,
+    A256GCM), so only the issuer can read it back.
 
     Returns:
         The compact JWE.
@@ -502,8 +525,5 @@ def create_c_nonce() -> str:
         "source_endpoint": f"{service_url}/nonce",
         "aud": [f"{service_url}/credential"],
     }
-    protected = {"type": "cnonce+jwt", "alg": "RSA-OAEP", "enc": "A256GCM"}
-    encrypted = JsonWebEncryption().serialize_compact(
-        protected, json.dumps(payload), CONFIGURATION["keys"]["nonce_key"]
-    )
-    return encrypted.decode("utf-8")
+    nonce_key = jwk.JWK.from_pem(CONFIGURATION["keys"]["nonce_key"])
+    return encrypt_jwe(payload, nonce_key, alg="RSA-OAEP", enc="A256GCM", typ="cnonce+jwt")

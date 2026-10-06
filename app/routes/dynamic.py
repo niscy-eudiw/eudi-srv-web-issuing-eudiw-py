@@ -31,7 +31,6 @@ from typing import Any, Dict, Tuple, Union
 from uuid import uuid4
 
 from flask import Blueprint, Response, redirect, request, session
-from flask_cors import CORS
 
 from app.core.config import CONFIGURATION
 from app.core.constants import ConfService as cfgserv
@@ -46,7 +45,6 @@ from app.services.countries import (
     is_form_country,
     openid_authorization_url,
 )
-from app.services.dynamic_formatter import credentialCreation
 from app.services.presentation import form_formatter, presentation_formatter
 from app.utils.forms import parse_form
 from app.utils.frontend import frontend_url
@@ -54,7 +52,6 @@ from app.utils.http import post_redirect_with_payload, url_get
 from app.utils.validation import validate_mandatory_args
 
 dynamic = Blueprint("dynamic", __name__, url_prefix="/dynamic")
-CORS(dynamic)  # enable CORS on the blue print
 
 logger = logging.getLogger(__name__)
 
@@ -243,35 +240,6 @@ def red() -> HandlerResult:
         include_optional=False,
     )
     return _display_authorization(current_session, presentation_data)
-
-
-@dynamic.route("/dynamic_R2", methods=["GET", "POST"])
-def dynamic_R2() -> Dict[str, Any]:
-    """Internal endpoint creating the credentials for a credential request.
-
-    Called by :func:`app.services.credential_issuance.generate_credentials`.
-
-    JSON body:
-        user_id: Issuance session id.
-        credential_requests: Formatter request (configuration id + proofs).
-
-    Returns:
-        ``{"credentials": [...]}`` or an error dict.
-    """
-    json_request = request.json
-    valid, _ = validate_mandatory_args(json_request, ["user_id", "credential_requests"])
-    if not valid:
-        return {"error": "invalid_credential_request", "error_description": "missing fields in json"}
-
-    user_id = json_request["user_id"]
-    current_session = session_manager.get_session(session_id=user_id)
-
-    return credentialCreation(
-        credential_request=json_request["credential_requests"],
-        data=current_session.user_data,
-        country=current_session.country,
-        session_id=user_id,
-    )
 
 
 @dynamic.route("/auth_method", methods=["GET", "POST"])

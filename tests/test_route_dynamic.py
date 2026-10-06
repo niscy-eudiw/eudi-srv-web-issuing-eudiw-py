@@ -634,63 +634,41 @@ class TestDynamicRedirect:
 # -----------------------
 # Test: Dynamic R2 Route
 # -----------------------
-class TestDynamicR2Route:
-    """Test class for /dynamic_R2 route"""
+class TestIssueCredentialsForSession:
+    """Credential creation is a direct function call (the /dynamic_R2 self-call is gone)."""
 
-    @pytest.fixture(autouse=True)
-    def setup_mocks(self):
-        """Setup common mocks for R2 route tests"""
-        patcher_get_session = patch("app.routes.dynamic.session_manager.get_session")
-        self.mock_get_session = patcher_get_session.start()
+    def test_issues_with_session_data(self):
+        from app.services.dynamic_formatter import issue_credentials_for_session
 
-        # Mock cfgserv
-        class MockCfgServ:
-            current_version = "1.0"
-            service_url = "https://service.test"
-            app_logger = MagicMock()
-
-        patch("app.services.presentation.cfgserv", new=MockCfgServ).start()
-
-        # Mock credentialCreation
-        patch(
-            "app.routes.dynamic.credentialCreation",
+        session = MagicMock(country="EU", user_data={"family_name": "Doe"})
+        request = {"credential_configuration_id": "eu.europa.ec.eudi.pid_mdoc", "proofs": [{"jwt": "key"}]}
+        with patch("app.services.dynamic_formatter.session_manager.get_session", return_value=session), patch(
+            "app.services.dynamic_formatter.credentialCreation",
             return_value={"credentials": [{"credential": "mock_credential"}]},
-        ).start()
+        ) as create:
+            result = issue_credentials_for_session("session-1", request)
 
-        yield
-        patch.stopall()
-
-    def test_dynamic_r2_success(self, client):
-        """Test successful credential issuance via /dynamic_R2"""
-        mock_session = MagicMock(
-            country="EU",
-            user_data={
-                "family_name": "Doe",
-                "given_name": "John",
-                "birth_date": "1990-01-01",
-            },
-        )
-        self.mock_get_session.return_value = mock_session
-
-        response = client.post(
-            "/dynamic/dynamic_R2",
-            json={
-                "user_id": "test_user",
-                "credential_requests": ["eu.europa.ec.eudi.pid_mdoc"],
-            },
+        assert result == {"credentials": [{"credential": "mock_credential"}]}
+        create.assert_called_once_with(
+            credential_request=request, data={"family_name": "Doe"}, country="EU", session_id="session-1"
         )
 
-        response_json = response.get_json()
-        assert "credentials" in response_json
-        assert len(response_json["credentials"]) == 1
+    def test_unknown_or_expired_session(self):
+        from app.services.dynamic_formatter import issue_credentials_for_session
 
-    def test_dynamic_r2_missing_fields(self, client):
-        """Test error handling when required fields are missing"""
-        response = client.post("/dynamic/dynamic_R2", json={"user_id": "test_user"})
+        with patch("app.services.dynamic_formatter.session_manager.get_session", return_value=None), patch(
+            "app.services.dynamic_formatter.credentialCreation"
+        ) as create:
+            result = issue_credentials_for_session("gone", {"credential_configuration_id": "x", "proofs": []})
 
-        response_json = response.get_json()
-        assert response_json["error"] == "invalid_credential_request"
-        assert "missing fields" in response_json["error_description"].lower()
+        assert result == {"error": "invalid_credential_request", "error_description": "Unknown or expired session"}
+        create.assert_not_called()
+
+    def test_route_removed(self, client):
+        """The unauthenticated internal endpoint no longer exists."""
+        response = client.post("/dynamic/dynamic_R2", json={"user_id": "x", "credential_requests": {}})
+
+        assert response.status_code == 404
 
 
 # -----------------------

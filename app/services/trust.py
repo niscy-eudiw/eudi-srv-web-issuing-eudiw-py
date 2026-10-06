@@ -63,6 +63,7 @@ from sd_jwt.holder import SDJWTHolder
 from app.core.config import CONFIGURATION
 from app.core.errors import CertificateVerificationError
 from app.core.state import trusted_CAs
+from app.utils.crypto import certificate_validity
 from app.utils.encoding import b64_decode_x5c, b64url_decode
 
 logger = logging.getLogger(__name__)
@@ -135,18 +136,6 @@ def trust_use_case(name: str) -> Optional[str]:
 # ---------------------------------------------------------------------------
 
 
-def _as_utc(value: datetime.datetime) -> datetime.datetime:
-    """Treats naive certificate timestamps as UTC.
-
-    Args:
-        value: Timestamp from :mod:`cryptography`.
-
-    Returns:
-        A timezone-aware UTC timestamp.
-    """
-    return value if value.tzinfo else value.replace(tzinfo=datetime.timezone.utc)
-
-
 def _check_validity(certificate: x509.Certificate, now: datetime.datetime, label: str) -> None:
     """Checks that ``now`` is within a certificate's validity period.
 
@@ -158,8 +147,7 @@ def _check_validity(certificate: x509.Certificate, now: datetime.datetime, label
     Raises:
         CertificateVerificationError: If the certificate is not yet valid or expired.
     """
-    not_before = _as_utc(certificate.not_valid_before)
-    not_after = _as_utc(certificate.not_valid_after)
+    not_before, not_after = certificate_validity(certificate)
     if now < not_before:
         raise CertificateVerificationError(f"{label} not yet valid. Valid from: {not_before}")
     if now > not_after:

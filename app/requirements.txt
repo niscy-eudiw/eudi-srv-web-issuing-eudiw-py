@@ -1,23 +1,38 @@
-git+https://github.com/wbond/oscrypto.git@d5f3437#egg=oscrypto
-Flask-Cors==6.0.2
-requests==2.33.0
-jwcrypto==1.5.6
+# Runtime dependencies, pinned to the newest mutually compatible releases
+# (resolved for Python 3.13; see REFACTORING.md "Dependencies").
+#
+# cbor2, cwt, pycose and therefore cryptography are capped by pyMDOC-CBOR
+# (install_requires: cbor2<5.5, cwt<2.4, pycose<1.1; cwt 2.3 requires
+# cryptography<42). pyMDOC-CBOR still calls cbor2.decoder.loads, which newer
+# cbor2 releases no longer expose. jwcrypto is held at the newest release that
+# accepts cryptography 41.
+
+# OpenSSL 3 fix for oscrypto (needed by certvalidator <- pycose / cwt); no release contains it yet.
+oscrypto @ git+https://github.com/wbond/oscrypto.git@76bfdcb7285d856c44f8d0fbafe0ecca1c6d2f8b
+
+# Web framework
+flask==3.1.3
+werkzeug==3.1.9
+Flask-Cors==6.0.5
+Flask-Session==0.8.0
+requests==2.34.2
+python-dotenv==1.2.4
+PyYAML==6.0.3
+concurrent-log-handler==0.9.29
+
+# Credential formats, COSE / JOSE
+pymdoccbor @ git+https://github.com/eu-digital-identity-wallet/pyMDOC-CBOR.git@aecbd8e929879a882c9c45e435211561c7f2d1bb
+sd-jwt @ git+https://github.com/openwallet-foundation-labs/sd-jwt-python.git@v0.10.4-1
 cbor2==5.4.6
 # Imported by pyMDOC-CBOR (pymdoccbor.mso.issuer) without being declared as its dependency.
-cbor_diag==1.0.2
-flask==3.1.3
-Flask-Session==0.8.0
-werkzeug==3.1.6
+cbor_diag==1.2.0
 pycose==1.0.1
 cwt==2.3.2
-pyjwt==2.12.1
-segno==1.6.1
-Authlib==1.6.9
-concurrent-log-handler==0.9.29
-python-dotenv==1.2.2
-PyYAML==6.0.3
-psycopg==3.3.4
-psycopg_pool==3.3.1
+pyjwt==2.15.1
+jwcrypto==1.5.8
+segno==1.6.6
+
+# Persistence and scheduling
+psycopg==3.3.6
+psycopg_pool==3.3.3
 apscheduler==3.11.3
-git+https://github.com/eu-digital-identity-wallet/pyMDOC-CBOR.git
-git+https://github.com/openwallet-foundation-labs/sd-jwt-python.git@v0.10.4-1

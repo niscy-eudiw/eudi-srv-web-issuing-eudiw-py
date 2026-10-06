@@ -35,7 +35,6 @@ from typing import Any, Dict, Iterable, Tuple
 import cbor2
 from cryptography import x509
 from cryptography.hazmat.backends import default_backend
-from cryptography.hazmat.primitives.asymmetric import ec
 from pycose.headers import X5chain
 from pycose.keys import EC2Key
 from pycose.messages import Sign1Message
@@ -79,7 +78,7 @@ def validate_vp_token(response_json: Dict[str, Any], credentials_requested: Iter
     if vp_token is None or "query_0" not in vp_token:
         return True, "The path value from presentation_submission is not valid."
 
-    mdoc_cbor = cbor2.decoder.loads(_decode_base64url_lenient(vp_token["query_0"][0]))
+    mdoc_cbor = cbor2.loads(_decode_base64url_lenient(vp_token["query_0"][0]))
 
     if mdoc_cbor["status"] != 0:
         return True, "Status invalid:" + str(mdoc_cbor["status"])
@@ -108,11 +107,8 @@ def validate_certificate(mdoc: Dict[str, Any]) -> Tuple[bool, str]:
         return False, _UNTRUSTED_CA
 
     try:
-        ca_info["public_key"].verify(
-            certificate.signature,
-            certificate.tbs_certificate_bytes,
-            ec.ECDSA(certificate.signature_hash_algorithm),
-        )
+        # Checks issuer name and signature for EC and RSA CAs alike.
+        certificate.verify_directly_issued_by(ca_info["certificate"])
     except Exception:
         return False, _UNTRUSTED_CA
 
@@ -125,12 +121,16 @@ def validate_certificate(mdoc: Dict[str, Any]) -> Tuple[bool, str]:
     if now < not_valid_before or not_valid_after < now:
         return False, "Certificate not valid"
 
+    # pycose returns False for a bad signature (it only raises on malformed input),
+    # so the result must be checked explicitly.
     try:
-        message.verify_signature()
+        signature_valid = message.verify_signature()
     except Exception:
+        signature_valid = False
+    if signature_valid is not True:
         return False, "Signature not valid"
 
-    payload_decoded = cbor2.decoder.loads(cbor2.decoder.loads(message.payload).value)
+    payload_decoded = cbor2.loads(cbor2.loads(message.payload).value)
     namespaces = mdoc["issuerSigned"]["nameSpaces"]
 
     if payload_decoded["docType"] != mdoc["docType"]:

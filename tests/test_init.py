@@ -20,6 +20,7 @@ import pytest
 import json
 from unittest.mock import MagicMock, Mock
 from werkzeug.exceptions import NotFound
+from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import hashes
@@ -355,7 +356,7 @@ class TestSetupTrustedCAs:
         # Verify CAs were loaded
         assert len(state.trusted_CAs) == 1
         ca_info = list(state.trusted_CAs.values())[0]
-        assert {"certificate", "public_key", "ec_key"} <= set(ca_info)
+        assert {"certificate", "public_key", "not_valid_before", "not_valid_after"} == set(ca_info)
 
     def test_setup_trusted_cas_explicit_path(self, mock_cert_file, mock_config_service):
         """Test CA setup with an explicit directory argument"""
@@ -596,3 +597,70 @@ class TestIntegration:
         # Verify metadata is accessible (same dict object, mutated in place)
         assert oidc_metadata is state.oidc_metadata
         assert "eu.europa.ec.eudi.pid.1" in oidc_metadata["credential_configurations_supported"]
+
+
+# ============================================================================
+# CORS
+# ============================================================================
+
+
+class TestCors:
+    """Cross-origin access is limited to the configured frontends."""
+
+    def test_frontend_origin_allowed_with_credentials(self, client):
+        response = client.get("/", headers={"Origin": "https://frontend.test"})
+
+        assert response.headers["Access-Control-Allow-Origin"] == "https://frontend.test"
+        assert response.headers["Access-Control-Allow-Credentials"] == "true"
+
+    def test_preflight_from_frontend(self, client):
+        response = client.options(
+            "/pid_authorization",
+            headers={"Origin": "https://frontend.test", "Access-Control-Request-Method": "GET"},
+        )
+
+        assert response.headers["Access-Control-Allow-Origin"] == "https://frontend.test"
+
+    def test_unknown_origin_gets_no_cors_headers(self, client):
+        response = client.get("/", headers={"Origin": "https://evil.example"})
+
+        assert "Access-Control-Allow-Origin" not in response.headers
+        assert "Access-Control-Allow-Credentials" not in response.headers
+
+    def test_extra_configured_origin(self, mock_config_service):
+        from app.factory import create_app
+
+        mock_config_service["cors_allowed_origins"] = ["https://tester.example/some/path"]
+        client = create_app(test_config={"TESTING": True}).test_client()
+
+        response = client.get("/", headers={"Origin": "https://tester.example"})
+        assert response.headers["Access-Control-Allow-Origin"] == "https://tester.example"
+
+    def test_allowed_origins_derived_from_config(self, mock_config_service):
+        from app.utils.frontend import allowed_cors_origins
+
+        mock_config_service["frontend"]["frontends_config"]["second"] = {"url": "https://second.test:8443/issuer"}
+        mock_config_service["cors_allowed_origins"] = ["https://frontend.test", "not-a-url"]
+
+        assert allowed_cors_origins() == ["https://frontend.test", "https://second.test:8443"]
+
+
+class TestTrustedCaKeyTypes:
+    """CA certificates of any key type load (only EC was accepted before)."""
+
+    def test_rsa_and_ec_cas_load(self, tmp_path, mock_config_service):
+        from cryptography.hazmat.primitives.asymmetric import rsa
+
+        from app.core import state
+        from app.services.metadata import setup_trusted_cas
+        from pki_helpers import make_cert
+
+        rsa_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        ec_key = ec.generate_private_key(ec.SECP256R1())
+        for name, key in (("RSA Root", rsa_key), ("EC Root", ec_key)):
+            cert = make_cert(name, name, key.public_key(), key, ca=True)
+            (tmp_path / f"{name.replace(' ', '_')}.pem").write_bytes(cert.public_bytes(serialization.Encoding.PEM))
+
+        setup_trusted_cas(trusted_cas_path=str(tmp_path))
+
+        assert {subject.rfc4514_string() for subject in state.trusted_CAs} == {"CN=RSA Root", "CN=EC Root"}

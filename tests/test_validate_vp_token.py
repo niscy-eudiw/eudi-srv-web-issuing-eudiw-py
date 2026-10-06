@@ -47,7 +47,7 @@ class TestValidateVpToken:
         data = {"vp_token": {"query_0": [encoded[:-2]]}}  # corrupted padding
 
         with patch(
-            "app.services.vp_validation.cbor2.decoder.loads",
+            "app.services.vp_validation.cbor2.loads",
             side_effect=ValueError("bad b64"),
         ), patch("app.services.vp_validation.validate_certificate", return_value=(True, "")):
             with pytest.raises(ValueError, match="bad b64"):
@@ -113,6 +113,7 @@ class TestValidateCertificate:
         "app.services.vp_validation.trusted_CAs",
         {
             "Fake CA": {
+                "certificate": MagicMock(),
                 "public_key": MagicMock(),
                 "not_valid_before": datetime.now(timezone.utc) - timedelta(days=1),
                 "not_valid_after": datetime.now(timezone.utc) + timedelta(days=1),
@@ -164,6 +165,7 @@ class TestValidateCertificate:
         "app.services.vp_validation.trusted_CAs",
         {
             "Fake CA": {
+                "certificate": MagicMock(),
                 "public_key": MagicMock(),
                 "not_valid_before": datetime.now(timezone.utc) - timedelta(days=1),
                 "not_valid_after": datetime.now(timezone.utc) + timedelta(days=1),
@@ -229,6 +231,7 @@ class TestValidateCertificate:
             "app.services.vp_validation.trusted_CAs",
             {
                 "Fake CA": {
+                    "certificate": MagicMock(),
                     "public_key": MagicMock(),
                     "not_valid_before": datetime.now(timezone.utc),
                     "not_valid_after": datetime.now(timezone.utc) + timedelta(days=1),

@@ -9,6 +9,10 @@ service_url: "https://backend.issuer.eudiw.dev"
 
 wallet_tester_url: "https://tester.issuer.eudiw.dev"
 
+# Browser origins allowed to call the backend cross-origin (with cookies), in
+# addition to the URLs of the configured frontends.
+# cors_allowed_origins: ["https://tester.issuer.eudiw.dev"]
+
 # API key other EUDIW services send in the X-Api-Key header to call the
 # internal endpoints /logs and /admin/sessions/client_status.
 # Those endpoints answer 503 while it is not set.

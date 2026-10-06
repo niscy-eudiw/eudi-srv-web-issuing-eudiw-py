@@ -19,7 +19,8 @@
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any, List, Optional
+from urllib.parse import urlsplit
 
 from app.core.config import CONFIGURATION
 
@@ -53,3 +54,31 @@ def frontend_url(frontend_id: Optional[str] = None) -> str:
         KeyError: If the frontend is not configured.
     """
     return frontend_config(frontend_id)["url"]
+
+
+def _origin(url: str) -> Optional[str]:
+    """Returns the ``scheme://host[:port]`` origin of a URL.
+
+    Args:
+        url: Absolute URL.
+
+    Returns:
+        The origin, or ``None`` for relative / malformed URLs.
+    """
+    parts = urlsplit(url)
+    return f"{parts.scheme}://{parts.netloc}" if parts.scheme and parts.netloc else None
+
+
+def allowed_cors_origins() -> List[str]:
+    """Lists the browser origins allowed to call the backend cross-origin.
+
+    The origins of every configured frontend URL, plus any extra origins in
+    the optional ``cors_allowed_origins`` configuration list.
+
+    Returns:
+        Sorted, de-duplicated origins (empty when nothing is configured).
+    """
+    frontends = (CONFIGURATION.get("frontend") or {}).get("frontends_config") or {}
+    urls = [cfg.get("url", "") for cfg in frontends.values()]
+    urls += CONFIGURATION.get("cors_allowed_origins") or []
+    return sorted({origin for origin in map(_origin, urls) if origin})

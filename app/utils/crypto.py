@@ -19,8 +19,10 @@
 
 from __future__ import annotations
 
+import datetime
 from typing import Optional, Tuple, Union
 
+from cryptography import x509
 from cryptography.hazmat.primitives.asymmetric import ec
 
 from app.utils.encoding import int_to_bytes
@@ -87,3 +89,25 @@ def private_value_bytes(key: ec.EllipticCurvePrivateKey) -> bytes:
         ``d`` encoded as bytes.
     """
     return int_to_bytes(key.private_numbers().private_value)
+
+
+def certificate_validity(certificate: x509.Certificate) -> Tuple[datetime.datetime, datetime.datetime]:
+    """Returns a certificate's validity period as timezone-aware UTC datetimes.
+
+    Uses ``not_valid_before_utc`` / ``not_valid_after_utc`` (cryptography >= 42)
+    and falls back to the naive properties of older releases.
+
+    Args:
+        certificate: X.509 certificate.
+
+    Returns:
+        ``(not_before, not_after)`` in UTC.
+    """
+
+    def utc(aware_name: str, naive_name: str) -> datetime.datetime:
+        aware = getattr(certificate, aware_name, None)
+        if aware is not None:
+            return aware
+        return getattr(certificate, naive_name).replace(tzinfo=datetime.timezone.utc)
+
+    return utc("not_valid_before_utc", "not_valid_before"), utc("not_valid_after_utc", "not_valid_after")

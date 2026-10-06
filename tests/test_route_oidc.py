@@ -583,29 +583,27 @@ class TestNotification:
 class TestNonce:
     """Test nonce endpoint"""
 
-    @patch("app.services.credential_issuance.JsonWebEncryption")
-    @patch("builtins.open")
-    def test_nonce_generation(self, mock_open, mock_jwe_class, client, mock_cfgservice):
-        """Test nonce generation"""
-        # Mock file reading
-        mock_file = MagicMock()
-        mock_file.read.return_value = b"test-key-data"
-        mock_open.return_value.__enter__.return_value = mock_file
-
-        # Mock JWE
-        mock_jwe = MagicMock()
-        mock_jwe.serialize_compact.return_value = b"encrypted-jwt-token"
-        mock_jwe.deserialize_compact.return_value = {
-            "payload": b'{"iss":"test","iat":123,"exp":456}'
-        }
-        mock_jwe_class.return_value = mock_jwe
+    def test_nonce_generation(self, client, mock_cfgservice):
+        """The c_nonce is a JWE only the issuer's nonce_key can decrypt"""
+        nonce_key = jwk.JWK.generate(kty="RSA", size=2048)
+        mock_cfgservice["keys"]["nonce_key"] = nonce_key.export_to_pem(private_key=True, password=None)
 
         response = client.post("/nonce")
 
         assert response.status_code == 200
-        assert "c_nonce" in response.json
-        assert "DPoP-Nonce" in response.headers
+        c_nonce = response.json["c_nonce"]
+        assert response.headers["DPoP-Nonce"] == c_nonce
         assert response.headers["Cache-Control"] == "no-store"
+
+        token = jwe.JWE()
+        token.deserialize(c_nonce, key=nonce_key)
+        header = json.loads(token.objects["protected"])
+        assert header == {"alg": "RSA-OAEP", "enc": "A256GCM", "typ": "cnonce+jwt"}
+        claims = json.loads(token.payload)
+        service_url = mock_cfgservice["service_url"]
+        assert claims["iss"] == service_url
+        assert claims["aud"] == [f"{service_url}/credential"]
+        assert claims["exp"] - claims["iat"] == 3600
 
 
 class TestCredentialOffer:
@@ -759,32 +757,63 @@ class TestInternalApiKey:
 class TestEncryptResponse:
     """Test encrypt_response function"""
 
-    @patch("app.routes.oidc.JsonWebKey")
-    @patch("app.routes.oidc.JsonWebEncryption")
-    def test_encrypt_response_success(self, mock_jwe_class, mock_jwk, app):
-        """Test successful response encryption"""
+    @pytest.mark.parametrize(
+        "kty, alg, enc",
+        [
+            ("EC", "ECDH-ES", "A256GCM"),
+            ("EC", "ECDH-ES", "A128CBC-HS256"),
+            ("RSA", "RSA-OAEP-256", "A256GCM"),
+            ("RSA", "RSA-OAEP", "A192GCM"),
+        ],
+    )
+    def test_encrypt_response_round_trip(self, app, kty, alg, enc):
+        """The wallet can decrypt the response with its private key; kid is echoed"""
         from app.routes.oidc import encrypt_response
 
-        credential_request = {
-            "credential_response_encryption": {
-                "jwk": {"kty": "RSA", "n": "test", "e": "AQAB", "alg": "RSA-OAEP"},
-                "enc": "A256GCM",
-            }
-        }
-        credential_response = {"credential": "test-data"}
-
-        mock_key = Mock()
-        mock_jwk.import_key.return_value = mock_key
-
-        mock_jwe = Mock()
-        mock_jwe.serialize_compact.return_value = b"encrypted-token"
-        mock_jwe_class.return_value = mock_jwe
+        wallet_key = jwk.JWK.generate(kty=kty, crv="P-256") if kty == "EC" else jwk.JWK.generate(kty="RSA", size=2048)
+        public_jwk = {**wallet_key.export_public(as_dict=True), "kid": "wallet-key-1"}
+        credential_request = {"credential_response_encryption": {"jwk": public_jwk, "alg": alg, "enc": enc}}
+        credential_response = {"credentials": [{"credential": "test-data"}], "notification_id": "n1"}
 
         with app.app_context():
             result = encrypt_response(credential_request, credential_response)
 
         assert result.status_code == 200
         assert result.headers["Content-Type"] == "application/jwt"
+        token = jwe.JWE()
+        token.deserialize(result.get_data(as_text=True), key=wallet_key)
+        assert json.loads(token.payload) == credential_response
+        header = json.loads(token.objects["protected"])
+        assert (header["alg"], header["enc"], header["kid"]) == (alg, enc, "wallet-key-1")
+
+    def test_encrypt_response_alg_from_jwk(self, app):
+        """alg may come from the JWK instead of the encryption parameters"""
+        from app.routes.oidc import encrypt_response
+
+        wallet_key = jwk.JWK.generate(kty="EC", crv="P-256")
+        public_jwk = {**wallet_key.export_public(as_dict=True), "alg": "ECDH-ES"}
+        credential_request = {"credential_response_encryption": {"jwk": public_jwk, "enc": "A256GCM"}}
+
+        with app.app_context():
+            result = encrypt_response(credential_request, {"credential": "x"})
+
+        token = jwe.JWE()
+        token.deserialize(result.get_data(as_text=True), key=wallet_key)
+        assert json.loads(token.payload) == {"credential": "x"}
+        assert "kid" not in json.loads(token.objects["protected"])
+
+    def test_encrypt_response_invalid_jwk(self, app):
+        """An unusable wallet key yields invalid_credential_response_encryption"""
+        from app.routes.oidc import encrypt_response
+
+        credential_request = {
+            "credential_response_encryption": {"jwk": {"kty": "EC", "crv": "P-256"}, "alg": "ECDH-ES", "enc": "A256GCM"}
+        }
+        with app.app_context():
+            result = encrypt_response(credential_request, {"credential": "x"})
+
+        assert result.status_code == 400
+        assert result.get_json()["error_description"] == "Failed to encrypt with the provided key."
 
     def test_encrypt_response_missing_fields(self, app):
         """Test encryption with missing required fields"""
@@ -812,14 +841,14 @@ class TestGenerateCredentials:
         ):
             yield
 
-    @patch("app.services.credential_issuance.requests.post")
+    @patch("app.services.credential_issuance.issue_credentials_for_session")
     @patch("app.services.credential_issuance.pKfromJWT")
-    def test_generate_credentials_jwt_proof(self, mock_pk, mock_post, mock_cfgservice):
-        """Test credential generation with JWT proof"""
+    def test_generate_credentials_jwt_proof(self, mock_pk, mock_issue, mock_cfgservice):
+        """A single JWT proof is passed to credential creation directly (no HTTP self-call)"""
         from app.routes.oidc import generate_credentials
 
         mock_pk.return_value = "test-public-key"
-        mock_post.return_value.json.return_value = {"credential": "test"}
+        mock_issue.return_value = {"credentials": [{"credential": "test"}]}
 
         credential_request = {
             "credential_configuration_id": "test-cred",
@@ -828,34 +857,40 @@ class TestGenerateCredentials:
 
         result = generate_credentials(credential_request, "test-session-id")
 
-        assert "credential" in result
+        assert result == {"credentials": [{"credential": "test"}]}
+        mock_issue.assert_called_once_with(
+            "test-session-id",
+            {"credential_configuration_id": "test-cred", "proofs": [{"jwt": "test-public-key"}]},
+        )
 
-    @patch("app.services.credential_issuance.requests.post")
+    @patch("app.services.credential_issuance.issue_credentials_for_session")
     @patch("app.services.credential_issuance.pKfromJWT")
     @patch("app.services.credential_issuance.jwt.get_unverified_header", return_value={"kid": "test-kid"})
     def test_generate_credentials_batch_proofs(
-        self, mock_get_header, mock_pk, mock_post, mock_session_manager, mock_cfgservice
+        self, mock_get_header, mock_pk, mock_issue, mock_session_manager, mock_cfgservice
     ):
         """Test batch credential generation"""
         from app.routes.oidc import generate_credentials
 
         mock_pk.return_value = "test-public-key"
-        mock_post.return_value.json.return_value = {"credentials": []}
+        mock_issue.return_value = {"credentials": []}
 
         credential_request = {
             "credential_configuration_id": "test-cred",
             "proofs": {"jwt": ["jwt1", "jwt2", "jwt3"]},
         }
 
-        result = generate_credentials(credential_request, "test-session-id")
+        generate_credentials(credential_request, "test-session-id")
 
         mock_session_manager.update_is_batch_credential.assert_called_once()
+        formatter_request = mock_issue.call_args[0][1]
+        assert formatter_request["proofs"] == [{"jwt": "test-public-key"}] * 3
 
     @patch("app.services.credential_issuance.decode_verify_attestation")
     @patch("app.services.credential_issuance.pKfromJWK")
-    @patch("app.services.credential_issuance.requests.post")
+    @patch("app.services.credential_issuance.issue_credentials_for_session")
     def test_generate_credentials_attestation(
-        self, mock_post, mock_pk_jwk, mock_decode, mock_cfgservice
+        self, mock_issue, mock_pk_jwk, mock_decode, mock_cfgservice
     ):
         """Test credential generation with attestation proof"""
         from app.routes.oidc import generate_credentials
@@ -864,7 +899,7 @@ class TestGenerateCredentials:
             "attested_keys": [{"kty": "EC", "crv": "P-256", "x": "test", "y": "test"}]
         }
         mock_pk_jwk.return_value = "test-public-key"
-        mock_post.return_value.json.return_value = {"credential": "test"}
+        mock_issue.return_value = {"credentials": [{"credential": "test"}]}
 
         credential_request = {
             "credential_configuration_id": "test-cred",
@@ -876,7 +911,24 @@ class TestGenerateCredentials:
 
         result = generate_credentials(credential_request, "test-session-id")
 
-        assert "credential" in result
+        assert result == {"credentials": [{"credential": "test"}]}
+        assert mock_issue.call_args[0][1]["proofs"] == [{"attestation": "test-public-key"}]
+
+    @patch("app.services.credential_issuance.issue_credentials_for_session", side_effect=RuntimeError("signing failed"))
+    @patch("app.services.credential_issuance.pKfromJWT", return_value="test-public-key")
+    def test_generate_credentials_signing_failure(self, mock_pk, mock_issue, mock_cfgservice):
+        """An exception during credential creation becomes credential_request_denied"""
+        from app.routes.oidc import generate_credentials
+
+        result = generate_credentials(
+            {"credential_configuration_id": "test-cred", "proof": {"proof_type": "jwt", "jwt": "t"}},
+            "test-session-id",
+        )
+
+        assert result == {
+            "error": "credential_request_denied",
+            "error_description": "The credential could not be issued",
+        }
 
 
 class TestDecryptJWE:

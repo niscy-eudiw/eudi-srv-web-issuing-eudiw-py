@@ -30,7 +30,6 @@ from typing import Any, Dict, Tuple, Union
 
 import jwt
 from flask import Blueprint, Response, jsonify, request, session
-from flask_cors import CORS
 
 from app.core.config import CONFIGURATION
 from app.core.state import session_manager
@@ -47,7 +46,6 @@ from app.utils.ids import generate_unique_id
 from app.utils.qr import qr_data_uri
 
 preauth = Blueprint("preauth", __name__, url_prefix="/")
-CORS(preauth)  # enable CORS on the blue print
 logger = logging.getLogger(__name__)
 
 AGE_VERIFICATION_SCOPES = (

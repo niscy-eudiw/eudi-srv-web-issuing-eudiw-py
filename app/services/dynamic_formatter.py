@@ -407,3 +407,28 @@ def credentialCreation(
             {"credential": dynamic_formatter(format, scope, form_data, device_publickey, session_id)}
         )
     return credential_response
+
+
+def issue_credentials_for_session(session_id: str, credential_request: Dict[str, Any]) -> Dict[str, Any]:
+    """Creates the credentials for a validated request with the session's user data.
+
+    Args:
+        session_id: Issuance session (holds the user data and country).
+        credential_request: Formatter request (configuration id + ``proofs``
+            holding the holder keys).
+
+    Returns:
+        ``{"credentials": [...]}``, or an ``invalid_credential_request``
+        error dict when the session is unknown / expired or the request is
+        invalid.
+    """
+    current_session = session_manager.get_session(session_id=session_id)
+    if current_session is None:
+        return {"error": "invalid_credential_request", "error_description": "Unknown or expired session"}
+
+    return credentialCreation(
+        credential_request=credential_request,
+        data=current_session.user_data,
+        country=current_session.country,
+        session_id=session_id,
+    )
