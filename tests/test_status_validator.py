@@ -110,9 +110,9 @@ class TestIssuanceFailsClosed:
 
         check = MagicMock(return_value=revoked, side_effect=error)
         with app.app_context(), patch.object(oidc, "introspect", return_value=self._introspection()), patch.object(
-            oidc.jwt, "decode", return_value={"client_status": self.CLIENT_STATUS}
+            oidc, "decode_authorization_server_jwt", return_value={"client_status": self.CLIENT_STATUS}
         ), patch.object(oidc, "check_status_list_revocation", check):
-            return oidc.verify_introspection("token")
+            return oidc.verify_introspection("header.payload.signature")
 
     def test_wia_valid(self, app, status_config):
         assert self._verify(app, revoked=False) == ("session-1", self.CLIENT_STATUS)

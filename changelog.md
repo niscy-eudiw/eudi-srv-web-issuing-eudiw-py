@@ -306,3 +306,5 @@ _06 Oct 2026_
 - SD-JWT issuance no longer reseeds Python's global random generator with a constant.
 - `Session.__repr__` masks codes, tokens and personal data.
 - Requests with only `credential_identifier` no longer fail with a server error.
+- The WIA `client_status` claim is read from the access token only after its signature is verified with the authorization server keys.
+- Log lines escape line breaks in every request-supplied or externally received value (log injection).

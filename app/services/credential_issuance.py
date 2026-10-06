@@ -215,7 +215,9 @@ def verify_proof_jwt(
         InvalidProofError: If any check fails.
     """
     try:
-        header = jwt.get_unverified_header(proof_jwt)
+        # The proof carries its own key (jwk header): typ / alg / key are read
+        # first, then the signature is verified with that key below.
+        header = jwt.get_unverified_header(proof_jwt)  # NOSONAR
     except jwt.DecodeError as e:
         raise InvalidProofError("Proof JWT is malformed") from e
 
@@ -493,7 +495,9 @@ def _collect_jwt_proof(
         InvalidProofError: If the proof or its key attestation is invalid.
     """
     try:
-        header = jwt.get_unverified_header(proof_jwt)
+        # Only selects the key source (key_attestation or jwk); verify_proof_jwt
+        # verifies the signature before any key is used.
+        header = jwt.get_unverified_header(proof_jwt)  # NOSONAR
     except jwt.DecodeError as e:
         raise InvalidProofError("Proof JWT is malformed") from e
 

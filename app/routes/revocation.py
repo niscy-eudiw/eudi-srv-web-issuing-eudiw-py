@@ -250,7 +250,7 @@ def revoke() -> str:
                 revoked += set_token_status("idx", pointer["idx"], pointer["uri"], respect_enabled_flag=False)
 
     revocation_requests.pop(revocation_identifier)
-    logger.info(f"Revocation request {revocation_identifier} processed: {revoked} status entr(y/ies) revoked")
+    logger.info(f"Revocation request {safe(revocation_identifier, 64)} processed: {revoked} status entr(y/ies) revoked")
 
     return post_redirect_with_payload(
         target_url=f"{frontend_url()}/display_revocation_success",

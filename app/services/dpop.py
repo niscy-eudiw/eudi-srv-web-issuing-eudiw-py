@@ -120,7 +120,9 @@ def verify_dpop_request(
     if not proof:
         raise DPoPError("Missing DPoP proof")
     try:
-        header = jwt.get_unverified_header(proof)
+        # A DPoP proof carries its own key (jwk header); the signature is
+        # verified with it below, after checking it is the token's bound key.
+        header = jwt.get_unverified_header(proof)  # NOSONAR
     except jwt.PyJWTError as e:
         raise DPoPError("Malformed DPoP proof") from e
     if header.get("typ") != "dpop+jwt" or header.get("alg") not in DPOP_ALGORITHMS:

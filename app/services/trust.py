@@ -412,8 +412,10 @@ def _x5c_header(jwt_raw: str, allowed_algorithms: Optional[List[str]]) -> Tuple[
         ValueError: If ``alg`` is missing / not allowed, or ``x5c`` is
             missing or not a non-empty list.
     """
-    unverified_header = jwt.get_unverified_header(jwt_raw)
-    logger.debug(f"JWT header (unverified): {unverified_header}")
+    # The x5c chain in the header is the verification key: the caller trusts
+    # the chain first, then verifies the signature with its leaf key.
+    unverified_header = jwt.get_unverified_header(jwt_raw)  # NOSONAR
+    logger.debug(f"JWT header (unverified): {safe(unverified_header, 500)}")
 
     # Validate algorithm before using it (prevents algorithm confusion attacks).
     alg = unverified_header.get("alg")
@@ -519,7 +521,9 @@ def x5c_leaf_certificate(jwt_raw: str) -> Tuple[x509.Certificate, str]:
     Raises:
         ValueError: If the ``x5c`` header is missing or malformed.
     """
-    unverified_header = jwt.get_unverified_header(jwt_raw)
+    # Returns the not-yet-trusted signer; callers check the certificate and
+    # then verify the signature with its key (verify_and_decode_sdjwt).
+    unverified_header = jwt.get_unverified_header(jwt_raw)  # NOSONAR
     x5c_chain = unverified_header.get("x5c")
     if not x5c_chain:
         raise ValueError("x5c header not found in JWT")

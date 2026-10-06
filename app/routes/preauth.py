@@ -83,7 +83,7 @@ def request_preauth_token(scope: str) -> str:
     """
     response = generate_preauth_code(scope)
     session_id = response.get("session_id")
-    logger.info(f", Session ID: {session_id}, Pre-authorized code obtained for scope {safe(scope, 200)}")
+    logger.info(f", Session ID: {safe(session_id, 64)}, Pre-authorized code obtained for scope {safe(scope, 200)}")
     session_manager.add_session(
         session_id=session_id,
         pre_authorized_code=response.get("preauth_code"),

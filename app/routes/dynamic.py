@@ -198,7 +198,7 @@ def country_selected() -> HandlerResult:
     _, current_session = _current_session()
     form_country = request.form.get("country")
     if form_country not in _selectable_countries(current_session):
-        logger.warning(f", Session ID: {current_session.session_id}, Country not selectable: {safe(form_country, 20)}")
+        logger.warning(f", Session ID: {safe(current_session.session_id, 64)}, Country not selectable: {safe(form_country, 20)}")
         return "Country not supported", HTTPStatus.BAD_REQUEST
     logger.info(f", Session ID: {current_session.session_id}, Authorization selection, Type: {safe(form_country, 20)}")
     return dynamic_R1(form_country)

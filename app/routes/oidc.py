@@ -53,10 +53,12 @@ from app.services.attributes import (
     vct2id,
 )
 from app.services.auth_server import (
+    ACCESS_TOKEN_ALGORITHMS,
     SessionTokenError,
     StatusCheckError,
     authorization_details_claim,
     check_status_list_revocation,
+    decode_authorization_server_jwt,
     introspect,
     verify_session_token,
 )
@@ -203,13 +205,19 @@ def verify_introspection(bearer_token: str) -> Any:
             response.headers["WWW-Authenticate"] = 'DPoP error="invalid_dpop_proof"'
             return response, 401
 
-    # Introspection already confirmed the token is active/well-formed, so an
-    # unverified decode here is just claim extraction, not a trust decision.
+    # client_status is read from the access token itself: only after its
+    # signature is verified with the authorization server keys.
     client_status = None
-    try:
-        at_claims = jwt.decode(bearer_token, options={"verify_signature": False})
+    if bearer_token.count(".") == 2:
+        try:
+            at_claims = decode_authorization_server_jwt(
+                bearer_token, ACCESS_TOKEN_ALGORITHMS, options={"verify_aud": False}
+            )
+        except (jwt.PyJWTError, OSError, ValueError) as e:
+            logger.warning(f"Access token signature not verified for session tied to {safe(username, 64)}: {safe(e)}")
+            return jsonify({"error": "invalid_token"}), 401
         client_status = at_claims.get("client_status")
-    except jwt.DecodeError:
+    else:
         logger.debug("Access token is not a JWT; no client_status claim available.")
 
     if client_status and CONFIGURATION["status_validator"]["enabled"]:
@@ -303,7 +311,7 @@ def require_authorized_configuration(session_id: str, credential_request: Dict[s
         raise OAuthEndpointError("invalid_token", status=401)
     if credential_request.get("credential_configuration_id") not in _authorized_configuration_ids(current_session):
         logger.warning(
-            f", Session ID: {session_id}, Credential not authorized: "
+            f", Session ID: {safe(session_id, 64)}, Credential not authorized: "
             f"{safe(credential_request.get('credential_configuration_id'), 100)}"
         )
         raise OAuthEndpointError(
@@ -633,7 +641,7 @@ def notification() -> HandlerResult:
     session_id, _ = introspection
 
     logger.info(
-        f", Session ID: {session_id}, Notification: event={safe(notification_request.get('event'), 50)} "
+        f", Session ID: {safe(session_id, 64)}, Notification: event={safe(notification_request.get('event'), 50)} "
         f"notification_id={safe(notification_request.get('notification_id'), 64)}"
     )
     logger.debug(
@@ -823,8 +831,8 @@ def credentialOffer2() -> Response:
     offer = authorization_code_offer(frontend_url(), [configuration_id], session_id)
     uri = credential_offer_uri(CONFIGURATION["credential_offer_scheme"], offer)
 
-    logger.info(f", Session ID: {session_id}, Credential offer generated for {safe(configuration_id, 100)}")
-    logger.debug(f", Session ID: {session_id}, Credential offer URI: {safe(uri, 1000)}")
+    logger.info(f", Session ID: {safe(session_id, 64)}, Credential offer generated for {safe(configuration_id, 100)}")
+    logger.debug(f", Session ID: {safe(session_id, 64)}, Credential offer URI: {safe(uri, 1000)}")
     return jsonify({"base64_img": qr_png_base64(uri), "session_id": session_id})
 
 

@@ -85,11 +85,37 @@ class TestVerifyIntrospection:
         with app.app_context(), patch.object(oidc_routes, "introspect", return_value=response):
             assert oidc_routes.verify_introspection("opaque-token") == ("s1", None)
 
-    def test_jwt_token_client_status_without_validator(self, app, config):
-        token = jwt.encode({"client_status": {"exp": 1}}, "secret", algorithm="HS256")
+    @pytest.fixture
+    def as_key(self, config, tmp_path):
+        """Signing key of the authorization server, published via jwks_path."""
+        from cryptography.hazmat.primitives.asymmetric import ec
+
+        key = ec.generate_private_key(ec.SECP256R1())
+        jwk = json.loads(jwt.algorithms.ECAlgorithm.to_jwk(key.public_key()))
+        (tmp_path / "as_jwks.json").write_text(json.dumps({"keys": [{**jwk, "kid": "as", "use": "sig"}]}))
+        config.setdefault("authorization_server", {})["jwks_path"] = str(tmp_path / "as_jwks.json")
+        return key
+
+    def test_jwt_token_client_status_without_validator(self, app, config, as_key):
+        token = jwt.encode({"client_status": {"exp": 1}}, as_key, algorithm="ES256")
         response = _introspection_response(body={"active": True, "username": "s1"})
         with app.app_context(), patch.object(oidc_routes, "introspect", return_value=response):
             assert oidc_routes.verify_introspection(token) == ("s1", {"exp": 1})
+
+    @pytest.mark.parametrize("signer", ["unsigned", "other_key"])
+    def test_unverified_access_token_claims_are_not_trusted(self, app, config, as_key, signer):
+        """client_status was read from the access token without checking its signature."""
+        from cryptography.hazmat.primitives.asymmetric import ec
+
+        claims = {"client_status": {"exp": 1}}
+        if signer == "unsigned":
+            token = jwt.encode(claims, "secret-secret-secret-secret-secret", algorithm="HS256")
+        else:
+            token = jwt.encode(claims, ec.generate_private_key(ec.SECP256R1()), algorithm="ES256")
+        response = _introspection_response(body={"active": True, "username": "s1"})
+        with app.app_context(), patch.object(oidc_routes, "introspect", return_value=response):
+            body, status = oidc_routes.verify_introspection(token)
+        assert status == 401 and body.get_json() == {"error": "invalid_token"}
 
 
 class TestVerifyCredentialRequest:

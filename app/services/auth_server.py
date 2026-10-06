@@ -41,6 +41,8 @@ WALLET_STATUS_CONTEXT = "WalletOrKeyStorageStatus"
 #: ``aud`` of the session token the authorization server hands to ``/auth_choice``.
 SESSION_TOKEN_AUDIENCE = "eudiw-issuer-backend"
 SESSION_TOKEN_ALGORITHMS = ["ES256"]
+#: Algorithms of the authorization server's signed access tokens.
+ACCESS_TOKEN_ALGORITHMS = ["ES256", "ES384", "ES512", "RS256", "RS384", "RS512", "PS256", "PS384", "PS512"]
 
 _jwk_clients: Dict[str, jwt.PyJWKClient] = {}
 _jwk_clients_lock = threading.Lock()
@@ -118,33 +120,56 @@ def _jwks_uri() -> str:
     return CONFIGURATION["authorization_server"].get("jwks_uri") or f"{authorization_server_url()}/static/jwks.json"
 
 
-def _signing_key(token: str) -> Any:
-    """Finds the authorization server key that signed ``token``.
+def _verification_keys(token: str) -> List[Any]:
+    """Lists the authorization server keys that may have signed ``token``.
 
-    Keys come from ``authorization_server.jwks_path`` (a local JWKS file)
-    when set, otherwise from the cached JWKS at :func:`_jwks_uri`.
+    Keys come from ``authorization_server.jwks_path`` (a local JWKS file: every
+    signing key is a candidate) when set, otherwise from the cached JWKS at
+    :func:`_jwks_uri` (the key named by the token's ``kid``).
 
     Args:
         token: Compact JWT.
 
     Returns:
-        The verification key.
+        Candidate verification keys.
     """
     jwks_path = CONFIGURATION["authorization_server"].get("jwks_path")
     if jwks_path:
         with open(jwks_path, encoding="utf-8") as f:
             key_set = jwt.PyJWKSet.from_dict(json.load(f))
-        kid = jwt.get_unverified_header(token).get("kid")
-        candidates = [k for k in key_set.keys if kid is None or k.key_id == kid]
-        if not candidates:
-            raise jwt.PyJWKError(f"No key {kid} in {jwks_path}")
-        return candidates[0].key
+        return [k.key for k in key_set.keys if k.public_key_use in (None, "sig")]
     uri = _jwks_uri()
     with _jwk_clients_lock:
         client = _jwk_clients.get(uri)
         if client is None:
             client = _jwk_clients[uri] = jwt.PyJWKClient(uri, cache_keys=True, lifespan=300, timeout=10)
-    return client.get_signing_key_from_jwt(token).key
+    return [client.get_signing_key_from_jwt(token).key]
+
+
+def decode_authorization_server_jwt(token: str, algorithms: List[str], **decode_args: Any) -> Dict[str, Any]:
+    """Verifies a JWT signed by the authorization server and returns its claims.
+
+    Args:
+        token: Compact JWT.
+        algorithms: Accepted signature algorithms.
+        **decode_args: Further :func:`jwt.decode` arguments (audience, issuer, options...).
+
+    Returns:
+        The verified claims.
+
+    Raises:
+        jwt.PyJWTError: If no authorization server key verifies the token or
+            a claim check fails.
+    """
+    last_error: Exception = jwt.InvalidSignatureError("No authorization server key")
+    for key in _verification_keys(token):
+        try:
+            return jwt.decode(token, key, algorithms=algorithms, **decode_args)
+        except jwt.InvalidSignatureError as e:
+            last_error = e
+        except jwt.InvalidAlgorithmError as e:
+            last_error = e
+    raise last_error
 
 
 def verify_session_token(token: Optional[str]) -> Dict[str, Any]:
@@ -165,10 +190,9 @@ def verify_session_token(token: Optional[str]) -> Dict[str, Any]:
         raise SessionTokenError("Missing session_token")
     issuer = CONFIGURATION["authorization_server"].get("issuer")
     try:
-        claims = jwt.decode(
+        claims = decode_authorization_server_jwt(
             token,
-            _signing_key(token),
-            algorithms=SESSION_TOKEN_ALGORITHMS,
+            SESSION_TOKEN_ALGORITHMS,
             audience=SESSION_TOKEN_AUDIENCE,
             issuer=issuer,
             leeway=30,

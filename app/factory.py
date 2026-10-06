@@ -128,7 +128,10 @@ def create_app(test_config: Optional[Mapping[str, Any]] = None) -> Flask:
     from app.services.metadata import setup_metadata, setup_trusted_cas
 
     # API-only service: no static files are served.
-    app = Flask(__name__, instance_relative_config=True, static_folder=None)
+    # CSRF: the browser POST routes are posted cross-site by the frontends, so
+    # form tokens cannot be used; core.security.require_frontend_origin rejects
+    # any Origin / Referer that is not a configured frontend.
+    app = Flask(__name__, instance_relative_config=True, static_folder=None)  # NOSONAR
     app.config.from_mapping(
         SECRET_KEY=app_config.CONFIGURATION.get("secret_key") or os.environ.get("FLASK_SECRET_KEY"),
         INIT_BACKGROUND_SERVICES=not app_config.IS_TEST_ENV,

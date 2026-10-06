@@ -29,11 +29,13 @@ never be logged; log identifiers and outcomes instead.
 
 from __future__ import annotations
 
+import re
 from typing import Any, Mapping
 
 DEFAULT_LIMIT = 200
 
-_CONTROL_ESCAPES = {"\r": "\\r", "\n": "\\n", "\t": "\\t"}
+#: Control characters left after CR / LF / TAB are escaped.
+_OTHER_CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
 
 
 def safe(value: Any, limit: int = DEFAULT_LIMIT) -> str:
@@ -48,9 +50,9 @@ def safe(value: Any, limit: int = DEFAULT_LIMIT) -> str:
         characters replaced by ``?``, and long values truncated with the
         number of omitted characters.
     """
-    text = "".join(
-        _CONTROL_ESCAPES.get(ch, "?" if ord(ch) < 32 or ord(ch) == 127 else ch) for ch in str(value)
-    )
+    # Line breaks first, with str.replace: no request value can start a new log line.
+    text = str(value).replace("\r", "\\r").replace("\n", "\\n").replace("\t", "\\t")
+    text = _OTHER_CONTROL_CHARS.sub("?", text)
     if len(text) > limit:
         return f"{text[:limit]}...(+{len(text) - limit} chars)"
     return text
