@@ -1,0 +1,161 @@
+# coding: latin-1
+###############################################################################
+# Copyright (c) 2026 European Commission
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+###############################################################################
+"""``/metadata`` blueprint: per-frontend issuer metadata (unsigned and signed).
+
+All endpoints are for other EUDIW services (the frontends) and require the
+backend API key in the ``X-Api-Key`` header (see :mod:`app.core.security`).
+
+* ``GET /metadata/<frontend_id>``: unsigned metadata documents of a frontend.
+* ``GET /metadata/<frontend_id>/signed``: signed credential issuer metadata.
+* ``POST /metadata/metadata_signer``: signs arbitrary issuer metadata.
+"""
+
+from __future__ import annotations
+
+import logging
+from typing import Any, Tuple
+
+import jwt
+from flask import Blueprint, Response, jsonify, request
+from flask_cors import CORS
+
+from app.core.security import require_api_key
+from app.services.frontend_metadata import UnknownFrontendError, build_frontend_metadata, sign_frontend_metadata
+from app.services.metadata import MetadataSigningError, sign_issuer_metadata
+
+metadata = Blueprint("metadata", __name__, url_prefix="/metadata")
+CORS(metadata)
+
+logger = logging.getLogger(__name__)
+
+
+def _error(message: str, status: int, details: Any = None) -> Tuple[Response, int]:
+    """Builds a JSON error response.
+
+    Args:
+        message: Error message.
+        status: HTTP status.
+        details: Optional details.
+
+    Returns:
+        ``(json_response, status)``.
+    """
+    body = {"error": message}
+    if details is not None:
+        body["details"] = details
+    return jsonify(body), status
+
+
+@metadata.route("metadata_signer", methods=["POST"])
+@require_api_key
+def metadata_signer() -> Tuple[Response, int]:
+    """Signs issuer metadata according to OpenID4VCI 12.2.3 (Signed Metadata).
+
+    Requires the ``X-Api-Key`` header.
+
+    JSON body:
+        metadata (required): Issuer metadata object.
+        issuer_frontend_id (required): Frontend acting as credential issuer.
+        iss (optional): Party attesting to the claims.
+
+    Returns:
+        ``({"signed_metadata": <jwt>}, 200)``, ``400`` for invalid input or
+        ``500`` when signing fails.
+    """
+    try:
+        data = request.get_json()
+        if not data:
+            return _error("No JSON data provided", 400)
+
+        metadata_content = data.get("metadata")
+        issuer_frontend_id = data.get("issuer_frontend_id")
+        if not metadata_content:
+            return _error("metadata is required", 400)
+        if not issuer_frontend_id:
+            return _error("issuer_frontend_id is required", 400)
+        if not isinstance(metadata_content, dict):
+            return _error("metadata must be a JSON object", 400)
+
+        signed = sign_issuer_metadata(metadata_content, issuer_frontend_id, iss=data.get("iss"))
+        return jsonify({"signed_metadata": signed}), 200
+
+    except MetadataSigningError as e:
+        return _error(e.message, 500, e.details)
+    except jwt.PyJWTError as e:
+        logger.exception("JWT encoding error")
+        return _error("JWT encoding failed", 500, str(e))
+    except Exception as e:
+        logger.exception("General exception while signing metadata")
+        return _error("Internal server error", 500, str(e))
+
+
+def _unknown_frontend(frontend_id: str) -> Tuple[Response, int]:
+    """Builds the 404 answer for an unconfigured frontend.
+
+    Args:
+        frontend_id: Requested frontend id.
+
+    Returns:
+        ``(json_response, 404)``.
+    """
+    logger.warning(f"Metadata requested for unknown frontend_id {frontend_id}")
+    return _error("unknown_frontend", 404, f"Frontend '{frontend_id}' is not configured")
+
+
+@metadata.route("<frontend_id>", methods=["GET"])
+@require_api_key
+def frontend_metadata(frontend_id: str) -> Tuple[Response, int]:
+    """Returns the unsigned metadata documents of a frontend.
+
+    Requires the ``X-Api-Key`` header.
+
+    Args:
+        frontend_id: Frontend identifier (``frontend.frontends_config`` key).
+
+    Returns:
+        ``({"openid_credential_issuer", "openid_configuration",
+        "oauth_authorization_server"}, 200)`` or ``404`` for an unknown frontend.
+    """
+    try:
+        documents = build_frontend_metadata(frontend_id)
+    except UnknownFrontendError:
+        return _unknown_frontend(frontend_id)
+    return jsonify(documents.to_dict()), 200
+
+
+@metadata.route("<frontend_id>/signed", methods=["GET"])
+@require_api_key
+def frontend_signed_metadata(frontend_id: str) -> Tuple[Response, int]:
+    """Returns the signed credential issuer metadata of a frontend.
+
+    Requires the ``X-Api-Key`` header.
+
+    Args:
+        frontend_id: Frontend identifier (``frontend.frontends_config`` key).
+
+    Returns:
+        ``({"signed_metadata": <jwt>}, 200)``, ``404`` for an unknown frontend
+        or ``500`` when signing fails.
+    """
+    try:
+        signed = sign_frontend_metadata(frontend_id)
+    except UnknownFrontendError:
+        return _unknown_frontend(frontend_id)
+    except MetadataSigningError as e:
+        return _error(e.message, 500, e.details)
+    return jsonify({"signed_metadata": signed}), 200

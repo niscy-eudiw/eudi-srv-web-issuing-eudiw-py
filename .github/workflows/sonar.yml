@@ -32,7 +32,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r app/requirements.txt pytest pytest-cov
+          pip install -r requirements-dev.txt
       - name: Run tests and generate coverage.xml
         run: |
           env $(grep -v '^#' .env.test | xargs) pytest --cov=app --cov-config=pyproject.toml --cov-report=xml:coverage.xml

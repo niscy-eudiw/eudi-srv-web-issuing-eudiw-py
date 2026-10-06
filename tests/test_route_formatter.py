@@ -19,8 +19,8 @@
 import pytest
 from unittest.mock import patch
 from flask import Flask, json
-from app.route_formatter import formatter
-from app.app_config.config_service import ConfService as cfgservice
+from app.routes.formatter import formatter
+from app.core.constants import ConfService as cfgservice
 
 
 @pytest.fixture
@@ -43,14 +43,14 @@ def patch_configuration(mock_configuration, monkeypatch):
             "supported_credential_ids": ["org.iso.18013.5.1.mDL"],
         }
     }
-    monkeypatch.setattr("app.route_formatter.CONFIGURATION", mock_configuration)
+    monkeypatch.setattr("app.routes.formatter.CONFIGURATION", mock_configuration)
 
 
 # -------------------------
 # Tests for /formatter/cbor
 # -------------------------
-@patch("app.route_formatter.validate_mandatory_args")
-@patch("app.route_formatter.mdocFormatter")
+@patch("app.routes.formatter.validate_mandatory_args")
+@patch("app.routes.formatter.mdocFormatter")
 def test_cborformatter_success(mock_mdocFormatter, mock_validate, client, patch_configuration):
     mock_validate.return_value = (True, [])
     mock_mdocFormatter.return_value = "base64mdoc"
@@ -67,16 +67,40 @@ def test_cborformatter_success(mock_mdocFormatter, mock_validate, client, patch_
         },
     }
 
-    with patch("app.route_formatter.validate_date_format", return_value=True):
+    with patch("app.routes.formatter.validate_date_format", return_value=True):
         response = client.post("/formatter/cbor", json=payload)
 
     data = json.loads(response.data)
     assert response.status_code == 200
     assert data["error_code"] == 0
     assert data["mdoc"] == "base64mdoc"
+    # No session_id in the body -> None is passed through
+    mock_mdocFormatter.assert_called_once_with(
+        payload["data"], payload["credential_metadata"], "FC", "pubkey", None
+    )
 
 
-@patch("app.route_formatter.validate_mandatory_args")
+@patch("app.routes.formatter.validate_mandatory_args")
+@patch("app.routes.formatter.mdocFormatter")
+def test_cborformatter_passes_session_id(mock_mdocFormatter, mock_validate, client, patch_configuration):
+    """Optional body session_id is forwarded to mdocFormatter (bug fix)."""
+    mock_validate.return_value = (True, [])
+    mock_mdocFormatter.return_value = "base64mdoc"
+    payload = {
+        "credential_metadata": {"doctype": "eu.europa.ec.eudi.pid.1"},
+        "country": "FC",
+        "device_publickey": "pubkey",
+        "data": {"eu.europa.ec.eudi.pid.1": {}},
+        "session_id": "sess-1",
+    }
+
+    response = client.post("/formatter/cbor", json=payload)
+
+    assert response.status_code == 200
+    assert mock_mdocFormatter.call_args.args[4] == "sess-1"
+
+
+@patch("app.routes.formatter.validate_mandatory_args")
 def test_cborformatter_invalid_expiry_date(mock_validate, client, patch_configuration):
     mock_validate.return_value = (True, [])
     payload = {
@@ -87,13 +111,13 @@ def test_cborformatter_invalid_expiry_date(mock_validate, client, patch_configur
             "org.iso.18013.5.1": {"expiry_date": "invalid", "issue_date": "2023-01-01"}
         },
     }
-    with patch("app.route_formatter.validate_date_format", return_value=False):
+    with patch("app.routes.formatter.validate_date_format", return_value=False):
         response = client.post("/formatter/cbor", json=payload)
     data = json.loads(response.data)
     assert data["error_code"] == 306
 
 
-@patch("app.route_formatter.validate_mandatory_args")
+@patch("app.routes.formatter.validate_mandatory_args")
 def test_cborformatter_invalid_issue_date(mock_validate, client, patch_configuration):
     mock_validate.return_value = (True, [])
     payload = {
@@ -104,7 +128,7 @@ def test_cborformatter_invalid_issue_date(mock_validate, client, patch_configura
             "org.iso.18013.5.1": {"expiry_date": "2025-12-31", "issue_date": "invalid"}
         },
     }
-    with patch("app.route_formatter.validate_date_format", side_effect=[True, False]):
+    with patch("app.routes.formatter.validate_date_format", side_effect=[True, False]):
         response = client.post("/formatter/cbor", json=payload)
     data = json.loads(response.data)
     assert data["error_code"] == 306
@@ -113,7 +137,7 @@ def test_cborformatter_invalid_issue_date(mock_validate, client, patch_configura
 # ---------------------------
 # Tests for /formatter/sd-jwt
 # ---------------------------
-@patch("app.route_formatter.sdjwtFormatter")
+@patch("app.routes.formatter.sdjwtFormatter")
 def test_sd_jwtformatter_success(mock_sdjwtFormatter, client):
     mock_sdjwtFormatter.return_value = "signed_sdjwt"
     payload = {"country": "FC", "data": {}, "credential_metadata": {}, "scope": "test"}
@@ -122,9 +146,20 @@ def test_sd_jwtformatter_success(mock_sdjwtFormatter, client):
     assert response.status_code == 200
     assert data["error_code"] == 0
     assert data["sd-jwt"] == "signed_sdjwt"
+    mock_sdjwtFormatter.assert_called_once_with(payload, "FC", "test", None)
 
 
-@patch("app.route_formatter.validate_mandatory_args")
+@patch("app.routes.formatter.sdjwtFormatter")
+def test_sd_jwtformatter_passes_session_id(mock_sdjwtFormatter, client):
+    """Optional body session_id is forwarded to sdjwtFormatter (bug fix)."""
+    mock_sdjwtFormatter.return_value = "signed_sdjwt"
+    payload = {"country": "FC", "data": {}, "credential_metadata": {}, "scope": "test", "session_id": "sess-1"}
+    response = client.post("/formatter/sd-jwt", json=payload)
+    assert response.status_code == 200
+    mock_sdjwtFormatter.assert_called_once_with(payload, "FC", "test", "sess-1")
+
+
+@patch("app.routes.formatter.validate_mandatory_args")
 def test_cborformatter_missing_mandatory_args(mock_validate, client):
     # Simulate missing mandatory args
     mock_validate.return_value = (False, ["country", "device_publickey"])
@@ -149,7 +184,7 @@ def test_cborformatter_missing_mandatory_args(mock_validate, client):
     assert data["mdoc"] == ""
 
 
-@patch("app.route_formatter.validate_mandatory_args")
+@patch("app.routes.formatter.validate_mandatory_args")
 def test_cborformatter_unsupported_country(mock_validate, client, patch_configuration):
     # Simulate mandatory args validation passing
     mock_validate.return_value = (True, [])

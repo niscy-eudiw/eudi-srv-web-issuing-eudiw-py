@@ -1,0 +1,4 @@
+# Test / development dependencies (not installed in the production image)
+-r app/requirements.txt
+pytest
+pytest-cov

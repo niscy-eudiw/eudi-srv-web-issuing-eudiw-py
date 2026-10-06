@@ -19,17 +19,9 @@
 import pytest
 import datetime
 from unittest.mock import patch, MagicMock, mock_open
-from app.formatter_func import (
-    DATA_sd_jwt,
-    DatestringFormatter,
-    KeyData,
-    cbor2elems,
-    mdocFormatter,
-    recursive,
-    sdjwtFormatter,
-    sdjwtNestedClaims,
-    SDObj,
-)
+from cryptography.hazmat.primitives.asymmetric import ec
+from config_helpers import patch_configuration
+from app.services.formatters import DatestringFormatter, KeyData, cbor2elems, mdocFormatter, sdjwtFormatter, sdjwtNestedClaims, SDObj
 
 
 @pytest.fixture
@@ -69,12 +61,12 @@ def country():
 
 class TestMdocFormatter:
 
-    @patch("app.formatter_func.serialization.load_pem_private_key")
-    @patch("app.formatter_func.urlsafe_b64encode_nopad", return_value=b"signed_mdoc")
-    @patch("app.formatter_func.MdocCborIssuer")
-    @patch("app.formatter_func.requests.post")
-    @patch("app.formatter_func.session_manager")
-    @patch("app.formatter_func.CONFIGURATION", { # Mock country config
+    @patch("app.services.formatters.serialization.load_pem_private_key")
+    @patch("app.services.formatters.urlsafe_b64encode_nopad", return_value=b"signed_mdoc")
+    @patch("app.services.formatters.MdocCborIssuer")
+    @patch("app.services.revocation_status.requests.post")
+    @patch("app.services.formatters.session_manager")
+    @patch_configuration({ # Mock country config
         "countries": {
             "FC": {
                 "name": "FormEU",
@@ -146,14 +138,14 @@ class TestMdocFormatter:
         # Pseudonym encoded
         assert sample_data["Person"]["user_pseudonym"] == b"johndoe123"
 
-    @patch("app.formatter_func.serialization.load_pem_private_key")
+    @patch("app.services.formatters.serialization.load_pem_private_key")
     @patch(
-        "app.formatter_func.urlsafe_b64encode_nopad", return_value=b"signed_mdoc_batch"
+        "app.services.formatters.urlsafe_b64encode_nopad", return_value=b"signed_mdoc_batch"
     )
-    @patch("app.formatter_func.MdocCborIssuer")
-    @patch("app.formatter_func.requests.post")
-    @patch("app.formatter_func.session_manager")
-    @patch("app.formatter_func.CONFIGURATION", { # Mock country config
+    @patch("app.services.formatters.MdocCborIssuer")
+    @patch("app.services.revocation_status.requests.post")
+    @patch("app.services.formatters.session_manager")
+    @patch_configuration({ # Mock country config
         "countries": {
             "FC": {
                 "name": "FormEU",
@@ -220,15 +212,15 @@ class TestMdocFormatter:
 
         assert result == b"signed_mdoc_batch"
 
-    @patch("app.formatter_func.serialization.load_pem_private_key")
+    @patch("app.services.formatters.serialization.load_pem_private_key")
     @patch(
-        "app.formatter_func.urlsafe_b64encode_nopad",
+        "app.services.formatters.urlsafe_b64encode_nopad",
         return_value=b"signed_mdoc_revocation",
     )
-    @patch("app.formatter_func.MdocCborIssuer")
-    @patch("app.formatter_func.requests.post")
-    @patch("app.formatter_func.session_manager")
-    @patch("app.formatter_func.CONFIGURATION", { # Mock country config
+    @patch("app.services.formatters.MdocCborIssuer")
+    @patch("app.services.revocation_status.requests.post")
+    @patch("app.services.formatters.session_manager")
+    @patch_configuration({ # Mock country config
         "countries": {
             "FC": {
                 "name": "FormEU",
@@ -296,10 +288,56 @@ class TestMdocFormatter:
         )
 
         mock_requests_post.assert_called_once()
+        assert mock_requests_post.call_args.args[0] == "Fake Take URL"
+        assert mock_requests_post.call_args.kwargs["timeout"]
+        mock_session_manager.update_key_status_by_key.assert_called_once()
         called_revocation = mock_mdoci_instance.new.call_args.kwargs["revocation"]
         assert called_revocation == { "revoked": False, "identifier_list": {"id": b'abc123' } }
 
         assert result == b"signed_mdoc_revocation"
+
+
+    @patch("app.services.formatters.serialization.load_pem_private_key")
+    @patch("app.services.formatters.urlsafe_b64encode_nopad", return_value=b"signed_mdoc")
+    @patch("app.services.formatters.MdocCborIssuer")
+    @patch("app.services.formatters.session_manager")
+    @patch_configuration({
+        "countries": {
+            "FC": {
+                "keys": {
+                    "_default": {
+                        "private_key": "PK Sample Content",
+                        "private_key_password": None,
+                        "certificate_path": "fake_cert_path",
+                    }
+                }
+            }
+        },
+        "revocation": {"enabled": False},
+    })
+    def test_no_session_and_namespace_differs_from_doctype(
+        self, mock_session_manager, mock_MdocCborIssuer, mock_b64encode, mock_load_key, device_publickey
+    ):
+        """Standalone call (session_id=None) works; pseudonym encoded under the namespace."""
+        mock_load_key.return_value.private_numbers.return_value.private_value = 12345
+        data = {"eu.europa.ec.eudi.pid.1": {"user_pseudonym": "johndoe123"}}
+        metadata = {
+            "doctype": "eu.europa.ec.eudi.pid.1.doctype",
+            "issuer_config": {"namespace": "eu.europa.ec.eudi.pid.1", "validity": 10},
+        }
+
+        result = mdocFormatter(
+            data=data,
+            credential_metadata=metadata,
+            country="FC",
+            device_publickey=device_publickey,
+            session_id=None,
+        )
+
+        mock_session_manager.get_session.assert_not_called()
+        assert data["eu.europa.ec.eudi.pid.1"]["user_pseudonym"] == b"johndoe123"
+        assert mock_MdocCborIssuer.return_value.new.call_args.kwargs["revocation"] is None
+        assert result == b"signed_mdoc"
 
 
 # ------------------- Test class for cbor2elems -------------------
@@ -307,8 +345,8 @@ class TestMdocFormatter:
 
 class TestCbor2Elems:
 
-    @patch("app.formatter_func.cbor2.decoder.loads")
-    @patch("app.formatter_func.base64.urlsafe_b64decode")
+    @patch("app.services.formatters.cbor2.decoder.loads")
+    @patch("app.services.formatters.base64.urlsafe_b64decode")
     def test_basic_elements(self, mock_b64decode, mock_cbor_loads):
         """Test normal elements and date elements"""
         fake_mdoc = "FAKE_BASE64"
@@ -346,8 +384,8 @@ class TestCbor2Elems:
         assert ("name", "Alice") in result["ns1"]
         assert ("birth_date", "2000-01-01") in result["ns1"]
 
-    @patch("app.formatter_func.cbor2.decoder.loads")
-    @patch("app.formatter_func.base64.urlsafe_b64decode")
+    @patch("app.services.formatters.cbor2.decoder.loads")
+    @patch("app.services.formatters.base64.urlsafe_b64decode")
     def test_multiple_namespaces(self, mock_b64decode, mock_cbor_loads):
         """Test multiple namespaces with different elements"""
         fake_mdoc = "FAKE_BASE64_2"
@@ -470,28 +508,28 @@ class TestSDJWTNestedClaims:
 
 class TestSDJWTFormatter:
 
-    @patch("app.formatter_func.base64.b64encode", side_effect=lambda x: b"encoded_cert")
-    @patch("app.formatter_func.serialization.load_pem_private_key")
+    @patch("app.services.formatters.base64.b64encode", side_effect=lambda x: b"encoded_cert")
+    @patch("app.services.formatters.serialization.load_pem_private_key")
     @patch(
-        "app.formatter_func.base64.urlsafe_b64decode",
+        "app.services.formatters.base64.urlsafe_b64decode",
         side_effect=lambda x: b"decoded_device_key",
     )
-    @patch("app.formatter_func.serialization.load_pem_public_key")
+    @patch("app.services.formatters.serialization.load_pem_public_key")
     @patch(
-        "app.formatter_func.KeyData",
+        "app.services.formatters.KeyData",
         side_effect=lambda key, t: ("crv", b"x_bytes", b"y_bytes"),
     )
     @patch(
-        "app.formatter_func.get_jwk",
+        "app.services.formatters.get_jwk",
         return_value={"issuer_key": "issuer_key_obj", "holder_key": "holder_key_obj"},
     )
-    @patch("app.formatter_func.SDJWTIssuer")
+    @patch("app.services.formatters.SDJWTIssuer")
     @patch(
-        "app.formatter_func.sdjwtNestedClaims", return_value={"claim_wrapped": "value"}
+        "app.services.formatters.sdjwtNestedClaims", return_value={"claim_wrapped": "value"}
     )
-    @patch("app.formatter_func.vct2doctype", side_effect=lambda vct: "Person")
-    @patch("app.formatter_func.requests.post")
-    @patch("app.formatter_func.CONFIGURATION", { # Mock country config
+    @patch("app.services.formatters.session_manager")
+    @patch("app.services.revocation_status.requests.post")
+    @patch_configuration({ # Mock country config
         "service_url": "Fake_URL",
         "countries": {
             "FC": {
@@ -514,7 +552,7 @@ class TestSDJWTFormatter:
     def test_basic_sdjwtFormatter(
         self,
         mock_requests_post,
-        mock_vct2doctype,
+        mock_sdjwt_session_manager,
         mock_sdjwtNestedClaims,
         mock_SDJWTIssuer,
         mock_get_jwk,
@@ -549,9 +587,19 @@ class TestSDJWTFormatter:
         mock_sdjwt_instance.sd_jwt_issuance = "sdjwt_token"
         mock_SDJWTIssuer.return_value = mock_sdjwt_instance
 
-        result = sdjwtFormatter(PID, country, "eu.europa.ec.eudi.learning_credential_vc_sd_jwt")
+        # Standalone formatter call: no issuance session
+        result = sdjwtFormatter(
+            PID, country, "eu.europa.ec.eudi.learning_credential_vc_sd_jwt", session_id=None
+        )
 
         # Assertions
+        mock_sdjwt_session_manager.get_session.assert_not_called()
+        mock_requests_post.assert_not_called()
+        claims = mock_SDJWTIssuer.call_args.args[0]
+        assert claims["iss"] == "Fake_URL"
+        assert claims["vct"] == "vct_value"
+        assert "jti" in claims  # learning credential scope
+        assert "status" not in claims
         mock_load_private_key.assert_called_once()
         mock_load_public_key.assert_called_once()
         mock_sdjwtNestedClaims.assert_called_once_with(
@@ -561,28 +609,28 @@ class TestSDJWTFormatter:
         assert result == "sdjwt_token"
 
     @patch("builtins.open", new_callable=mock_open, read_data=b"fake_cert_data")
-    @patch("app.formatter_func.base64.b64encode", side_effect=lambda x: b"encoded_cert")
-    @patch("app.formatter_func.serialization.load_pem_private_key")
+    @patch("app.services.formatters.base64.b64encode", side_effect=lambda x: b"encoded_cert")
+    @patch("app.services.formatters.serialization.load_pem_private_key")
     @patch(
-        "app.formatter_func.base64.urlsafe_b64decode",
+        "app.services.formatters.base64.urlsafe_b64decode",
         side_effect=lambda x: b"decoded_device_key",
     )
-    @patch("app.formatter_func.serialization.load_pem_public_key")
+    @patch("app.services.formatters.serialization.load_pem_public_key")
     @patch(
-        "app.formatter_func.KeyData",
+        "app.services.formatters.KeyData",
         side_effect=lambda key, t: ("crv", b"x_bytes", b"y_bytes"),
     )
     @patch(
-        "app.formatter_func.get_jwk",
+        "app.services.formatters.get_jwk",
         return_value={"issuer_key": "issuer_key_obj", "holder_key": "holder_key_obj"},
     )
-    @patch("app.formatter_func.SDJWTIssuer")
+    @patch("app.services.formatters.SDJWTIssuer")
     @patch(
-        "app.formatter_func.sdjwtNestedClaims", return_value={"claim_wrapped": "value"}
+        "app.services.formatters.sdjwtNestedClaims", return_value={"claim_wrapped": "value"}
     )
-    @patch("app.formatter_func.vct2doctype", side_effect=lambda vct: "Person")
-    @patch("app.formatter_func.requests.post")
-    @patch("app.formatter_func.CONFIGURATION", { # Mock country config
+    @patch("app.services.formatters.session_manager")
+    @patch("app.services.revocation_status.requests.post")
+    @patch_configuration({ # Mock country config
         "service_url": "Fake_URL",
         "countries": {
             "FC": {
@@ -607,7 +655,7 @@ class TestSDJWTFormatter:
     def test_revocation_branch(
         self,
         mock_requests_post,
-        mock_vct2doctype,
+        mock_sdjwt_session_manager,
         mock_sdjwtNestedClaims,
         mock_SDJWTIssuer,
         mock_get_jwk,
@@ -649,81 +697,32 @@ class TestSDJWTFormatter:
         mock_sdjwt_instance.sd_jwt_issuance = "sdjwt_token_revocation"
         mock_SDJWTIssuer.return_value = mock_sdjwt_instance
 
-        result = sdjwtFormatter(PID, country, "eu.europa.ec.eudi.learning_credential_vc_sd_jwt")
+        mock_session = MagicMock()
+        mock_session.max_credential_exp = None
+        mock_sdjwt_session_manager.get_session.return_value = mock_session
+
+        result = sdjwtFormatter(
+            PID,
+            country,
+            "eu.europa.ec.eudi.learning_credential_vc_sd_jwt",
+            session_id="test-session-id",
+        )
 
         mock_requests_post.assert_called_once()
+        assert mock_requests_post.call_args.args[0] == "Fake Take URL"
+        assert mock_requests_post.call_args.kwargs["headers"]["X-Api-Key"] == "Fake API-Key"
+        assert "doctype=vct_value&country=FC" in mock_requests_post.call_args.kwargs["data"]
+        assert mock_requests_post.call_args.kwargs["timeout"]
+        mock_sdjwt_session_manager.update_key_status_by_key.assert_called_once_with(
+            session_id="test-session-id",
+            key="fake_device_key_base64",
+            key_status={"revoked": False},
+        )
+        claims = mock_SDJWTIssuer.call_args.args[0]
+        assert claims["status"] == {"revoked": False}
         mock_sdjwtNestedClaims.assert_called_once()
         mock_SDJWTIssuer.assert_called_once()
         assert result == "sdjwt_token_revocation"
-
-
-class TestDATA_SDJWT:
-
-    @patch("app.formatter_func.SDObj", side_effect=lambda value: f"SDObj({value})")
-    @patch("app.formatter_func.recursive", side_effect=lambda d: f"recursive({d})")
-    @patch("app.formatter_func.cfgservice")
-    def test_all_registered_claims_branches(
-        self, mock_cfgservice, mock_recursive, mock_SDObj
-    ):
-        """Test age_equal_or_over, place_of_birth, address, and default registered claims"""
-        PID = {
-            "age": 25,
-            "birth_place": "Paris",
-            "home_address": "Main St",
-            "email": "alice@example.com",
-            "custom_claim": "custom_value",
-        }
-
-        mock_cfgservice.Registered_claims = {
-            "age": "Person.age_equal_or_over",
-            "birth_place": "Person.place_of_birth",
-            "home_address": "Person.address",
-            "email": "Person.email",
-        }
-
-        result = DATA_sd_jwt(PID)
-
-        # Corrected assertions
-        assert (
-            result["SDObj(age_equal_or_over)"] == "recursive({'age_equal_or_over': 25})"
-        )
-        assert (
-            result["SDObj(place_of_birth)"] == "recursive({'place_of_birth': 'Paris'})"
-        )
-        assert result["SDObj(address)"] == "recursive({'address': 'Main St'})"
-        assert result["SDObj(Person.email)"] == "alice@example.com"
-        assert result["SDObj(custom_claim)"] == "custom_value"
-
-    @patch("app.formatter_func.SDObj", side_effect=lambda value: f"SDObj({value})")
-    @patch("app.formatter_func.recursive", side_effect=lambda d: f"recursive({d})")
-    @patch("app.formatter_func.cfgservice")
-    def test_empty_registered_claims(self, mock_cfgservice, mock_recursive, mock_SDObj):
-        """Test when Registered_claims is empty"""
-        PID = {"nickname": "Ally", "hobby": "Chess"}
-
-        mock_cfgservice.Registered_claims = {}
-
-        result = DATA_sd_jwt(PID)
-
-        assert result["SDObj(nickname)"] == "Ally"
-        assert result["SDObj(hobby)"] == "Chess"
-
-
-class TestRecursive:
-
-    def test_normal_dict(self):
-        input_dict = {"name": "Alice", "age": 30}
-        result = recursive(input_dict)
-
-        # Check that all keys are wrapped in SDObj
-        for k, v in input_dict.items():
-            assert SDObj(k) in result
-            assert result[SDObj(k)] == v
-
-    def test_empty_dict(self):
-        input_dict = {}
-        result = recursive(input_dict)
-        assert result == {}
 
 
 class TestDatestringFormatter:
@@ -783,7 +782,10 @@ class TestKeyData:
     )
     def test_private_key(self, curve_name, expected_identifier):
         # Mock key
-        mock_key = MagicMock()
+        # spec= so the key is detected as a private key (KeyData no longer
+        # relies on the "type" argument)
+        mock_key = MagicMock(spec=ec.EllipticCurvePrivateKey)
+        mock_key.curve = MagicMock()
         mock_key.curve.name = curve_name
         mock_public_numbers = MagicMock()
         mock_public_numbers.x = 123456

@@ -19,7 +19,7 @@
 import pytest
 from unittest.mock import patch, MagicMock
 from flask import Flask, json
-from app import redirect_func as rf
+from app.utils import http as rf
 
 
 @pytest.fixture
@@ -38,29 +38,7 @@ class TestRedirectFunc:
         assert result.startswith(url)
         assert "a=1" in result and "b=2" in result
 
-    @patch("app.redirect_func.requests.post")
-    def test_json_post_success(self, mock_post):
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-        mock_post.return_value = mock_resp
-
-        url = "http://example.com"
-        payload = {"key": "value"}
-        resp = rf.json_post(url, payload)
-        mock_post.assert_called_once_with(
-            url, json=payload, headers={"Content-Type": "application/json"}
-        )
-        assert resp.status_code == 200
-
-    @patch("app.redirect_func.requests.post", side_effect=Exception("fail"))
-    def test_json_post_exception(self, mock_post):
-        url = "http://example.com"
-        payload = {"key": "value"}
-        with pytest.raises(Exception) as excinfo:
-            rf.json_post(url, payload)
-        assert "fail" in str(excinfo.value)
-
-    @patch("app.redirect_func.render_template_string")
+    @patch("app.utils.http.render_template_string")
     def test_post_redirect_with_payload(self, mock_render):
         target_url = "https://wallet.com/callback"
         payload = {"key": "value"}
@@ -87,7 +65,7 @@ class TestRedirectFunc:
     # ---------------------------
     # Test post_redirect_with_payload edge cases
     # ---------------------------
-    @patch("app.redirect_func.render_template_string")
+    @patch("app.utils.http.render_template_string")
     def test_post_redirect_empty_payload(self, mock_render):
         target_url = "https://wallet.com/callback"
         payload = {}
@@ -101,7 +79,7 @@ class TestRedirectFunc:
     # -----------------------------
     # post_redirect_with_payload empty string payload
     # -----------------------------
-    @patch("app.redirect_func.render_template_string")
+    @patch("app.utils.http.render_template_string")
     def test_post_redirect_with_payload_empty_string(self, mock_render):
         target_url = "https://example.com"
         payload = {"key": ""}

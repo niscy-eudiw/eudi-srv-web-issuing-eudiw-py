@@ -41,6 +41,10 @@ from jwcrypto import jwk, jwe
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives import serialization
 
+from config_helpers import patch_configuration
+
+
+API_KEY_HEADERS = {"X-Api-Key": "test-api-key"}
 
 @pytest.fixture
 def app():
@@ -50,10 +54,10 @@ def app():
     app.config["SECRET_KEY"] = "test-secret-key"
 
     # Import and register blueprint
-    with patch("app.route_oidc.CONFIGURATION"), patch(
-        "app.route_oidc.session_manager"
+    with patch("app.routes.oidc.CONFIGURATION"), patch(
+        "app.routes.oidc.session_manager"
     ):
-        from app.route_oidc import oidc
+        from app.routes.oidc import oidc
 
         app.register_blueprint(oidc)
 
@@ -69,8 +73,13 @@ def client(app):
 @pytest.fixture
 def mock_session_manager():
     """Mock session manager"""
-    with patch("app.route_oidc.session_manager") as mock:
+    # generate_credentials (services.credential_issuance) uses its own
+    # session_manager binding; share one mock between both modules.
+    with patch("app.routes.oidc.session_manager") as mock, patch(
+        "app.services.credential_issuance.session_manager", mock
+    ):
         mock_session = Mock()
+        mock_session.client_status = None
         mock_session.transaction_id = {}
         mock_session.session_id = "test-session-id"
         mock.get_session.return_value = mock_session
@@ -82,8 +91,8 @@ def mock_session_manager():
 
 @pytest.fixture
 def mock_cfgservice():
-    """Mock configuration service"""
-    with patch("app.route_oidc.CONFIGURATION", {
+    """Mock configuration in every app module (routes, services, utils)"""
+    with patch_configuration({
         "service_url": "https://test.issuer.dev/",
         "wallet_test_url": "https://test.wallet.dev/",
         "expiry": {
@@ -114,49 +123,29 @@ def mock_cfgservice():
         "logging": {
             "backend_path": "/tmp/log_prod/logs.log",
             "level": "INFO"
-        }
+        },
+        "status_validator": {"enabled": False, "url": "https://status.test"},
+        "backend_api_key": "test-api-key",
     }) as mock:
         yield mock
 
 
 class TestWellKnownEndpoints:
-    """Test well-known configuration endpoints"""
+    """The backend no longer publishes metadata; frontends get it via /metadata/<frontend_id>."""
 
-    def test_well_known_openid_credential_issuer(self, client):
-        """Test /.well-known/openid-credential-issuer endpoint"""
-        with patch("app.route_oidc.oidc_metadata_clean", {"issuer": "test"}):
-            response = client.get("/.well-known/openid-credential-issuer")
+    @pytest.mark.parametrize(
+        "service",
+        [
+            "openid-credential-issuer",
+            "openid-credential-issuer2",
+            "oauth-authorization-server",
+            "openid-configuration",
+        ],
+    )
+    def test_well_known_removed(self, client, service):
+        response = client.get(f"/.well-known/{service}")
 
-            assert response.status_code == 200
-            assert response.headers["Content-Type"] == "application/json"
-            assert response.headers["Cache-Control"] == "no-store"
-            assert response.json == {"issuer": "test"}
-
-    def test_well_known_oauth_authorization_server(self, client):
-        """Test /.well-known/oauth-authorization-server endpoint"""
-        with patch(
-            "app.route_oidc.openid_metadata", {"authorization_endpoint": "test"}
-        ):
-            response = client.get("/.well-known/oauth-authorization-server")
-
-            assert response.status_code == 200
-            assert response.json == {"authorization_endpoint": "test"}
-
-    def test_well_known_openid_configuration(self, client):
-        """Test /.well-known/openid-configuration endpoint"""
-        with patch("app.route_oidc.openid_metadata", {"issuer": "test"}):
-            response = client.get("/.well-known/openid-configuration")
-
-            assert response.status_code == 200
-            assert response.json == {"issuer": "test"}
-
-    def test_well_known_unsupported_service(self, client):
-        """Test unsupported well-known service"""
-        response = client.get("/.well-known/unsupported-service")
-
-        assert response.status_code == 400
-        assert b"Not supported" in response.data
-
+        assert response.status_code == 404
 
 class TestAuthChoice:
     """Test authentication choice endpoint"""
@@ -175,7 +164,7 @@ class TestAuthChoice:
         }
         
         """Test auth_choice with scope parameter"""
-        with patch.dict("app.route_oidc.CONFIGURATION", {
+        with patch.dict("app.routes.oidc.CONFIGURATION", {
             "frontend": {
                 "default": "5d725b3c-6d42-448e-8bfd-1eff1fcf152d",
                 "frontends_config": {
@@ -183,11 +172,11 @@ class TestAuthChoice:
                 }
             }
         }), patch.dict(
-            "app.route_oidc.oidc_metadata",
+            "app.routes.oidc.oidc_metadata",
             mock_oidc_metadata,
             clear=True
         ), patch.dict(
-            "app.misc.oidc_metadata",
+            "app.services.attributes.oidc_metadata",
             mock_oidc_metadata,
             clear=True
         ):
@@ -211,7 +200,7 @@ class TestAuthChoice:
             [{"credential_configuration_id": "eu.europa.ec.eudi.pid_mdoc"}]
         )
 
-        with patch.dict("app.route_oidc.CONFIGURATION", {
+        with patch.dict("app.routes.oidc.CONFIGURATION", {
             "frontend": {
                 "default": "5d725b3c-6d42-448e-8bfd-1eff1fcf152d",
                 "frontends_config": {
@@ -255,7 +244,7 @@ class TestCredentialEndpoint:
         assert response.status_code == 401
         assert response.json["error"] == "invalid_token"
 
-    @patch("app.route_oidc.verify_introspection")
+    @patch("app.routes.oidc.verify_introspection")
     def test_credential_invalid_token(self, mock_introspect, client):
         """Test credential endpoint with invalid token"""
         mock_introspect.return_value = ({"error": "invalid_token"}, 401)
@@ -268,17 +257,18 @@ class TestCredentialEndpoint:
 
         assert response.status_code == 401
 
-    @patch("app.route_oidc.verify_introspection")
-    @patch("app.route_oidc.generate_credentials")
+    @patch("app.routes.oidc.verify_introspection")
+    @patch("app.routes.oidc.generate_credentials")
     def test_credential_success(
         self, mock_generate, mock_introspect, client, mock_cfgservice
     ):
         """Test successful credential issuance"""
-        mock_introspect.return_value = "test-session-id"
+        mock_introspect.return_value = ("test-session-id", None)
         mock_generate.return_value = {"credential": "test-credential-data"}
 
-        with patch("app.route_oidc.session_manager") as mock_sm:
+        with patch("app.routes.oidc.session_manager") as mock_sm:
             mock_session = Mock()
+            mock_session.client_status = None
             mock_sm.get_session.return_value = mock_session
 
             response = client.post(
@@ -293,17 +283,18 @@ class TestCredentialEndpoint:
             assert response.status_code == 200
             assert "notification_id" in response.json
 
-    @patch("app.route_oidc.verify_introspection")
-    @patch("app.route_oidc.generate_credentials")
+    @patch("app.routes.oidc.verify_introspection")
+    @patch("app.routes.oidc.generate_credentials")
     def test_credential_deferred(
         self, mock_generate, mock_introspect, client, mock_cfgservice
     ):
         """Test deferred credential response"""
-        mock_introspect.return_value = "test-session-id"
+        mock_introspect.return_value = ("test-session-id", None)
         mock_generate.return_value = {"error": "Pending"}
 
-        with patch("app.route_oidc.session_manager") as mock_sm:
+        with patch("app.routes.oidc.session_manager") as mock_sm:
             mock_session = Mock()
+            mock_session.client_status = None
             mock_sm.get_session.return_value = mock_session
 
             response = client.post(
@@ -317,15 +308,37 @@ class TestCredentialEndpoint:
 
             assert response.status_code == 202
             assert "transaction_id" in response.json
+
+    @patch("app.routes.oidc.verify_introspection")
+    @patch("app.routes.oidc.generate_credentials")
+    def test_credential_undecodable_proof(
+        self, mock_generate, mock_introspect, client, mock_cfgservice
+    ):
+        """Fixed behaviour: non-dict generate_credentials result -> 400 invalid_proof"""
+        mock_introspect.return_value = ("test-session-id", None)
+        mock_generate.return_value = ""
+
+        with patch("app.routes.oidc.session_manager"):
+            response = client.post(
+                "/credential",
+                headers={"Authorization": "Bearer valid-token"},
+                json={
+                    "credential_configuration_id": "test-cred",
+                    "proof": {"proof_type": "jwt", "jwt": "test-jwt"},
+                },
+            )
+
+        assert response.status_code == 400
+        assert response.json["error"] == "invalid_proof"
             
 @pytest.mark.usefixtures("mock_cfgservice")
 class TestVerifyIntrospection:
     """Test token introspection verification"""
 
-    @patch("requests.request")
+    @patch("app.services.auth_server.requests.request")
     def test_verify_introspection_success(self, mock_request, app):
         """Test successful token introspection"""
-        from app.route_oidc import verify_introspection
+        from app.routes.oidc import verify_introspection
 
         mock_response = Mock()
         mock_response.status_code = 200
@@ -335,12 +348,13 @@ class TestVerifyIntrospection:
         with app.app_context():
             result = verify_introspection("valid-token")
 
-        assert result == "test-user"
+        # verify_introspection now returns (username, client_status)
+        assert result == ("test-user", None)
 
-    @patch("requests.request")
+    @patch("app.services.auth_server.requests.request")
     def test_verify_introspection_inactive_token(self, mock_request, app):
         """Test introspection with inactive token"""
-        from app.route_oidc import verify_introspection
+        from app.routes.oidc import verify_introspection
 
         mock_response = Mock()
         mock_response.status_code = 200
@@ -353,10 +367,10 @@ class TestVerifyIntrospection:
         assert isinstance(result, tuple)
         assert result[1] == 401
 
-    @patch("requests.request")
+    @patch("app.services.auth_server.requests.request")
     def test_verify_introspection_network_error(self, mock_request, app):
         """Test introspection with network error"""
-        from app.route_oidc import verify_introspection
+        from app.routes.oidc import verify_introspection
         import requests
 
         # Use requests.exceptions.RequestException which the code catches
@@ -374,7 +388,7 @@ class TestVerifyCredentialRequest:
 
     def test_verify_credential_request_valid(self, app):
         """Test valid credential request"""
-        from app.route_oidc import verify_credential_request
+        from app.routes.oidc import verify_credential_request
 
         request = {
             "credential_configuration_id": "test-cred",
@@ -388,7 +402,7 @@ class TestVerifyCredentialRequest:
 
     def test_verify_credential_request_missing_id(self, app):
         """Test request missing credential identifier"""
-        from app.route_oidc import verify_credential_request
+        from app.routes.oidc import verify_credential_request
 
         request = {"proof": {"proof_type": "jwt", "jwt": "test-jwt"}}
 
@@ -400,7 +414,7 @@ class TestVerifyCredentialRequest:
 
     def test_verify_credential_request_missing_proof(self, app):
         """Test request missing proof"""
-        from app.route_oidc import verify_credential_request
+        from app.routes.oidc import verify_credential_request
 
         request = {"credential_configuration_id": "test-cred"}
 
@@ -434,18 +448,19 @@ class TestDeferredCredential:
         assert response.status_code == 401
         assert response.json["error"] == "invalid_transaction_id_format"
 
-    @patch("app.route_oidc.verify_introspection")
-    @patch("app.route_oidc.generate_credentials")
+    @patch("app.routes.oidc.verify_introspection")
+    @patch("app.routes.oidc.generate_credentials")
     def test_deferred_success(
         self, mock_generate, mock_introspect, client, mock_cfgservice
     ):
         """Test successful deferred credential"""
         transaction_id = str(uuid.uuid4())
-        mock_introspect.return_value = "test-session-id"
+        mock_introspect.return_value = ("test-session-id", None)
         mock_generate.return_value = {"credential": "test-credential"}
 
-        with patch("app.route_oidc.session_manager") as mock_sm:
+        with patch("app.routes.oidc.session_manager") as mock_sm:
             mock_session = Mock()
+            mock_session.client_status = None
             mock_session.transaction_id = {
                 transaction_id: {
                     "credential_configuration_id": "test-cred",
@@ -463,14 +478,91 @@ class TestDeferredCredential:
             assert response.status_code == 200
             assert "notification_id" in response.json
 
+    @patch("app.routes.oidc.verify_introspection")
+    @patch("app.routes.oidc.generate_credentials")
+    def test_deferred_still_pending(
+        self, mock_generate, mock_introspect, client, mock_cfgservice
+    ):
+        """Fixed behaviour: a still-pending deferred request returns 202 with the
+        same transaction_id and no notification_id (was 400)"""
+        transaction_id = str(uuid.uuid4())
+        mock_introspect.return_value = ("test-session-id", None)
+        mock_generate.return_value = {"error": "Pending"}
+
+        with patch("app.routes.oidc.session_manager") as mock_sm:
+            mock_session = Mock()
+            mock_session.client_status = None
+            mock_session.transaction_id = {
+                transaction_id: {
+                    "credential_configuration_id": "test-cred",
+                    "proof": {"proof_type": "jwt", "jwt": "test"},
+                }
+            }
+            mock_sm.get_session.return_value = mock_session
+
+            response = client.post(
+                "/deferred_credential",
+                headers={"Authorization": "Bearer token"},
+                json={"transaction_id": transaction_id},
+            )
+
+            assert response.status_code == 202
+            assert response.json == {"transaction_id": transaction_id, "interval": 30}
+            mock_sm.store_notification_id.assert_not_called()
+
+    @patch("app.routes.oidc.encrypt_response")
+    @patch("app.routes.oidc.verify_introspection")
+    @patch("app.routes.oidc.generate_credentials")
+    def test_deferred_encryption_uses_deferred_request_params(
+        self, mock_generate, mock_introspect, mock_encrypt, client, app, mock_cfgservice
+    ):
+        """Fixed behaviour: response encryption uses the deferred request's
+        credential_response_encryption"""
+        transaction_id = str(uuid.uuid4())
+        encryption = {"jwk": {"kty": "RSA"}, "alg": "RSA-OAEP", "enc": "A256GCM"}
+        mock_introspect.return_value = ("test-session-id", None)
+        mock_generate.return_value = {"credential": "test-credential"}
+        with app.app_context():
+            from flask import make_response
+
+            mock_encrypt.return_value = make_response(
+                "eyJencrypted", 200, {"Content-Type": "application/jwt"}
+            )
+
+        with patch("app.routes.oidc.session_manager") as mock_sm:
+            mock_session = Mock()
+            mock_session.client_status = None
+            mock_session.transaction_id = {
+                transaction_id: {
+                    "credential_configuration_id": "test-cred",
+                    "proof": {"proof_type": "jwt", "jwt": "test"},
+                }
+            }
+            mock_sm.get_session.return_value = mock_session
+
+            response = client.post(
+                "/deferred_credential",
+                headers={"Authorization": "Bearer token"},
+                json={
+                    "transaction_id": transaction_id,
+                    "credential_response_encryption": encryption,
+                },
+            )
+
+            assert response.status_code == 200
+            assert response.content_type == "application/jwt"
+            kwargs = mock_encrypt.call_args.kwargs
+            assert kwargs["credential_request"]["credential_response_encryption"] == encryption
+            assert "notification_id" in kwargs["credential_response"]
+
 
 class TestNotification:
     """Test notification endpoint"""
 
-    @patch("app.route_oidc.verify_introspection")
+    @patch("app.routes.oidc.verify_introspection")
     def test_notification_success(self, mock_introspect, client, mock_cfgservice):
         """Test successful notification"""
-        mock_introspect.return_value = "test-session-id"
+        mock_introspect.return_value = ("test-session-id", None)
 
         response = client.post(
             "/notification",
@@ -491,7 +583,7 @@ class TestNotification:
 class TestNonce:
     """Test nonce endpoint"""
 
-    @patch("app.route_oidc.JsonWebEncryption")
+    @patch("app.services.credential_issuance.JsonWebEncryption")
     @patch("builtins.open")
     def test_nonce_generation(self, mock_open, mock_jwe_class, client, mock_cfgservice):
         """Test nonce generation"""
@@ -519,7 +611,7 @@ class TestNonce:
 class TestCredentialOffer:
     """Test credential offer endpoints"""
 
-    @patch("app.route_oidc.render_template")
+    @patch("app.routes.oidc.post_redirect_with_payload")
     def test_credential_offer_choice(self, mock_render, client, mock_cfgservice):
         """Test credential offer choice page"""
         mock_render.return_value = "rendered_template"
@@ -534,19 +626,21 @@ class TestCredentialOffer:
         }
 
         with patch.dict(
-            "app.route_oidc.oidc_metadata",
+            "app.routes.oidc.oidc_metadata",
             mock_oidc_metadata,
             clear=True
         ), patch.dict(
-            "app.misc.oidc_metadata",
+            "app.services.attributes.oidc_metadata",
             mock_oidc_metadata,
             clear=True
         ):
             response = client.get("/credential_offer_choice")
 
             assert response.status_code == 200
+            payload = mock_render.call_args.kwargs["data_payload"]
+            assert payload["cred"]["mdoc format"] == {"eu.europa.ec.eudi.pid_mdoc": "PID"}
 
-    @patch("app.route_oidc.generate_unique_id")
+    @patch("app.routes.oidc.generate_unique_id")
     def test_credential_offer2_qr_generation(self, mock_uuid, client, mock_cfgservice):
         """Test QR code generation for credential offer"""
         mock_uuid.return_value = "test-session-id"
@@ -563,7 +657,7 @@ class TestHelperFunctions:
 
     def test_pKfromJWK(self):
         """Test public key extraction from JWK"""
-        from app.route_oidc import pKfromJWK
+        from app.services.credential_issuance import pKfromJWK
 
         # Create a test P-256 key
         private_key = ec.generate_private_key(ec.SECP256R1())
@@ -588,7 +682,7 @@ class TestHelperFunctions:
 
     def test_pKfromJWK_unsupported_curve(self):
         """Test public key extraction with unsupported curve"""
-        from app.route_oidc import pKfromJWK
+        from app.services.credential_issuance import pKfromJWK
 
         jwk_data = {"kty": "EC", "crv": "P-384", "x": "test", "y": "test"}
 
@@ -611,18 +705,52 @@ class TestLogs:
         ]
         mock_open.return_value = mock_file
 
-        response = client.get("/logs", query_string={"session_id": "test-session"})
+        response = client.get(
+            "/logs", query_string={"session_id": "test-session"}, headers=API_KEY_HEADERS
+        )
 
         assert response.status_code == 200
-        assert response.json["count"] >= 0
+        assert response.json["count"] == 2
         assert response.json["session_id"] == "test-session"
 
-    def test_get_logs_missing_session_id(self, client):
+    def test_get_logs_missing_session_id(self, client, mock_cfgservice):
         """Test logs endpoint without session_id"""
-        response = client.get("/logs")
+        response = client.get("/logs", headers=API_KEY_HEADERS)
 
         assert response.status_code == 400
         assert "error" in response.json
+
+
+class TestInternalApiKey:
+    """/logs and /admin/sessions/client_status require the backend API key."""
+
+    @pytest.mark.parametrize("path", ["/logs?session_id=s1", "/admin/sessions/client_status"])
+    def test_missing_key_rejected(self, client, mock_cfgservice, path):
+        response = client.get(path)
+
+        assert response.status_code == 401
+        assert response.json["error"] == "unauthorized"
+
+    @pytest.mark.parametrize("path", ["/logs?session_id=s1", "/admin/sessions/client_status"])
+    def test_wrong_key_rejected(self, client, mock_cfgservice, path):
+        response = client.get(path, headers={"X-Api-Key": "wrong"})
+
+        assert response.status_code == 401
+
+    @pytest.mark.parametrize("path", ["/logs?session_id=s1", "/admin/sessions/client_status"])
+    def test_unconfigured_key_fails_closed(self, client, path):
+        """Without backend_api_key in the configuration the endpoints are unavailable."""
+        response = client.get(path, headers={"X-Api-Key": "anything"})
+
+        assert response.status_code == 503
+
+    def test_client_status_with_valid_key(self, client, mock_cfgservice):
+        with patch("app.routes.oidc.session_manager") as manager:
+            manager.get_all_client_statuses.return_value = {"s1": {"exp": 1}}
+            response = client.get("/admin/sessions/client_status", headers=API_KEY_HEADERS)
+
+        assert response.status_code == 200
+        assert response.json == {"s1": {"exp": 1}}
 
 
 # Additional test cases to improve coverage
@@ -631,11 +759,11 @@ class TestLogs:
 class TestEncryptResponse:
     """Test encrypt_response function"""
 
-    @patch("app.route_oidc.JsonWebKey")
-    @patch("app.route_oidc.JsonWebEncryption")
+    @patch("app.routes.oidc.JsonWebKey")
+    @patch("app.routes.oidc.JsonWebEncryption")
     def test_encrypt_response_success(self, mock_jwe_class, mock_jwk, app):
         """Test successful response encryption"""
-        from app.route_oidc import encrypt_response
+        from app.routes.oidc import encrypt_response
 
         credential_request = {
             "credential_response_encryption": {
@@ -660,7 +788,7 @@ class TestEncryptResponse:
 
     def test_encrypt_response_missing_fields(self, app):
         """Test encryption with missing required fields"""
-        from app.route_oidc import encrypt_response
+        from app.routes.oidc import encrypt_response
 
         credential_request = {"credential_response_encryption": {}}
         credential_response = {"credential": "test"}
@@ -674,11 +802,21 @@ class TestEncryptResponse:
 class TestGenerateCredentials:
     """Test generate_credentials function"""
 
-    @patch("app.route_oidc.requests.post")
-    @patch("app.route_oidc.pKfromJWT")
+    @pytest.fixture(autouse=True)
+    def _credential_metadata(self):
+        """generate_credentials reads batch_size / validity from the issuer metadata"""
+        with patch.dict(
+            "app.services.credential_issuance.oidc_metadata",
+            {"credential_configurations_supported": {"test-cred": {}}},
+            clear=True,
+        ):
+            yield
+
+    @patch("app.services.credential_issuance.requests.post")
+    @patch("app.services.credential_issuance.pKfromJWT")
     def test_generate_credentials_jwt_proof(self, mock_pk, mock_post, mock_cfgservice):
         """Test credential generation with JWT proof"""
-        from app.route_oidc import generate_credentials
+        from app.routes.oidc import generate_credentials
 
         mock_pk.return_value = "test-public-key"
         mock_post.return_value.json.return_value = {"credential": "test"}
@@ -692,14 +830,14 @@ class TestGenerateCredentials:
 
         assert "credential" in result
 
-    @patch("app.route_oidc.requests.post")
-    @patch("app.route_oidc.pKfromJWT")
-    @patch("app.route_oidc.jwt.get_unverified_header", return_value={"kid": "test-kid"})
+    @patch("app.services.credential_issuance.requests.post")
+    @patch("app.services.credential_issuance.pKfromJWT")
+    @patch("app.services.credential_issuance.jwt.get_unverified_header", return_value={"kid": "test-kid"})
     def test_generate_credentials_batch_proofs(
         self, mock_get_header, mock_pk, mock_post, mock_session_manager, mock_cfgservice
     ):
         """Test batch credential generation"""
-        from app.route_oidc import generate_credentials
+        from app.routes.oidc import generate_credentials
 
         mock_pk.return_value = "test-public-key"
         mock_post.return_value.json.return_value = {"credentials": []}
@@ -713,14 +851,14 @@ class TestGenerateCredentials:
 
         mock_session_manager.update_is_batch_credential.assert_called_once()
 
-    @patch("app.route_oidc.decode_verify_attestation")
-    @patch("app.route_oidc.pKfromJWK")
-    @patch("app.route_oidc.requests.post")
+    @patch("app.services.credential_issuance.decode_verify_attestation")
+    @patch("app.services.credential_issuance.pKfromJWK")
+    @patch("app.services.credential_issuance.requests.post")
     def test_generate_credentials_attestation(
         self, mock_post, mock_pk_jwk, mock_decode, mock_cfgservice
     ):
         """Test credential generation with attestation proof"""
-        from app.route_oidc import generate_credentials
+        from app.routes.oidc import generate_credentials
 
         mock_decode.return_value = {
             "attested_keys": [{"kty": "EC", "crv": "P-256", "x": "test", "y": "test"}]
@@ -745,13 +883,13 @@ class TestDecryptJWE:
     """Test JWE decryption"""
 
     @patch("builtins.open")
-    @patch("app.route_oidc.jwk.JWK")
-    @patch("app.route_oidc.jwe.JWE")
+    @patch("app.services.credential_issuance.jwk.JWK")
+    @patch("app.services.credential_issuance.jwe.JWE")
     def test_decrypt_jwe_success(
         self, mock_jwe_class, mock_jwk_class, mock_open, mock_cfgservice
     ):
         """Test successful JWE decryption"""
-        from app.route_oidc import decrypt_jwe_credential_request
+        from app.routes.oidc import decrypt_jwe_credential_request
 
         # Mock file reading
         mock_file = Mock()
@@ -776,7 +914,7 @@ class TestDecryptJWE:
 
     def test_decrypt_jwe_invalid_format(self, mock_cfgservice):
         """Test JWE decryption with invalid format"""
-        from app.route_oidc import decrypt_jwe_credential_request
+        from app.routes.oidc import decrypt_jwe_credential_request
 
         with pytest.raises(ValueError, match="Invalid JWE format"):
             decrypt_jwe_credential_request("invalid.token")
@@ -798,11 +936,11 @@ class TestAuthChoiceFlow:
             }
         }
         with patch.dict(
-            "app.route_oidc.oidc_metadata",
+            "app.routes.oidc.oidc_metadata",
             mock_oidc_metadata,
             clear=True
         ), patch.dict(
-            "app.misc.oidc_metadata",
+            "app.services.attributes.oidc_metadata",
             mock_oidc_metadata,
             clear=True
         ):
@@ -824,7 +962,7 @@ class TestAuthChoiceFlow:
 class TestPidAuthorization:
     """Test PID authorization endpoint"""
 
-    @patch("requests.request")
+    @patch("app.services.oid4vp.requests.request")
     def test_pid_authorization_success(self, mock_request, client, mock_cfgservice):
         """Test successful PID authorization"""
         mock_response = Mock()
@@ -838,6 +976,9 @@ class TestPidAuthorization:
 
         assert response.status_code == 200
         assert "message" in response.json
+        # Fixed behaviour: "/" between dynamic_presentation_url and the id
+        url = mock_request.call_args.args[1]
+        assert "/test-presentation-123?nonce=" in url
 
     def test_pid_authorization_missing_id(self, client):
         """Test PID authorization without presentation_id"""
@@ -857,7 +998,7 @@ class TestOfferReference:
 
     def test_offer_reference_success(self, client):
         """Test retrieving credential offer by reference"""
-        from app.route_oidc import credential_offer_references
+        from app.routes.oidc import credential_offer_references
 
         reference_id = "test-ref-123"
         test_offer = {
@@ -879,17 +1020,18 @@ class TestOfferReference:
 class TestBranchCoverage:
     """Additional tests for branch coverage"""
 
-    @patch("app.route_oidc.verify_introspection")
+    @patch("app.routes.oidc.verify_introspection")
     def test_credential_with_dpop_header(
         self, mock_introspect, client, mock_cfgservice
     ):
         """Test credential endpoint with DPoP authorization"""
-        mock_introspect.return_value = "test-session"
+        mock_introspect.return_value = ("test-session", None)
 
-        with patch("app.route_oidc.session_manager") as mock_sm, patch(
-            "app.route_oidc.generate_credentials"
+        with patch("app.routes.oidc.session_manager") as mock_sm, patch(
+            "app.routes.oidc.generate_credentials"
         ) as mock_gen:
             mock_session = Mock()
+            mock_session.client_status = None
             mock_sm.get_session.return_value = mock_session
             mock_gen.return_value = {"credential": "test"}
 
@@ -906,7 +1048,7 @@ class TestBranchCoverage:
 
     def test_verify_credential_request_typo_identifier(self, app):
         """Test request with typo in identifier field"""
-        from app.route_oidc import verify_credential_request
+        from app.routes.oidc import verify_credential_request
 
         request = {
             "credential_indentifier": "test",  # typo
@@ -921,7 +1063,7 @@ class TestBranchCoverage:
 
     def test_verify_credential_request_invalid_proof_type(self, app):
         """Test request with invalid proof type"""
-        from app.route_oidc import verify_credential_request
+        from app.routes.oidc import verify_credential_request
 
         request = {
             "credential_configuration_id": "test",

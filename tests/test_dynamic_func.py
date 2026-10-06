@@ -19,18 +19,7 @@ import pytest
 from unittest.mock import MagicMock, patch, ANY
 import datetime
 import json
-from app.dynamic_func import (
-    dynamic_formatter,
-    formatter,
-    get_requested_credential,
-    update_dates_and_special_claims,
-    normalize_list_and_type_fields,
-    populate_pdata,
-)
-from app.dynamic_func import (
-    doctype2credential,  # Imported for mocking
-    doctype2credentialSDJWT,  # Imported for mocking
-)
+from app.services.dynamic_formatter import dynamic_formatter, formatter, get_requested_credential, update_dates_and_special_claims, normalize_list_and_type_fields, populate_pdata
 
 # --- Fixtures and Mocks ---
 
@@ -45,52 +34,49 @@ def mock_external_dependencies():
         # datetime is used to get 'today'
         "datetime.date": MagicMock(wraps=datetime.date),
         # Dependencies from misc
-        "app.dynamic_func.calculate_age": MagicMock(return_value=20),
-        "app.dynamic_func.doctype2credential": MagicMock(),
-        "app.dynamic_func.doctype2credentialSDJWT": MagicMock(),
-        "app.dynamic_func.getNamespaces": MagicMock(return_value=["ns1", "ns2"]),
-        "app.dynamic_func.getMandatoryAttributes": MagicMock(
+        "app.services.dynamic_formatter.calculate_age": MagicMock(return_value=20),
+        "app.services.dynamic_formatter.getNamespaces": MagicMock(return_value=["ns1", "ns2"]),
+        "app.services.dynamic_formatter.getMandatoryAttributes": MagicMock(
             side_effect=[[("mdoc_mand1_key", "mdoc_mand1_key")], [("mdoc_mand2_key", "mdoc_mand2_key")]]
         ),
-        "app.dynamic_func.getOptionalAttributes": MagicMock(
+        "app.services.dynamic_formatter.getOptionalAttributes": MagicMock(
             side_effect=[[("mdoc_opt1_key", "mdoc_opt1_value")], [("mdoc_opt2_key", "mdoc_opt2_value")]]
         ),
-        "app.dynamic_func.getIssuerFilledAttributes": MagicMock(
+        "app.services.dynamic_formatter.getIssuerFilledAttributes": MagicMock(
             side_effect=[[("mdoc_iss1_key", "mdoc_iss1_value"), ("issuance_date_key", "issuance_date_value")], [("mdoc_iss2_key", "mdoc_iss2_value")]]
         ),
-        "app.dynamic_func.getMandatoryAttributesSDJWT": MagicMock(
+        "app.services.dynamic_formatter.getMandatoryAttributesSDJWT": MagicMock(
             return_value=["sdjwt_mand1"]
         ),
-        "app.dynamic_func.getOptionalAttributesSDJWT": MagicMock(
+        "app.services.dynamic_formatter.getOptionalAttributesSDJWT": MagicMock(
             return_value=["sdjwt_opt1"]
         ),
-        "app.dynamic_func.getIssuerFilledAttributesSDJWT": MagicMock(
+        "app.services.dynamic_formatter.getIssuerFilledAttributesSDJWT": MagicMock(
             return_value=["sdjwt_iss1", "issue_date"]
         ),
         # Dependencies from app_config
-        "app.dynamic_func.CONFIGURATION": {},
+        "app.services.dynamic_formatter.CONFIGURATION": {},
         #"app.dynamic_func.cfgcountries": MagicMock(),
         # Dependency from redirect_func
-        "app.dynamic_func.json_post": MagicMock(),
         # Dependencies from app
-        "app.dynamic_func.session_manager": MagicMock(),
+        "app.services.dynamic_formatter.session_manager": MagicMock(),
         # Dependencies from formatter_func
-        "app.dynamic_func.mdocFormatter": MagicMock(),
-        "app.dynamic_func.sdjwtFormatter": MagicMock(),
+        "app.services.dynamic_formatter.mdocFormatter": MagicMock(),
+        "app.services.dynamic_formatter.sdjwtFormatter": MagicMock(),
     }
 
     # Specific setup for datetime mock
     mocks["datetime.date"].today.return_value = MOCK_TODAY
 
     # Specific setup for cfgcountries mock
-    mocks["app.dynamic_func.CONFIGURATION"]['countries'] = {
+    mocks["app.services.dynamic_formatter.CONFIGURATION"]['countries'] = {
         "PT": {"un_distinguishing_sign": "PRT"}
     }
 
     # Create a dummy session object
     current_session = MagicMock()
     current_session.country = "PT"
-    mocks["app.dynamic_func.session_manager"].get_session.return_value = current_session
+    mocks["app.services.dynamic_formatter.session_manager"].get_session.return_value = current_session
 
     # Patch and yield
     patchers = [patch(target, mock) for target, mock in mocks.items()]
@@ -122,7 +108,7 @@ class TestDynamicFormatter:
     ):
         """Tests the mso_mdoc format flow."""
         mock_credential = b"mock_mdoc_data"
-        mock_external_dependencies["app.dynamic_func.mdocFormatter"].return_value = (
+        mock_external_dependencies["app.services.dynamic_formatter.mdocFormatter"].return_value = (
             mock_credential
         )
 
@@ -134,7 +120,7 @@ class TestDynamicFormatter:
         }
 
         with patch(
-            "app.dynamic_func.formatter",
+            "app.services.dynamic_formatter.formatter",
             return_value=(mock_formatter_data, mock_formatter_cred),
         ) as mock_formatter:
             result = dynamic_formatter(
@@ -147,13 +133,13 @@ class TestDynamicFormatter:
 
             # Assertions
             mock_external_dependencies[
-                "app.dynamic_func.session_manager"
+                "app.services.dynamic_formatter.session_manager"
             ].get_session.assert_called_once_with(session_id=self.MOCK_SESSION_ID)
             mock_formatter.assert_called_once()
             assert mock_formatter.call_args[0][1] == expected_un_sign
 
             mock_external_dependencies[
-                "app.dynamic_func.mdocFormatter"
+                "app.services.dynamic_formatter.mdocFormatter"
             ].assert_called_once_with(
                 data=mock_formatter_data,
                 credential_metadata=mock_formatter_cred,
@@ -164,17 +150,15 @@ class TestDynamicFormatter:
             assert result == mock_credential
 
     def test_dc_sd_jwt_success(self, mock_external_dependencies):
-        """Tests the dc+sd-jwt format flow with successful json_post."""
+        """Tests the dc+sd-jwt format flow: sdjwtFormatter is called directly.
+
+        (Formerly asserted a json_post to /formatter/sd-jwt; dynamic_formatter
+        calls sdjwtFormatter in-process since before the refactor.)
+        """
         mock_sd_jwt = "mock.sd-jwt.data"
-        mock_external_dependencies["app.dynamic_func.CONFIGURATION"]['service_url'] = (
-            "http://formatter"
-        )
         mock_external_dependencies[
-            "app.dynamic_func.json_post"
-        ].return_value.json.return_value = {
-            "error_code": 0,
-            "sd-jwt": mock_sd_jwt,
-        }
+            "app.services.dynamic_formatter.sdjwtFormatter"
+        ].return_value = mock_sd_jwt
 
         # Mock formatter return (data, requested_credential)
         mock_formatter_data = {"sdjwt_attr": "value"}
@@ -185,7 +169,7 @@ class TestDynamicFormatter:
         mock_scope = "eu.europa.ec.eudi.pid.1"
 
         with patch(
-            "app.dynamic_func.formatter",
+            "app.services.dynamic_formatter.formatter",
             return_value=(mock_formatter_data, mock_formatter_cred),
         ) as mock_formatter:
             result = dynamic_formatter(
@@ -199,31 +183,27 @@ class TestDynamicFormatter:
             # Assertions
             mock_formatter.assert_called_once()
             mock_external_dependencies[
-                "app.dynamic_func.json_post"
+                "app.services.dynamic_formatter.sdjwtFormatter"
             ].assert_called_once_with(
-                "http://formatter/formatter/sd-jwt",
-                {
-                    "country": "PT",
+                PID={
                     "credential_metadata": mock_formatter_cred,
-                    "scope": mock_scope,
-                    "device_publickey": self.MOCK_DEVICE_KEY,
                     "data": mock_formatter_data,
+                    "device_publickey": self.MOCK_DEVICE_KEY,
                 },
+                country="PT",
+                scope=mock_scope,
+                session_id=self.MOCK_SESSION_ID,
             )
+            mock_external_dependencies[
+                "app.services.dynamic_formatter.mdocFormatter"
+            ].assert_not_called()
             assert result == mock_sd_jwt
 
     def test_dc_sd_jwt_error(self, mock_external_dependencies):
-        """Tests the dc+sd-jwt format flow when json_post returns an error."""
+        """Tests the dc+sd-jwt format flow when the SD-JWT formatter fails."""
         mock_external_dependencies[
-            "app.dynamic_func.json_post"
-        ].return_value.json.return_value = {
-            "error_code": 1,
-            "error_message": "Post failed",
-        }
-        
-        mock_external_dependencies[
-            "app.dynamic_func.CONFIGURATION"
-        ]["service_url"] = "http://formatter"
+            "app.services.dynamic_formatter.sdjwtFormatter"
+        ].side_effect = RuntimeError("Post failed")
 
         # Mock formatter return
         mock_formatter_data = {"sdjwt_attr": "value"}
@@ -233,19 +213,32 @@ class TestDynamicFormatter:
         }
 
         with patch(
-            "app.dynamic_func.formatter",
+            "app.services.dynamic_formatter.formatter",
             return_value=(mock_formatter_data, mock_formatter_cred),
         ):
-            result = dynamic_formatter(
-                format="dc+sd-jwt",
-                scope="eu.europa.ec.eudi.pid.1",
-                form_data=self.MOCK_FORM_DATA,
-                device_publickey=self.MOCK_DEVICE_KEY,
-                session_id=self.MOCK_SESSION_ID,
-            )
+            with pytest.raises(RuntimeError, match="Post failed"):
+                dynamic_formatter(
+                    format="dc+sd-jwt",
+                    scope="eu.europa.ec.eudi.pid.1",
+                    form_data=self.MOCK_FORM_DATA,
+                    device_publickey=self.MOCK_DEVICE_KEY,
+                    session_id=self.MOCK_SESSION_ID,
+                )
 
-            # Assertions
-            assert result == "Error"
+    def test_unknown_format_raises(self, mock_external_dependencies):
+        """Unknown formats raise ValueError (bug fix: used to be UnboundLocalError)."""
+        with patch(
+            "app.services.dynamic_formatter.formatter",
+            return_value=({}, {"issuer_config": {"validity": 365}}),
+        ):
+            with pytest.raises(ValueError, match="Unsupported credential format"):
+                dynamic_formatter(
+                    format="jwt_vc_json",
+                    scope="eu.europa.ec.eudi.pid.1",
+                    form_data=self.MOCK_FORM_DATA,
+                    device_publickey=self.MOCK_DEVICE_KEY,
+                    session_id=self.MOCK_SESSION_ID,
+                )
 
 
 # --- Test `formatter` ---
@@ -270,10 +263,10 @@ class TestFormatter:
             ("dc+sd-jwt", MOCK_SDJWT_CRED, 0, ""),
         ],
     )
-    @patch("app.dynamic_func.get_requested_credential")
-    @patch("app.dynamic_func.update_dates_and_special_claims")
-    @patch("app.dynamic_func.normalize_list_and_type_fields")
-    @patch("app.dynamic_func.populate_pdata")
+    @patch("app.services.dynamic_formatter.get_requested_credential")
+    @patch("app.services.dynamic_formatter.update_dates_and_special_claims")
+    @patch("app.services.dynamic_formatter.normalize_list_and_type_fields")
+    @patch("app.services.dynamic_formatter.populate_pdata")
     def test_formatter_flow(
         self,
         mock_populate_pdata,
@@ -301,17 +294,17 @@ class TestFormatter:
         # Mdoc specific check (namespace calls)
         if format == "mso_mdoc":
             mock_external_dependencies[
-                "app.dynamic_func.getNamespaces"
+                "app.services.dynamic_formatter.getNamespaces"
             ].assert_called_once()
             assert (
                 mock_external_dependencies[
-                    "app.dynamic_func.getMandatoryAttributes"
+                    "app.services.dynamic_formatter.getMandatoryAttributes"
                 ].call_count
                 == num_namespaces
             )
         else:  # SD-JWT specific check
             mock_external_dependencies[
-                "app.dynamic_func.getMandatoryAttributesSDJWT"
+                "app.services.dynamic_formatter.getMandatoryAttributesSDJWT"
             ].assert_called_once()
 
         assert cred_out == mock_cred
@@ -327,7 +320,7 @@ class TestGetRequestedCredential:
     MOCK_DATA = {"issuing_country": "PT"}
 
     @patch(
-        "app.dynamic_func.oidc_metadata",
+        "app.services.dynamic_formatter.oidc_metadata",
         {
             "credential_configurations_supported": {
                 "mdl": {
@@ -349,7 +342,7 @@ class TestGetRequestedCredential:
         assert pdata == {}
 
     @patch(
-        "app.dynamic_func.oidc_metadata",
+        "app.services.dynamic_formatter.oidc_metadata",
         {
             "credential_configurations_supported": {
                 "pid": {
@@ -402,7 +395,7 @@ class TestUpdateDatesAndSpecialClaims:
         """Tests all update logic branches."""
 
         # Setup input data with a birth date that makes age > 18
-        mock_external_dependencies["app.dynamic_func.calculate_age"].return_value = 25
+        mock_external_dependencies["app.services.dynamic_formatter.calculate_age"].return_value = 25
         data = {"birth_date": "2000-01-01"}
 
         # Setup all possible issuer claims
@@ -446,7 +439,7 @@ class TestUpdateDatesAndSpecialClaims:
 
     def test_age_under_18(self, mock_external_dependencies):
         """Tests age_over_18 when the calculated age is under 18."""
-        mock_external_dependencies["app.dynamic_func.calculate_age"].return_value = 17
+        mock_external_dependencies["app.services.dynamic_formatter.calculate_age"].return_value = 17
         data = {"birth_date": "2010-01-01"}
         issuer_claims = {"age_over_18"}
 

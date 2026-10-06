@@ -9,6 +9,11 @@ service_url: "https://backend.issuer.eudiw.dev"
 
 wallet_tester_url: "https://tester.issuer.eudiw.dev"
 
+# API key other EUDIW services send in the X-Api-Key header to call the
+# internal endpoints /logs and /admin/sessions/client_status.
+# Those endpoints answer 503 while it is not set.
+backend_api_key: "change-me"  # SECRET
+
 revocation:
   take_url: "https://issuer.eudiw.dev/token_status_list/take"
   set_url: https://issuer.eudiw.dev/token_status_list/set
@@ -24,9 +29,14 @@ frontend:
   frontends_config:
     "5d725b3c-6d42-448e-8bfd-1eff1fcf152d":
       url: "https://issuer.eudiw.dev"
-      metadata_signing_key_path: "/home/pid.issuer/pidprovider/dev/eudi-srv-web-issuing-eudiw-py/app/private/PID-DS-03.key"
-      metadata_access_certificate_path: "/home/pid.issuer/pidprovider/dev/eudi-srv-web-issuing-eudiw-py/app/private/PID-DS-03.crt"
+      metadata_signing_key_path: "/etc/eudiw/pid-issuer-dev/privKey/PID-DS-03.key"
+      metadata_access_certificate_path: "/etc/eudiw/pid-issuer-dev/cert/PID-DS-03.crt"
       metadata_signing_key_password: null
+      # Optional: restrict the credentials this frontend advertises ("*" = all).
+      # credentials_supported: ["eu.europa.ec.eudi.pid_mdoc", "eu.europa.ec.eudi.pid_vc_sd_jwt"]
+      # Optional: public authorization server URL used in this frontend's
+      # openid-configuration (defaults to authorization_server.base_url).
+      # oauth_url: "https://issuer.eudiw.dev/oidc"
 
 # ============================================================================
 # ISSUER AUTHORIZATION SERVER CONFIGURATION
@@ -46,13 +56,27 @@ intended_use_id:
 registration_certificate_jwt:
 
 # WUA trust validator url, available at https://github.com/eu-digital-identity-wallet/eudi-srv-trust-validator
+# When enabled, x5c chains are checked by the trust validator first; if it
+# rejects them (or is unreachable / disabled) they are checked against the
+# CA certificates in trusted_CAs_path.
 trust_validator:
   url: "https://trust-validator.eudiw.dev/trust"
   enabled: true
+  # Optional verificationContext overrides (see the trust validator OpenAPI
+  # VerificationContext enum). "useCase" is only needed for "Custom".
+  # contexts:
+  #   key_attestation: "WalletProviderAttestation"
+  #   credential_offer_request: "WalletRelyingPartyAccessCertificate"
+  # use_cases:
+  #   key_attestation: "my-use-case"
 
 status_validator:
   url: "https://status-validator.issuer.eudiw.dev/status"
   enabled: true
+  # Context the status validator passes to the trust validator for the WIA /
+  # key attestation status list signer. Credential requests whose WIA / KA
+  # status cannot be verified are rejected.
+  # validation_context: "WalletOrKeyStorageStatus"
 
 # ============================================================================
 # SCHEMA CONFIGURATION
