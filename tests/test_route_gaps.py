@@ -105,9 +105,11 @@ class TestVerifyCredentialRequest:
         ],
     )
     def test_invalid(self, app, request_body, error):
-        with app.app_context():
-            body, status = oidc_routes.verify_credential_request(request_body)
-        assert status == 400 and body.get_json() == {"error": error}
+        from app.core.errors import OAuthEndpointError
+
+        with app.app_context(), pytest.raises(OAuthEndpointError) as raised:
+            oidc_routes.verify_credential_request(request_body)
+        assert (raised.value.error, raised.value.status) == (error, 400)
 
     @pytest.mark.parametrize(
         "request_body",
@@ -165,7 +167,9 @@ class TestDeferredAndNotification:
             oidc_routes.session_manager, "get_session", return_value=session
         ):
             response = client.post("/deferred_credential", json={"transaction_id": tx}, headers={"Authorization": "Bearer t"})
-        assert response.status_code == 400 and tx in response.get_json()["error"]
+        body = response.get_json()
+        assert response.status_code == 400 and body["error"] == "invalid_transaction_id"
+        assert tx not in str(body)  # request input is not reflected
 
     def test_deferred_invalid_stored_request(self, client, config):
         tx = str(uuid.uuid4())

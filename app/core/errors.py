@@ -42,6 +42,41 @@ class CertificateVerificationError(Exception):
     """Raised when certificate verification fails."""
 
 
+class OAuthEndpointError(Exception):
+    """An OAuth / OpenID4VCI error to return to the client as JSON.
+
+    Raised by request parsing and validation helpers; blueprints render it
+    with :func:`oauth_error_response`. Messages are fixed strings, never
+    request input.
+
+    Args:
+        error: OAuth error code (e.g. ``invalid_credential_request``).
+        status: HTTP status code.
+        description: Optional fixed ``error_description``.
+    """
+
+    def __init__(self, error: str, status: int = 400, description: Optional[str] = None) -> None:
+        super().__init__(error)
+        self.error = error
+        self.status = status
+        self.description = description
+
+
+def oauth_error_response(e: OAuthEndpointError) -> Tuple[Response, int]:
+    """Renders an :class:`OAuthEndpointError` as a JSON response.
+
+    Args:
+        e: The error.
+
+    Returns:
+        ``(json_response, status)``.
+    """
+    body = {"error": e.error}
+    if e.description:
+        body["error_description"] = e.description
+    return jsonify(body), e.status
+
+
 def credential_error_resp(error: str, desc: str) -> Tuple[Response, int]:
     """Builds an OpenID4VCI credential endpoint error response.
 

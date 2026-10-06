@@ -9,7 +9,6 @@ CBOR / COSE / JOSE / cryptography libraries.
 import base64
 import copy
 import datetime
-import json
 from unittest.mock import patch
 
 import cbor2
@@ -19,10 +18,12 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 
 from app.services.formatters import cbor2elems, mdocFormatter, sdjwtFormatter
+from app.services.revocation_status import is_issuer_certificate
 from app.services.trust import verify_and_decode_sdjwt
 from app.services.vp_validation import validate_certificate
 from config_helpers import patch_configuration
 from pki_helpers import ca_entry, make_cert
+from proof_helpers import proof_config, proof_jwt
 
 DOCTYPE = "eu.europa.ec.eudi.pid.1"
 VCT = "urn:eudi:pid:1"
@@ -123,7 +124,8 @@ def test_sdjwt_issued_and_verified(issuer_config, device_key):
     assert len(disclosures) >= 3
     assert jwt.get_unverified_header(issuer_jwt)["typ"] == "dc+sd-jwt"
 
-    payload = verify_and_decode_sdjwt(issuance)
+    # Our own SD-JWT passes the "issued by this issuer" check used by revocation.
+    payload = verify_and_decode_sdjwt(issuance, is_issuer_certificate)
     assert payload["vct"] == VCT
     assert payload["iss"] == "https://backend.test"
     assert payload["exp"] > datetime.datetime.now().timestamp()
@@ -160,9 +162,8 @@ def test_generate_credentials_end_to_end(issuer_config, country_pki, real_creden
     from app.core.state import session_manager
     from app.services.credential_issuance import generate_credentials
 
-    holder_key = ec.generate_private_key(ec.SECP256R1())
-    holder_jwk = json.loads(jwt.algorithms.ECAlgorithm.to_jwk(holder_key.public_key()))
-    proof_jwt = jwt.encode({"nonce": "n"}, holder_key, algorithm="ES256", headers={"jwk": holder_jwk})
+    issuer_config.update(proof_config())
+    proof, _ = proof_jwt()
 
     session_id = "e2e-session"
     session_manager.add_session(
@@ -180,7 +181,7 @@ def test_generate_credentials_end_to_end(issuer_config, country_pki, real_creden
 
     try:
         result = generate_credentials(
-            {"credential_configuration_id": "eu.europa.ec.eudi.pid_mdoc", "proof": {"proof_type": "jwt", "jwt": proof_jwt}},
+            {"credential_configuration_id": "eu.europa.ec.eudi.pid_mdoc", "proof": {"proof_type": "jwt", "jwt": proof}},
             session_id,
         )
     finally:

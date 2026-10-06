@@ -36,12 +36,14 @@ from unittest.mock import Mock, patch, MagicMock
 from datetime import datetime, timedelta
 from io import BytesIO
 
+import jwt
 from flask import Flask, session
 from jwcrypto import jwk, jwe
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives import serialization
 
 from config_helpers import patch_configuration
+from proof_helpers import nonce_key_pem, p256_jwk, proof_jwt
 
 
 API_KEY_HEADERS = {"X-Api-Key": "test-api-key"}
@@ -406,11 +408,12 @@ class TestVerifyCredentialRequest:
 
         request = {"proof": {"proof_type": "jwt", "jwt": "test-jwt"}}
 
-        with app.app_context():
-            result = verify_credential_request(request)
+        from app.core.errors import OAuthEndpointError
 
-        assert isinstance(result, tuple)
-        assert result[1] == 400
+        with app.app_context(), pytest.raises(OAuthEndpointError) as raised:
+            verify_credential_request(request)
+
+        assert (raised.value.error, raised.value.status) == ("invalid_credential_request", 400)
 
     def test_verify_credential_request_missing_proof(self, app):
         """Test request missing proof"""
@@ -418,11 +421,12 @@ class TestVerifyCredentialRequest:
 
         request = {"credential_configuration_id": "test-cred"}
 
-        with app.app_context():
-            result = verify_credential_request(request)
+        from app.core.errors import OAuthEndpointError
 
-        assert isinstance(result, tuple)
-        assert result[1] == 400
+        with app.app_context(), pytest.raises(OAuthEndpointError) as raised:
+            verify_credential_request(request)
+
+        assert (raised.value.error, raised.value.status) == ("invalid_proof", 400)
 
 
 class TestDeferredCredential:
@@ -829,7 +833,7 @@ class TestEncryptResponse:
 
 @pytest.mark.usefixtures("mock_session_manager")
 class TestGenerateCredentials:
-    """Test generate_credentials function"""
+    """Test generate_credentials function (real proofs, verified end to end)"""
 
     @pytest.fixture(autouse=True)
     def _credential_metadata(self):
@@ -841,87 +845,88 @@ class TestGenerateCredentials:
         ):
             yield
 
+    @pytest.fixture(autouse=True)
+    def _nonce_key(self, mock_cfgservice):
+        """Proofs carry a real c_nonce, encrypted to the configured nonce_key"""
+        mock_cfgservice["keys"]["nonce_key"] = nonce_key_pem()
+
+    def _proof(self):
+        return proof_jwt(aud="https://frontend.example.com")
+
     @patch("app.services.credential_issuance.issue_credentials_for_session")
-    @patch("app.services.credential_issuance.pKfromJWT")
-    def test_generate_credentials_jwt_proof(self, mock_pk, mock_issue, mock_cfgservice):
+    def test_generate_credentials_jwt_proof(self, mock_issue, mock_cfgservice):
         """A single JWT proof is passed to credential creation directly (no HTTP self-call)"""
         from app.routes.oidc import generate_credentials
+        from app.services.credential_issuance import pKfromJWK
 
-        mock_pk.return_value = "test-public-key"
+        token, key = self._proof()
         mock_issue.return_value = {"credentials": [{"credential": "test"}]}
 
-        credential_request = {
-            "credential_configuration_id": "test-cred",
-            "proof": {"proof_type": "jwt", "jwt": "test-jwt-token"},
-        }
-
-        result = generate_credentials(credential_request, "test-session-id")
-
-        assert result == {"credentials": [{"credential": "test"}]}
-        mock_issue.assert_called_once_with(
+        result = generate_credentials(
+            {"credential_configuration_id": "test-cred", "proof": {"proof_type": "jwt", "jwt": token}},
             "test-session-id",
-            {"credential_configuration_id": "test-cred", "proofs": [{"jwt": "test-public-key"}]},
         )
 
-    @patch("app.services.credential_issuance.issue_credentials_for_session")
-    @patch("app.services.credential_issuance.pKfromJWT")
-    @patch("app.services.credential_issuance.jwt.get_unverified_header", return_value={"kid": "test-kid"})
-    def test_generate_credentials_batch_proofs(
-        self, mock_get_header, mock_pk, mock_issue, mock_session_manager, mock_cfgservice
-    ):
+        assert result == {"credentials": [{"credential": "test"}]}
+        holder_key = pKfromJWK(json.loads(jwt.algorithms.ECAlgorithm.to_jwk(key.public_key())))
+        mock_issue.assert_called_once_with(
+            "test-session-id",
+            {"credential_configuration_id": "test-cred", "proofs": [{"jwt": holder_key}]},
+        )
+
+    @patch("app.services.credential_issuance.issue_credentials_for_session", return_value={"credentials": []})
+    def test_generate_credentials_batch_proofs(self, mock_issue, mock_session_manager, mock_cfgservice):
         """Test batch credential generation"""
         from app.routes.oidc import generate_credentials
 
-        mock_pk.return_value = "test-public-key"
-        mock_issue.return_value = {"credentials": []}
-
-        credential_request = {
-            "credential_configuration_id": "test-cred",
-            "proofs": {"jwt": ["jwt1", "jwt2", "jwt3"]},
-        }
-
-        generate_credentials(credential_request, "test-session-id")
+        proofs = [self._proof()[0] for _ in range(3)]
+        generate_credentials({"credential_configuration_id": "test-cred", "proofs": {"jwt": proofs}}, "test-session-id")
 
         mock_session_manager.update_is_batch_credential.assert_called_once()
-        formatter_request = mock_issue.call_args[0][1]
-        assert formatter_request["proofs"] == [{"jwt": "test-public-key"}] * 3
+        assert len(mock_issue.call_args[0][1]["proofs"]) == 3
 
-    @patch("app.services.credential_issuance.decode_verify_attestation")
-    @patch("app.services.credential_issuance.pKfromJWK")
     @patch("app.services.credential_issuance.issue_credentials_for_session")
-    def test_generate_credentials_attestation(
-        self, mock_issue, mock_pk_jwk, mock_decode, mock_cfgservice
-    ):
-        """Test credential generation with attestation proof"""
+    def test_generate_credentials_unverified_proof(self, mock_issue, mock_cfgservice):
+        """An unsigned / foreign proof is rejected before anything is issued"""
         from app.routes.oidc import generate_credentials
 
-        mock_decode.return_value = {
-            "attested_keys": [{"kty": "EC", "crv": "P-256", "x": "test", "y": "test"}]
-        }
-        mock_pk_jwk.return_value = "test-public-key"
+        result = generate_credentials(
+            {"credential_configuration_id": "test-cred", "proof": {"proof_type": "jwt", "jwt": "test-jwt-token"}},
+            "test-session-id",
+        )
+
+        assert result["error"] == "invalid_proof"
+        mock_issue.assert_not_called()
+
+    @patch("app.services.credential_issuance.decode_verify_attestation")
+    @patch("app.services.credential_issuance.issue_credentials_for_session")
+    def test_generate_credentials_attestation(self, mock_issue, mock_decode, mock_cfgservice):
+        """Test credential generation with attestation proof"""
+        from app.routes.oidc import generate_credentials
+        from app.services.credential_issuance import create_c_nonce, pKfromJWK
+
+        _, attested_jwk = p256_jwk()
+        mock_decode.return_value = {"attested_keys": [attested_jwk], "nonce": create_c_nonce()}
         mock_issue.return_value = {"credentials": [{"credential": "test"}]}
 
-        credential_request = {
-            "credential_configuration_id": "test-cred",
-            "proof": {
-                "proof_type": "attestation",
-                "attestation": "test-attestation-jwt",
+        result = generate_credentials(
+            {
+                "credential_configuration_id": "test-cred",
+                "proof": {"proof_type": "attestation", "attestation": "test-attestation-jwt"},
             },
-        }
-
-        result = generate_credentials(credential_request, "test-session-id")
+            "test-session-id",
+        )
 
         assert result == {"credentials": [{"credential": "test"}]}
-        assert mock_issue.call_args[0][1]["proofs"] == [{"attestation": "test-public-key"}]
+        assert mock_issue.call_args[0][1]["proofs"] == [{"attestation": pKfromJWK(attested_jwk)}]
 
     @patch("app.services.credential_issuance.issue_credentials_for_session", side_effect=RuntimeError("signing failed"))
-    @patch("app.services.credential_issuance.pKfromJWT", return_value="test-public-key")
-    def test_generate_credentials_signing_failure(self, mock_pk, mock_issue, mock_cfgservice):
+    def test_generate_credentials_signing_failure(self, mock_issue, mock_cfgservice):
         """An exception during credential creation becomes credential_request_denied"""
         from app.routes.oidc import generate_credentials
 
         result = generate_credentials(
-            {"credential_configuration_id": "test-cred", "proof": {"proof_type": "jwt", "jwt": "t"}},
+            {"credential_configuration_id": "test-cred", "proof": {"proof_type": "jwt", "jwt": self._proof()[0]}},
             "test-session-id",
         )
 
@@ -1107,11 +1112,12 @@ class TestBranchCoverage:
             "proof": {"proof_type": "jwt", "jwt": "test"},
         }
 
-        with app.app_context():
-            result = verify_credential_request(request)
+        from app.core.errors import OAuthEndpointError
 
-        assert isinstance(result, tuple)
-        assert result[1] == 400
+        with app.app_context(), pytest.raises(OAuthEndpointError) as raised:
+            verify_credential_request(request)
+
+        assert (raised.value.error, raised.value.status) == ("invalid_credential_request", 400)
 
     def test_verify_credential_request_invalid_proof_type(self, app):
         """Test request with invalid proof type"""
@@ -1125,11 +1131,12 @@ class TestBranchCoverage:
             },
         }
 
-        with app.app_context():
-            result = verify_credential_request(request)
+        from app.core.errors import OAuthEndpointError
 
-        assert isinstance(result, tuple)
-        assert result[1] == 400
+        with app.app_context(), pytest.raises(OAuthEndpointError) as raised:
+            verify_credential_request(request)
+
+        assert (raised.value.error, raised.value.status) == ("invalid_proof", 400)
 
 
 class TestErrorHandling:

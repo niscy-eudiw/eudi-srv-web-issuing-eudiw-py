@@ -15,8 +15,8 @@ PAST = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(minutes
 
 @pytest.fixture(autouse=True)
 def _info_logs(caplog):
-    """The session store logs its warnings at INFO level."""
-    caplog.set_level(logging.INFO, logger="app.repositories.session_store")
+    """Capture the session store's DEBUG / WARNING messages."""
+    caplog.set_level(logging.DEBUG, logger="app.repositories.session_store")
 
 
 @pytest.fixture

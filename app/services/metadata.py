@@ -170,7 +170,7 @@ def _build_credential_encryption_metadata(key_bytes: bytes) -> Dict[str, Any]:
     ).encode()
     kid = urlsafe_b64encode_nopad(hashlib.sha256(thumbprint_json).digest())
 
-    logger.info("credential_request_encryption metadata built successfully (kid=%s, crv=P-256)", kid)
+    logger.debug("credential_request_encryption metadata built (kid=%s, crv=P-256)", kid)
     return {
         "jwks": {
             "keys": [
@@ -231,16 +231,17 @@ def setup_metadata(metadata_dir: Path | str = METADATA_DIR) -> None:
         logger.exception(f"Metadata Error: An unexpected error occurred. \n{e}")
         raise
 
-    logger.info("Setting up credential_request_encryption")
+    logger.debug("Setting up credential_request_encryption")
     try:
         credential_request_encryption = _build_credential_encryption_metadata(
             CONFIGURATION["keys"]["credential_encryption_key"]
         )
-        logger.info("credential_request_encryption: %s", json.dumps(credential_request_encryption, indent=2))
+        logger.debug("credential_request_encryption: %s", json.dumps(credential_request_encryption))
     except Exception as e:
         logger.exception("Failed to build credential_request_encryption metadata: %s", e)
         raise
 
+    logger.info(f"Loaded {len(credentials_supported)} credential configurations from {credentials_dir}")
     state.replace_contents(state.oidc_metadata, {"credential_configurations_supported": credentials_supported})
     state.replace_contents(
         state.oidc_metadata_clean,
@@ -302,6 +303,7 @@ def setup_trusted_cas(trusted_cas_path: Optional[str] = None) -> None:
         logger.exception(f"TrustedCA Error: An unexpected error occurred.\n {e}")
         raise
 
+    logger.info(f"Loaded {len(ec_keys)} trusted CA certificate(s) from {directory}")
     state.replace_contents(state.trusted_CAs, ec_keys)
 
 

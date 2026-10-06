@@ -12,6 +12,19 @@ wallet_tester_url: "https://tester.issuer.eudiw.dev"
 # Browser origins allowed to call the backend cross-origin (with cookies), in
 # addition to the URLs of the configured frontends.
 # cors_allowed_origins: ["https://tester.issuer.eudiw.dev"]
+# Browser form POSTs (CSRF check) are accepted from these origins, the
+# frontends and service_url; other Origin / Referer values get 403.
+
+# SameSite attribute of the session cookie. "None" (default) is needed when
+# frontends live on another site than the backend; use "Lax" when they share
+# the same site.
+# session_cookie_samesite: "None"
+
+# Proof of possession checks at /credential. Proofs must be signed, address
+# the frontend URL (aud) and carry a c_nonce from /nonce. Only disable the
+# nonce requirement for wallets that cannot fetch one.
+# proof_validation:
+#   require_nonce: true
 
 # API key other EUDIW services send in the X-Api-Key header to call the
 # internal endpoints /logs and /admin/sessions/client_status.

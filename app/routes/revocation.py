@@ -29,9 +29,13 @@ import uuid
 from datetime import datetime, timedelta
 from typing import Any, Dict, List
 
+import jwt
 from flask import Blueprint, abort, jsonify, request, session
 
 from app.core.config import CONFIGURATION
+from app.core.errors import CertificateVerificationError
+from app.core.log_utils import safe
+from app.core.security import require_frontend_origin
 from app.core.state import oidc_metadata
 from app.repositories.offer_store import revocation_requests
 from app.services.attributes import credential_display_names
@@ -95,6 +99,7 @@ def revocation_choice() -> str:
 
 
 @revocation.route("oid4vp_call", methods=["GET", "POST"])
+@require_frontend_origin
 def oid4vp_call() -> str:
     """Requests a presentation of the selected credentials.
 
@@ -151,6 +156,7 @@ def _statuses_by_format(vp_token: Dict[str, List[str]]) -> Dict[str, List[Dict[s
 
 
 @revocation.route("getoid4vp", methods=["GET", "POST"])
+@require_frontend_origin
 def oid4vp_get() -> Any:
     """Receives the presentation and asks the user to confirm revocation.
 
@@ -169,7 +175,11 @@ def oid4vp_get() -> Any:
     if response.status_code != 200:
         return jsonify({"error": str(response.status_code)}), 400
 
-    statuses = _statuses_by_format(response.json()["vp_token"])
+    try:
+        statuses = _statuses_by_format(response.json()["vp_token"])
+    except (CertificateVerificationError, ValueError, KeyError, jwt.InvalidTokenError) as e:
+        logger.warning(f", Session ID: {session_id}, Revocation presentation rejected: {safe(e)}")
+        return jsonify({"error": "invalid_presentation", "error_description": "Credential not issued by this issuer"}), 400
     display_list = {
         fmt: [d for d in (describe_status_list(s) for s in fmt_statuses) if d]
         for fmt, fmt_statuses in statuses.items()
@@ -193,6 +203,7 @@ def oid4vp_get() -> Any:
 
 
 @revocation.route("revoke", methods=["GET", "POST"])
+@require_frontend_origin
 def revoke() -> str:
     """Revokes every status list entry of a confirmed revocation request.
 
@@ -209,16 +220,18 @@ def revoke() -> str:
     if revocation_identifier not in revocation_requests:
         abort(404, description="Invalid or expired revocation identifier")
 
+    revoked = 0
     for statuses in revocation_requests[revocation_identifier]["status_lists"].values():
         for status in statuses:
             if "identifier_list" in status:
                 identifier = status["identifier_list"]
-                set_token_status("id", identifier["id"].decode("utf-8"), identifier["uri"], respect_enabled_flag=False)
+                revoked += set_token_status("id", identifier["id"].decode("utf-8"), identifier["uri"], respect_enabled_flag=False)
             if "status_list" in status:
                 pointer = status["status_list"]
-                set_token_status("idx", pointer["idx"], pointer["uri"], respect_enabled_flag=False)
+                revoked += set_token_status("idx", pointer["idx"], pointer["uri"], respect_enabled_flag=False)
 
     revocation_requests.pop(revocation_identifier)
+    logger.info(f"Revocation request {revocation_identifier} processed: {revoked} status entr(y/ies) revoked")
 
     return post_redirect_with_payload(
         target_url=f"{frontend_url()}/display_revocation_success",

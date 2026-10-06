@@ -37,6 +37,7 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from jwcrypto import jwe, jwk
 
 from app.core.config import CONFIGURATION
+from app.core.log_utils import safe
 from app.core.state import oidc_metadata, session_manager
 from app.services.auth_server import StatusCheckError, check_status_list_revocation
 from app.services.dynamic_formatter import issue_credentials_for_session
@@ -47,6 +48,18 @@ logger = logging.getLogger(__name__)
 
 DEFERRED_ONLY_CONFIGURATION = "eu.europa.ec.eudi.pid_mdoc_deferred"
 NONCE_LIFETIME_SECONDS = 3600
+
+
+#: OpenID4VCI JWT proof type header and accepted algorithms (holder keys are P-256).
+PROOF_JWT_TYP = "openid4vci-proof+jwt"
+PROOF_ALGORITHMS = ("ES256",)
+#: Accepted clock skew for ``iat`` and maximum proof age.
+PROOF_IAT_LEEWAY_SECONDS = 60
+PROOF_MAX_AGE_SECONDS = 3600
+
+
+class InvalidProofError(Exception):
+    """Raised when a proof (JWT or key attestation) is not acceptable."""
 
 
 class CredentialValidityError(Exception):
@@ -95,20 +108,169 @@ def pKfromJWK(jwk_dict: Dict[str, Any]) -> Any:
     return base64.urlsafe_b64encode(public_key_pem).decode("utf-8")
 
 
-def pKfromJWT(jwt_encoded: str) -> Any:
-    """Returns the device key from the ``jwk`` header of a proof JWT.
+def _proof_audiences(session_id: str) -> List[str]:
+    """Returns the credential issuer identifiers a proof may be addressed to.
 
     Args:
-        jwt_encoded: Proof of possession JWT.
+        session_id: Issuance session.
 
     Returns:
-        See :func:`pKfromJWK`.
+        The URL of the session's frontend when known, otherwise the URLs of
+        all configured frontends (each with and without a trailing slash).
+    """
+    frontends = (CONFIGURATION.get("frontend") or {}).get("frontends_config") or {}
+    current = session_manager.get_session(session_id=session_id)
+    frontend_id = getattr(current, "frontend_id", None) if current else None
+    if frontend_id in frontends:
+        urls = [frontends[frontend_id]["url"]]
+    else:
+        urls = [cfg["url"] for cfg in frontends.values() if cfg.get("url")]
+    return [variant for url in urls for variant in (url.rstrip("/"), url.rstrip("/") + "/")]
+
+
+def _nonce_required() -> bool:
+    """Tells whether proofs must carry a valid ``c_nonce``.
+
+    Returns:
+        ``proof_validation.require_nonce`` from the configuration (default ``True``).
+    """
+    return bool((CONFIGURATION.get("proof_validation") or {}).get("require_nonce", True))
+
+
+def verify_c_nonce(c_nonce: Any) -> Dict[str, Any]:
+    """Checks that a ``c_nonce`` was issued by :func:`create_c_nonce` and is still valid.
+
+    The nonce is a JWE only this issuer can decrypt, so no server-side
+    nonce store is needed.
+
+    Args:
+        c_nonce: Nonce from a proof.
+
+    Returns:
+        The nonce claims.
 
     Raises:
-        KeyError: If the header has no ``jwk``.
-        jwt.DecodeError: If the JWT is malformed.
+        InvalidProofError: If the nonce is missing, cannot be decrypted, was
+            not issued for this credential endpoint or has expired.
     """
-    return pKfromJWK(jwt.get_unverified_header(jwt_encoded)["jwk"])
+    if not isinstance(c_nonce, str) or not c_nonce:
+        raise InvalidProofError("Proof has no c_nonce")
+    try:
+        token = jwe.JWE()
+        token.deserialize(c_nonce, key=jwk.JWK.from_pem(CONFIGURATION["keys"]["nonce_key"]))
+        claims = json.loads(token.payload)
+    except Exception as e:
+        raise InvalidProofError("c_nonce is not valid") from e
+
+    service_url = CONFIGURATION["service_url"]
+    if claims.get("iss") != service_url or f"{service_url}/credential" not in (claims.get("aud") or []):
+        raise InvalidProofError("c_nonce was not issued for this credential endpoint")
+    if not isinstance(claims.get("exp"), (int, float)) or claims["exp"] < time.time():
+        raise InvalidProofError("c_nonce has expired")
+    return claims
+
+
+def _public_key_from_jwk(jwk_dict: Any) -> Any:
+    """Loads a public JWK as a PyJWT verification key.
+
+    Args:
+        jwk_dict: JWK from a proof header or a key attestation.
+
+    Returns:
+        The public key.
+
+    Raises:
+        InvalidProofError: If the JWK is missing, private or unusable.
+    """
+    if not isinstance(jwk_dict, dict):
+        raise InvalidProofError("Proof has no usable jwk")
+    if "d" in jwk_dict:
+        raise InvalidProofError("Proof jwk must not contain private key material")
+    try:
+        return jwt.PyJWK(jwk_dict).key
+    except Exception as e:
+        raise InvalidProofError("Proof jwk is not a valid public key") from e
+
+
+def verify_proof_jwt(
+    proof_jwt: str, session_id: str, signing_jwks: Optional[List[Dict[str, Any]]] = None
+) -> Dict[str, Any]:
+    """Verifies an OpenID4VCI JWT proof of possession.
+
+    Checks ``typ`` (``openid4vci-proof+jwt``), ``alg``, the signature (with
+    the ``jwk`` header, or one of ``signing_jwks`` for proofs backed by a key
+    attestation), ``aud`` (the credential issuer identifier), ``iat``
+    freshness and, unless disabled, the ``nonce`` (a valid ``c_nonce``).
+
+    Args:
+        proof_jwt: Compact proof JWT.
+        session_id: Issuance session (selects the expected ``aud``).
+        signing_jwks: Keys allowed to sign the proof instead of the ``jwk``
+            header (the attested keys of a key attestation).
+
+    Returns:
+        The verified proof claims.
+
+    Raises:
+        InvalidProofError: If any check fails.
+    """
+    try:
+        header = jwt.get_unverified_header(proof_jwt)
+    except jwt.DecodeError as e:
+        raise InvalidProofError("Proof JWT is malformed") from e
+
+    if header.get("typ") != PROOF_JWT_TYP:
+        raise InvalidProofError(f"Proof JWT typ must be {PROOF_JWT_TYP}")
+    alg = header.get("alg")
+    if alg not in PROOF_ALGORITHMS:
+        raise InvalidProofError("Proof JWT alg is not supported")
+
+    candidates = signing_jwks if signing_jwks is not None else [header.get("jwk")]
+    audiences = _proof_audiences(session_id)
+    claims: Optional[Dict[str, Any]] = None
+    for candidate in candidates:
+        try:
+            claims = jwt.decode(
+                proof_jwt,
+                key=_public_key_from_jwk(candidate),
+                algorithms=[alg],
+                audience=audiences,
+                options={"require": ["aud", "iat"]},
+                leeway=PROOF_IAT_LEEWAY_SECONDS,
+            )
+            break
+        except jwt.InvalidSignatureError:
+            continue
+        except jwt.InvalidTokenError as e:
+            raise InvalidProofError(f"Proof JWT is not valid: {e}") from e
+    if claims is None:
+        raise InvalidProofError("Proof JWT signature is not valid")
+
+    if claims["iat"] < time.time() - PROOF_MAX_AGE_SECONDS:
+        raise InvalidProofError("Proof JWT is too old")
+    if _nonce_required():
+        verify_c_nonce(claims.get("nonce"))
+
+    logger.debug(f", Session ID: {session_id}, Proof JWT verified (aud={safe(claims.get('aud'), 100)})")
+    return claims
+
+
+def _holder_key(jwk_dict: Dict[str, Any]) -> str:
+    """Converts a verified P-256 JWK to the device key format.
+
+    Args:
+        jwk_dict: Public JWK.
+
+    Returns:
+        Base64url encoded PEM public key.
+
+    Raises:
+        InvalidProofError: If the key is not on P-256.
+    """
+    device_key = pKfromJWK(jwk_dict)
+    if not isinstance(device_key, str):
+        raise InvalidProofError("Credential Issuer only supports P-256 holder keys")
+    return device_key
 
 
 # ---------------------------------------------------------------------------
@@ -182,7 +344,7 @@ def _register_attested_keys(
     )
 
     for attested_jwk in claims["attested_keys"]:
-        device_key = pKfromJWK(attested_jwk)
+        device_key = _holder_key(attested_jwk)
         pub_keys.append({"attestation": device_key})
         if ka_index is not None:
             session_manager.add_key_to_key_storage_status(
@@ -190,29 +352,33 @@ def _register_attested_keys(
             )
 
 
-def _verify_attestation_into(
-    attestation: str, session_id: str, pub_keys: List[Dict[str, Any]], ka_exps: List[int], origin: str
-) -> Optional[Dict[str, str]]:
-    """Verifies a key attestation and registers its keys.
+def _verified_attestation(attestation: str, session_id: str, origin: str, require_nonce: bool) -> Dict[str, Any]:
+    """Verifies a key attestation (signature, trust, revocation, optionally nonce).
 
     Args:
         attestation: Key attestation JWT.
         session_id: Issuance session.
-        pub_keys: Holder keys collected so far (mutated).
-        ka_exps: KA expiry values (mutated).
         origin: Where the attestation came from (for logging).
+        require_nonce: Whether the attestation must carry a valid ``c_nonce``
+            (when used directly as the proof).
 
     Returns:
-        ``None`` on success, or an ``invalid_proof`` error dict if the
-        attestation is revoked or its status cannot be verified.
+        The attestation claims.
+
+    Raises:
+        InvalidProofError: If the attestation is revoked, unverifiable or
+            lacks a valid nonce.
     """
     try:
         claims = decode_verify_attestation(attestation)
     except KeyAttestationStatusError as e:
-        logger.info(f", Session ID: {session_id}, KA rejected ({origin}): {e}")
-        return {"error": "invalid_proof", "error_description": str(e)}
-    _register_attested_keys(claims, session_id, pub_keys, ka_exps)
-    return None
+        logger.warning(f", Session ID: {session_id}, Key attestation rejected ({origin}): {safe(e)}")
+        raise InvalidProofError(str(e)) from e
+    if not isinstance(claims.get("attested_keys"), list) or not claims["attested_keys"]:
+        raise InvalidProofError("Key attestation has no attested_keys")
+    if require_nonce and _nonce_required():
+        verify_c_nonce(claims.get("nonce"))
+    return claims
 
 
 # ---------------------------------------------------------------------------
@@ -308,13 +474,46 @@ def compute_max_credential_exp(
 # ---------------------------------------------------------------------------
 
 
+def _collect_jwt_proof(
+    proof_jwt: str, session_id: str, pub_keys: List[Dict[str, Any]], ka_exps: List[int]
+) -> None:
+    """Verifies one JWT proof and records the holder key(s) it proves.
+
+    A proof with a ``key_attestation`` header must be signed by one of the
+    attested keys; all attested keys are then issued to. Otherwise the proof
+    is signed by its ``jwk`` header key, which becomes the holder key.
+
+    Args:
+        proof_jwt: Compact proof JWT.
+        session_id: Issuance session.
+        pub_keys: Holder keys (mutated).
+        ka_exps: KA expiry values (mutated).
+
+    Raises:
+        InvalidProofError: If the proof or its key attestation is invalid.
+    """
+    try:
+        header = jwt.get_unverified_header(proof_jwt)
+    except jwt.DecodeError as e:
+        raise InvalidProofError("Proof JWT is malformed") from e
+
+    if "key_attestation" in header:
+        claims = _verified_attestation(header["key_attestation"], session_id, "jwt proof header", require_nonce=False)
+        verify_proof_jwt(proof_jwt, session_id, signing_jwks=claims["attested_keys"])
+        _register_attested_keys(claims, session_id, pub_keys, ka_exps)
+        return
+
+    verify_proof_jwt(proof_jwt, session_id)
+    pub_keys.append({"jwt": _holder_key(header["jwk"])})
+
+
 def _collect_proof_keys(
     credential_request: Dict[str, Any],
     session_id: str,
     pub_keys: List[Dict[str, Any]],
     ka_exps: List[int],
-) -> Optional[Any]:
-    """Extracts the holder keys from the request's proof(s).
+) -> None:
+    """Verifies the request's proof(s) and collects the proven holder keys.
 
     Args:
         credential_request: Validated credential request.
@@ -322,70 +521,43 @@ def _collect_proof_keys(
         pub_keys: Holder keys (mutated).
         ka_exps: KA expiry values (mutated).
 
-    Returns:
-        ``None`` on success, otherwise the early return value of
-        :func:`generate_credentials` (an error dict, or ``""`` for an
-        undecodable single JWT proof).
+    Raises:
+        InvalidProofError: If any proof is invalid or of an unsupported type.
     """
     proof = credential_request.get("proof")
 
-    if proof is not None and proof["proof_type"] == "jwt":
-        try:
-            pub_keys.append({"jwt": pKfromJWT(proof["jwt"])})
-        except Exception:
-            return ""
-        return None
+    if proof is not None and "proofs" not in credential_request:
+        match proof.get("proof_type"):
+            case "jwt":
+                _collect_jwt_proof(proof["jwt"], session_id, pub_keys, ka_exps)
+            case "attestation":
+                claims = _verified_attestation(proof["attestation"], session_id, "single attestation proof", True)
+                _register_attested_keys(claims, session_id, pub_keys, ka_exps)
+            case _:
+                raise InvalidProofError("Unsupported proof type")
+        return
 
-    if "proofs" in credential_request:
-        for alg, key_list in credential_request["proofs"].items():
-            if alg == "attestation":
-                for attestation in key_list:
-                    error = _verify_attestation_into(
-                        attestation, session_id, pub_keys, ka_exps, "attestation proof"
-                    )
-                    if error:
-                        return error
-            elif alg == "jwt":
-                for proof_jwt in key_list:
-                    try:
-                        header = jwt.get_unverified_header(proof_jwt)
-                    except Exception:
-                        logger.info(f", Session ID: {session_id}, invalid proof in credential request")
-                        continue
+    for proof_type, proof_values in (credential_request.get("proofs") or {}).items():
+        if not isinstance(proof_values, list) or not proof_values:
+            raise InvalidProofError(f"proofs.{safe(proof_type, 30)} must be a non-empty list")
+        match proof_type:
+            case "jwt":
+                for proof_jwt in proof_values:
+                    _collect_jwt_proof(proof_jwt, session_id, pub_keys, ka_exps)
+            case "attestation":
+                for attestation in proof_values:
+                    claims = _verified_attestation(attestation, session_id, "attestation proof", True)
+                    _register_attested_keys(claims, session_id, pub_keys, ka_exps)
+            case _:
+                raise InvalidProofError("Unsupported proof type")
 
-                    if "key_attestation" in header:
-                        error = _verify_attestation_into(
-                            header["key_attestation"], session_id, pub_keys, ka_exps, "jwt proof header"
-                        )
-                        if error:
-                            return error
-                        continue
-
-                    try:
-                        pub_keys.append({alg: pKfromJWT(proof_jwt)})
-                    except Exception as e:
-                        logger.info(f", Session ID: {session_id}, invalid proof in credential request")
-                        return {"error": "invalid_proof", "error_description": str(e)}
-            else:
-                logger.info(f", Session ID: {session_id}, invalid proof in credential request")
-                return {"error": "proof currently not supported"}
-
-        # TS3 2.2.2.1: cap keys used against the issuer's configured batch_size.
-        batch_size = get_batch_size(credential_request["credential_configuration_id"])
-        if batch_size and len(pub_keys) > batch_size:
-            logger.info(
-                f", Session ID: {session_id}, KA contained {len(pub_keys)} keys, "
-                f"truncating to batch_size {batch_size}"
-            )
-            del pub_keys[batch_size:]
-        return None
-
-    if proof is not None and proof["proof_type"] == "attestation":
-        return _verify_attestation_into(
-            proof["attestation"], session_id, pub_keys, ka_exps, "single attestation proof"
+    # TS3 2.2.2.1: cap keys used against the issuer's configured batch_size.
+    batch_size = get_batch_size(credential_request["credential_configuration_id"])
+    if batch_size and len(pub_keys) > batch_size:
+        logger.info(
+            f", Session ID: {session_id}, Proofs contained {len(pub_keys)} keys, truncating to batch_size {batch_size}"
         )
-
-    return None
+        del pub_keys[batch_size:]
 
 
 def generate_credentials(
@@ -393,7 +565,8 @@ def generate_credentials(
 ) -> Any:
     """Issues the credential(s) for a validated credential request.
 
-    Holder keys are extracted from the proofs, the expiry ceiling is stored
+    Every proof is verified (:func:`verify_proof_jwt` / key attestations)
+    and the proven holder keys are collected; the expiry ceiling is stored
     in the session, and the credentials are formatted and signed with the
     session's user data
     (:func:`app.services.dynamic_formatter.issue_credentials_for_session`).
@@ -404,21 +577,25 @@ def generate_credentials(
         wia_client_status: ``client_status`` claim of the access token.
 
     Returns:
-        ``{"credentials": [...]}``, an error dict (``credential_request_denied``
-        when signing fails), or ``""`` when a single JWT proof cannot be decoded.
+        ``{"credentials": [...]}`` or an error dict: ``invalid_proof`` when a
+        proof is missing / invalid (signature, ``typ``, ``aud``, ``iat``,
+        ``c_nonce``, key attestation), ``credential_request_denied`` when
+        signing fails.
     """
     configuration_id = credential_request["credential_configuration_id"]
     pub_keys: List[Dict[str, Any]] = []
     ka_exps: List[int] = []
 
-    early = _collect_proof_keys(credential_request, session_id, pub_keys, ka_exps)
-    if early is not None:
-        return early
+    try:
+        _collect_proof_keys(credential_request, session_id, pub_keys, ka_exps)
+    except InvalidProofError as e:
+        logger.warning(f", Session ID: {session_id}, Invalid proof: {safe(e)}")
+        return {"error": "invalid_proof", "error_description": str(e)}
+    if not pub_keys:
+        logger.warning(f", Session ID: {session_id}, Invalid proof: no holder key proven")
+        return {"error": "invalid_proof", "error_description": "No valid proof"}
 
-    formatter_request: Dict[str, Any] = {"credential_configuration_id": configuration_id}
-    proof = credential_request.get("proof")
-    if "proofs" in credential_request or (proof is not None and proof["proof_type"] in ("jwt", "attestation")):
-        formatter_request["proofs"] = pub_keys
+    formatter_request: Dict[str, Any] = {"credential_configuration_id": configuration_id, "proofs": pub_keys}
 
     if len(pub_keys) > 1:
         session_manager.update_is_batch_credential(session_id=session_id, is_batch_credential=True)
@@ -432,9 +609,13 @@ def generate_credentials(
             custom_validity_seconds=get_custom_validity_seconds(configuration_id),
         )
     except CredentialValidityError as e:
-        logger.error(f", Session ID: {session_id}, {e}")
+        logger.error(f", Session ID: {session_id}, {safe(e)}")
         return {"error": "invalid_proof", "error_description": str(e)}
 
+    logger.debug(
+        f", Session ID: {session_id}, {len(pub_keys)} holder key(s) from proofs, "
+        f"{len(ka_exps)} key attestation expiry value(s), max credential exp={max_exp}"
+    )
     if max_exp is not None:
         session_manager.update_max_credential_exp(session_id=session_id, max_credential_exp=max_exp)
 
@@ -472,16 +653,16 @@ def decrypt_jwe_credential_request(jwt_token: str) -> Dict[str, Any]:
         jwe_token.deserialize(jwt_token)
         jwe_token.decrypt(private_key)
         payload = jwe_token.payload.decode("utf-8")
-        logger.info("Successfully decrypted JWE payload")
+        logger.debug("Decrypted JWE credential request")
         return json.loads(payload)
     except FileNotFoundError as e:
         logger.error("Private key file not found")
         raise ValueError("Private key file not found") from e
     except json.JSONDecodeError as e:
-        logger.error(f"Failed to parse decrypted payload as JSON: {str(e)}")
+        logger.error(f"Failed to parse decrypted payload as JSON: {safe(str(e))}")
         raise ValueError(f"Decrypted payload is not valid JSON: {str(e)}") from e
     except Exception as e:
-        logger.error(f"Failed to decrypt JWE: {str(e)}")
+        logger.error(f"Failed to decrypt JWE: {safe(str(e))}")
         raise ValueError(f"Failed to decrypt JWE: {str(e)}") from e
 
 

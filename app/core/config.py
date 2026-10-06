@@ -129,18 +129,10 @@ def mock_config() -> dict[str, Any]:
     """Returns the minimal configuration used when ``MOCK_CONFIGURATION`` is set.
 
     Returns:
-        A configuration dictionary sufficient to import the application.
+        A configuration dictionary sufficient to import the application
+        (no database: background services are disabled in tests).
     """
-    return {
-        "expiry": {"session": 30},
-        "postgres": {
-            "host": "localhost",
-            "port": 5432,
-            "dbname": "eudiw_issuer_mock",
-            "user": "postgres",
-            "password": "postgres",
-        },
-    }
+    return {"expiry": {"session": 30}}
 
 
 def _detect_test_env() -> bool:

@@ -139,9 +139,8 @@ class TestIssuanceFailsClosed:
             with pytest.raises(credential_issuance.KeyAttestationStatusError, match="could not be verified"):
                 credential_issuance.decode_verify_attestation("ka.jwt")
 
-            result = credential_issuance._verify_attestation_into("ka.jwt", "session-1", [], [], "test")
-        assert result["error"] == "invalid_proof"
-        assert "could not be verified" in result["error_description"]
+            with pytest.raises(credential_issuance.InvalidProofError, match="could not be verified"):
+                credential_issuance._verified_attestation("ka.jwt", "session-1", "test", require_nonce=True)
 
     def test_key_attestation_revoked(self, status_config):
         from app.services import credential_issuance

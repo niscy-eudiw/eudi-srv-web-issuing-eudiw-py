@@ -31,6 +31,7 @@ import threading
 from dataclasses import dataclass, field, fields
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, List, Optional
+from app.core.log_utils import safe
 
 logger = logging.getLogger(__name__)
 
@@ -185,13 +186,13 @@ class SessionManager:
         with self._sessions_lock:
             session_obj = self._sessions.get(session_id)
             if session_obj is None:
-                logger.info(
-                    f"Warning: Attempted to update {name} for non-existent session_id: {session_id}"
+                logger.warning(
+                    f"Attempted to update {name} for non-existent session_id: {session_id}"
                 )
                 return
             setattr(session_obj, name, value)
-            suffix = f" to: {value}" if log_value else ""
-            logger.info(f"Updated {name} for session_id {session_id}{suffix}")
+            suffix = f" to: {safe(value, 100)}" if log_value else ""
+            logger.debug(f"Updated {name} for session_id {session_id}{suffix}")
 
     def _set_indexed_attribute(
         self,
@@ -216,8 +217,8 @@ class SessionManager:
         with self._sessions_lock, index_lock:
             session_obj = self._sessions.get(session_id)
             if session_obj is None:
-                logger.info(
-                    f"Warning: Attempted to update {name} for non-existent session_id: {session_id}"
+                logger.warning(
+                    f"Attempted to update {name} for non-existent session_id: {session_id}"
                 )
                 return
             old_value = getattr(session_obj, name)
@@ -225,7 +226,7 @@ class SessionManager:
                 del index[old_value]
             setattr(session_obj, name, value)
             index[value] = session_obj
-            logger.info(f"Updated {name} for session_id {session_id} to: {value}")
+            logger.debug(f"Updated {name} for session_id {session_id}")
 
     def _get_live(
         self, index: Dict[str, Session], lock: threading.RLock, key: str, label: str
@@ -247,7 +248,9 @@ class SessionManager:
                 return None
             if not self.is_expired(session_obj):
                 return session_obj
-            logger.info(f"Session with {label} {key} found but has expired. Removing.")
+            # Only session ids are logged: other index keys (pre-authorized codes) are secrets.
+            shown = f" {key}" if label == "session_id" else ""
+            logger.debug(f"Session with {label}{shown} found but has expired. Removing.")
             self._remove_session_from_all_managers(session_obj)
         return None
 
@@ -265,7 +268,7 @@ class SessionManager:
         """
         session_obj = self._sessions.get(session_id)
         if session_obj is None:
-            logger.info(f"Warning: Attempted to {action} for non-existent session_id: {session_id}")
+            logger.warning(f"Attempted to {action} for non-existent session_id: {session_id}")
             return None
         return (session_obj.client_status or {}).get("key_storage_statuses")
 
@@ -280,14 +283,14 @@ class SessionManager:
         with self._sessions_lock:
             session_obj = self._sessions.get(session_id)
             if session_obj is None:
-                logger.info(
-                    f"Warning: Attempted to update {name} for non-existent session_id: {session_id}"
+                logger.warning(
+                    f"Attempted to update {name} for non-existent session_id: {session_id}"
                 )
                 return
             if session_obj.client_status is None:
                 session_obj.client_status = {}
             mutate(session_obj.client_status)
-            logger.info(f"Updated {name} for session_id {session_id}")
+            logger.debug(f"Updated {name} for session_id {session_id}")
 
     # ------------------------------------------------------------------
     # Creation
@@ -415,7 +418,7 @@ class SessionManager:
             session_id: Target session.
             tx_code: Transaction code.
         """
-        self._set_attribute(session_id, "tx_code", tx_code)
+        self._set_attribute(session_id, "tx_code", tx_code, log_value=False)
 
     def update_is_batch_credential(self, session_id: str, is_batch_credential: bool) -> None:
         """Updates the batch credential flag.
@@ -501,13 +504,13 @@ class SessionManager:
         with self._sessions_lock, self._sessions_by_transaction_id_lock:
             session_obj = self._sessions.get(session_id)
             if session_obj is None:
-                logger.info(
-                    f"Warning: Attempted to add transaction ID for non-existent session_id: {session_id}"
+                logger.warning(
+                    f"Attempted to add transaction ID for non-existent session_id: {session_id}"
                 )
                 return
             session_obj.transaction_id[transaction_id] = credential_request
             self._sessions_by_transaction_id[transaction_id] = session_obj
-            logger.info(f"Added transaction_id '{transaction_id}' to session_id '{session_id}'.")
+            logger.debug(f"Added transaction_id '{transaction_id}' to session_id '{session_id}'.")
 
     def store_notification_id(self, session_id: str, notification_id: str) -> None:
         """Registers a notification id on a session.
@@ -519,13 +522,13 @@ class SessionManager:
         with self._sessions_lock, self._sessions_by_notification_id_lock:
             session_obj = self._sessions.get(session_id)
             if session_obj is None:
-                logger.info(
-                    f"Warning: Attempted to add notification ID for non-existent session_id: {session_id}"
+                logger.warning(
+                    f"Attempted to add notification ID for non-existent session_id: {session_id}"
                 )
                 return
             session_obj.notification_ids.append(notification_id)
             self._sessions_by_notification_id[notification_id] = session_obj
-            logger.info(f"Added notification_id '{notification_id}' to session_id '{session_id}'.")
+            logger.debug(f"Added notification_id '{notification_id}' to session_id '{session_id}'.")
 
     # ------------------------------------------------------------------
     # Lookups
@@ -651,8 +654,8 @@ class SessionManager:
         with self._sessions_lock:
             session_obj = self._sessions.get(session_id)
             if session_obj is None:
-                logger.info(
-                    f"Warning: Attempted to add key_storage_status for non-existent session_id: {session_id}"
+                logger.warning(
+                    f"Attempted to add key_storage_status for non-existent session_id: {session_id}"
                 )
                 return None
             if session_obj.client_status is None:
@@ -660,7 +663,7 @@ class SessionManager:
             entries = session_obj.client_status.setdefault("key_storage_statuses", [])
             entries.append({"status": status, "keys": keys if keys is not None else []})
             index = len(entries) - 1
-            logger.info(f"Added key_storage_status at index {index} for session_id {session_id}")
+            logger.debug(f"Added key_storage_status at index {index} for session_id {session_id}")
             return index
 
     def _ka_entry(self, session_id: str, ka_index: int, action: str) -> Optional[Dict]:
@@ -680,8 +683,8 @@ class SessionManager:
         if session_id not in self._sessions:
             return None
         if not entries or ka_index >= len(entries):
-            logger.info(
-                f"Warning: key_storage_status index {ka_index} not found for session_id: {session_id}"
+            logger.warning(
+                f"key_storage_status index {ka_index} not found for session_id: {session_id}"
             )
             return None
         return entries[ka_index]
@@ -699,7 +702,7 @@ class SessionManager:
             if entry is None:
                 return
             entry["status"] = status
-            logger.info(
+            logger.debug(
                 f"Updated key_storage_statuses[{key_storage_status_index}].status for session_id {session_id}"
             )
 
@@ -728,7 +731,7 @@ class SessionManager:
             keys_list = entry.setdefault("keys", [])
             keys_list.append({"key": key, "key_status": key_status})
             index = len(keys_list) - 1
-            logger.info(
+            logger.debug(
                 f"Added key at index {index} to key_storage_statuses[{key_storage_status_index}] "
                 f"for session_id {session_id}"
             )
@@ -755,13 +758,13 @@ class SessionManager:
                 return
             keys_list = entry.get("keys", [])
             if key_index >= len(keys_list):
-                logger.info(
-                    f"Warning: key index {key_index} not found in "
+                logger.warning(
+                    f"key index {key_index} not found in "
                     f"key_storage_statuses[{key_storage_status_index}] for session_id: {session_id}"
                 )
                 return
             keys_list[key_index]["key_status"] = key_status
-            logger.info(
+            logger.debug(
                 f"Updated key_status for key {key_index} in "
                 f"key_storage_statuses[{key_storage_status_index}] for session_id {session_id}"
             )
@@ -782,14 +785,14 @@ class SessionManager:
             if session_id not in self._sessions:
                 return False
             if not entries:
-                logger.info(f"Warning: no key_storage_statuses found for session_id: {session_id}")
+                logger.warning(f"no key_storage_statuses found for session_id: {session_id}")
                 return False
             for key_entry in (k for ka in entries for k in ka.get("keys", [])):
                 if key_entry.get("key") == key:
                     key_entry["key_status"] = key_status
-                    logger.info(f"Updated key_status for matching key in session_id {session_id}")
+                    logger.debug(f"Updated key_status for matching key in session_id {session_id}")
                     return True
-            logger.info(f"Warning: key not found in key_storage_statuses for session_id: {session_id}")
+            logger.warning(f"key not found in key_storage_statuses for session_id: {session_id}")
             return False
 
     # ------------------------------------------------------------------
@@ -826,7 +829,7 @@ class SessionManager:
                 self._sessions_by_transaction_id.pop(tx_id, None)
             for notif_id in session_obj.notification_ids:
                 self._sessions_by_notification_id.pop(notif_id, None)
-            logger.info(f"Removed all references for session_id: {session_obj.session_id}")
+            logger.debug(f"Removed all references for session_id: {session_obj.session_id}")
         finally:
             for lock in reversed(locks):
                 lock.release()
@@ -839,15 +842,12 @@ class SessionManager:
         try:
             expired = [s for s in self._sessions.values() if self.is_expired(s)]
             for session_obj in expired:
-                logger.info(
-                    f"Cleaning up expired session: {session_obj.session_id} "
-                    f"(Pre-auth Code: {session_obj.pre_authorized_code})"
-                )
+                logger.debug(f"Cleaning up expired session: {session_obj.session_id}")
                 self._remove_session_from_all_managers(session_obj)
             if expired:
                 logger.info(f"Cleaned up {len(expired)} expired sessions.")
             else:
-                logger.info("No expired sessions to clean up.")
+                logger.debug("No expired sessions to clean up.")
         finally:
             for lock in reversed(locks):
                 lock.release()

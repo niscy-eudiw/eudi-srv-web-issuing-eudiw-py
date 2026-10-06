@@ -33,14 +33,11 @@ import requests
 from app.core import state
 from app.routes import revocation
 # The strict base64url decoder of the old revocation module is now
-# app.utils.encoding.b64url_decode_strict; the unverified x5c key extraction
-# is app.services.trust.unverified_x5c_public_key.
+# app.utils.encoding.b64url_decode_strict.
+from app.core.errors import CertificateVerificationError
 from app.utils.encoding import b64url_decode_strict as b64url_decode
-from app.services.trust import (
-    unverified_x5c_public_key as extract_public_key_from_x5c,
-    verify_and_decode_sdjwt,
-)
-from app.services.revocation_status import get_status_sdjwt, get_status_mdoc
+from app.services.trust import verify_and_decode_sdjwt, x5c_leaf_certificate
+from app.services.revocation_status import get_status_sdjwt, get_status_mdoc, is_issuer_certificate
 from app.services.oid4vp import PRESENTATION_NONCE
 from config_helpers import set_configuration
 
@@ -210,8 +207,8 @@ class TestUtilityFunctions:
             b64url_decode("!!!invalid!!!")
 
 
-class TestExtractPublicKeyFromX5c:
-    """Test extract_public_key_from_x5c function."""
+class TestX5cLeafCertificate:
+    """Test x5c_leaf_certificate (untrusted leaf extraction)."""
 
     def test_extract_rsa_public_key(self, rsa_key_pair, x509_cert):
         """Test extracting RSA public key from x5c header."""
@@ -225,9 +222,9 @@ class TestExtractPublicKeyFromX5c:
             payload, private_key, algorithm="RS256", headers={"x5c": [cert_b64]}
         )
 
-        public_key, alg = extract_public_key_from_x5c(token)
+        certificate, alg = x5c_leaf_certificate(token)
 
-        assert isinstance(public_key, rsa.RSAPublicKey)
+        assert isinstance(certificate.public_key(), rsa.RSAPublicKey)
         assert alg == "RS256"
 
     def test_extract_missing_x5c(self, rsa_key_pair):
@@ -238,7 +235,7 @@ class TestExtractPublicKeyFromX5c:
         token = jwt.encode(payload, private_key, algorithm="RS256")
 
         with pytest.raises(ValueError, match="x5c header not found in JWT"):
-            extract_public_key_from_x5c(token)
+            x5c_leaf_certificate(token)
 
     def test_extract_invalid_x5c_cert(self, rsa_key_pair):
         """Test extracting public key with invalid certificate."""
@@ -253,7 +250,7 @@ class TestExtractPublicKeyFromX5c:
         )
 
         with pytest.raises(ValueError):
-            extract_public_key_from_x5c(token)
+            x5c_leaf_certificate(token)
 
 
 class TestVerifyAndDecodeSdjwt:
@@ -276,7 +273,7 @@ class TestVerifyAndDecodeSdjwt:
 
         with patch("app.services.trust.SDJWTHolder") as mock_holder:
             mock_holder.return_value._unverified_input_sd_jwt = token
-            result = verify_and_decode_sdjwt(sd_jwt)
+            result = verify_and_decode_sdjwt(sd_jwt, lambda certificate: True)
 
         assert result["test"] == "data"
         assert "status" in result
@@ -315,7 +312,7 @@ class TestVerifyAndDecodeSdjwt:
 
         with patch("app.services.trust.SDJWTHolder") as mock_holder:
             mock_holder.return_value._unverified_input_sd_jwt = token
-            result = verify_and_decode_sdjwt(sd_jwt)
+            result = verify_and_decode_sdjwt(sd_jwt, lambda certificate: True)
 
         assert result["test"] == "ec_data"
 
@@ -352,7 +349,7 @@ class TestVerifyAndDecodeSdjwt:
 
         with patch("app.services.trust.SDJWTHolder") as mock_holder:
             mock_holder.return_value._unverified_input_sd_jwt = token
-            result = verify_and_decode_sdjwt(sd_jwt)
+            result = verify_and_decode_sdjwt(sd_jwt, lambda certificate: True)
 
         assert result["test"] == "ed25519_data"
 
@@ -361,15 +358,30 @@ class TestVerifyAndDecodeSdjwt:
         sd_jwt = "test~"
 
         with patch("app.services.trust.SDJWTHolder") as mock_holder, patch(
-            "app.services.trust.unverified_x5c_public_key"
+            "app.services.trust.x5c_leaf_certificate"
         ) as mock_extract:
 
             mock_holder.return_value._unverified_input_sd_jwt = "test_token"
-            # Mock an unsupported key type
-            mock_extract.return_value = (Mock(spec=object), "RS256")
+            # Mock a certificate with an unsupported key type
+            certificate = Mock()
+            certificate.public_key.return_value = Mock(spec=object)
+            mock_extract.return_value = (certificate, "RS256")
 
             with pytest.raises(ValueError, match="Unsupported key type"):
-                verify_and_decode_sdjwt(sd_jwt)
+                verify_and_decode_sdjwt(sd_jwt, lambda c: True)
+
+    def test_untrusted_signer_rejected_before_signature_check(self, rsa_key_pair, x509_cert):
+        """A correctly signed SD-JWT from an untrusted signer is rejected."""
+        private_key, _ = rsa_key_pair
+        cert_b64 = base64.b64encode(x509_cert.public_bytes(serialization.Encoding.DER)).decode()
+        token = jwt.encode({"status": {}}, private_key, algorithm="RS256", headers={"x5c": [cert_b64]})
+
+        seen = []
+        with patch("app.services.trust.SDJWTHolder") as mock_holder:
+            mock_holder.return_value._unverified_input_sd_jwt = token
+            with pytest.raises(CertificateVerificationError, match="Untrusted SD-JWT signer"):
+                verify_and_decode_sdjwt(token + "~", lambda c: seen.append(c) or False)
+        assert seen[0].subject == x509_cert.subject
 
 
 class TestGetStatusSdjwt:
@@ -386,60 +398,125 @@ class TestGetStatusSdjwt:
             result = get_status_sdjwt(sd_jwt)
 
             assert result == expected_status
-            mock_verify.assert_called_once_with(sd_jwt)
+            mock_verify.assert_called_once_with(sd_jwt, is_issuer_certificate)
+
+
+def _issue_mdoc_with_status(signing_key, cert_der_path, status_idx):
+    """Issues a real mdoc (via the issuer's formatter) carrying a status list entry."""
+    from app.services.formatters import mdocFormatter
+
+    device = ec.generate_private_key(ec.SECP256R1()).public_key()
+    device_key = base64.urlsafe_b64encode(
+        device.public_bytes(serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo)
+    ).decode()
+    reservation = {
+        "status_list": {"idx": status_idx, "uri": "https://issuer.test/token_status_list/FC/pid/list-1"},
+        "identifier_list": {"id": str(status_idx), "uri": "https://issuer.test/identifier_list/FC/pid/list-1"},
+    }
+    config = {
+        "revocation": {"enabled": True},
+        "countries": {
+            "FC": {
+                "keys": {
+                    "_default": {
+                        "private_key": signing_key.private_bytes(
+                            serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()
+                        ),
+                        "private_key_password": None,
+                        "certificate_path": cert_der_path,
+                    }
+                }
+            }
+        },
+    }
+    session = Mock(country="FC", is_batch_credential=False, max_credential_exp=None)
+    with patch("app.services.formatters.CONFIGURATION", config), patch(
+        "app.services.formatters.reserve_status_entry", return_value=reservation
+    ), patch("app.services.formatters.session_manager") as sessions:
+        sessions.get_session.return_value = session
+        encoded = mdocFormatter(
+            {"eu.europa.ec.eudi.pid.1": {"family_name": "Doe"}},
+            {"doctype": "eu.europa.ec.eudi.pid.1", "issuer_config": {"validity": 30, "namespace": "eu.europa.ec.eudi.pid.1"}},
+            "FC",
+            device_key,
+            "s1",
+        )
+    issuer_signed = cbor2.loads(base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4)))
+    return {"docType": "eu.europa.ec.eudi.pid.1", "issuerSigned": issuer_signed}
+
+
+def _device_response(*documents):
+    return base64.urlsafe_b64encode(cbor2.dumps({"documents": list(documents), "status": 0})).decode().rstrip("=")
 
 
 class TestGetStatusMdoc:
-    """Test get_status_mdoc function."""
+    """get_status_mdoc only trusts MSOs signed by this issuer's document signers."""
 
-    def test_get_status_single_document(self):
-        """Test getting status from mdoc with single document."""
-        status_data = {"status_list": {"idx": 1, "uri": "http://test.com"}}
+    @pytest.fixture
+    def signers(self, tmp_path):
+        result = {}
+        for name in ("own", "foreign"):
+            key = ec.generate_private_key(ec.SECP256R1())
+            subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, f"{name} DS")])
+            cert = (
+                x509.CertificateBuilder()
+                .subject_name(subject)
+                .issuer_name(subject)
+                .public_key(key.public_key())
+                .serial_number(x509.random_serial_number())
+                .not_valid_before(datetime.utcnow() - timedelta(days=1))
+                .not_valid_after(datetime.utcnow() + timedelta(days=30))
+                .sign(key, hashes.SHA256())
+            )
+            der = cert.public_bytes(serialization.Encoding.DER)
+            path = tmp_path / f"{name}.der"
+            path.write_bytes(der)
+            result[name] = {"key": key, "der": der, "path": str(path)}
+        return result
 
-        # Create mock mdoc structure
-        issuer_auth = cbor2.dumps(
-            cbor2.CBORTag(24, cbor2.dumps({"status": status_data}))
-        )
-        mdoc_data = {
-            "documents": [{"issuerSigned": {"issuerAuth": [None, None, issuer_auth]}}]
-        }
+    @pytest.fixture
+    def own_issuer(self, signers):
+        config = {"countries": {"FC": {"keys": {"_default": {"certificate": signers["own"]["der"]}}}}}
+        with patch("app.services.revocation_status.CONFIGURATION", config):
+            yield
 
-        mdoc_bytes = cbor2.dumps(mdoc_data)
-        mdoc_b64 = base64.urlsafe_b64encode(mdoc_bytes).decode("utf-8").rstrip("=")
+    def test_single_document(self, signers, own_issuer):
+        document = _issue_mdoc_with_status(signers["own"]["key"], signers["own"]["path"], 7)
 
-        result = get_status_mdoc(mdoc_b64)
+        status = get_status_mdoc(_device_response(document))
 
-        assert result == status_data
-        assert isinstance(result, dict)
+        assert status["status_list"] == {"idx": 7, "uri": "https://issuer.test/token_status_list/FC/pid/list-1"}
 
-    def test_get_status_multiple_documents(self):
-        """Test getting status from mdoc with multiple documents."""
-        status_data_1 = {"status_list": {"idx": 1, "uri": "http://test1.com"}}
-        status_data_2 = {"status_list": {"idx": 2, "uri": "http://test2.com"}}
+    def test_multiple_documents(self, signers, own_issuer):
+        documents = [_issue_mdoc_with_status(signers["own"]["key"], signers["own"]["path"], i) for i in (1, 2)]
 
-        issuer_auth_1 = cbor2.dumps(
-            cbor2.CBORTag(24, cbor2.dumps({"status": status_data_1}))
-        )
-        issuer_auth_2 = cbor2.dumps(
-            cbor2.CBORTag(24, cbor2.dumps({"status": status_data_2}))
-        )
+        statuses = get_status_mdoc(_device_response(*documents))
 
-        mdoc_data = {
-            "documents": [
-                {"issuerSigned": {"issuerAuth": [None, None, issuer_auth_1]}},
-                {"issuerSigned": {"issuerAuth": [None, None, issuer_auth_2]}},
-            ]
-        }
+        assert [s["status_list"]["idx"] for s in statuses] == [1, 2]
 
-        mdoc_bytes = cbor2.dumps(mdoc_data)
-        mdoc_b64 = base64.urlsafe_b64encode(mdoc_bytes).decode("utf-8").rstrip("=")
+    def test_foreign_signer_rejected(self, signers, own_issuer):
+        document = _issue_mdoc_with_status(signers["foreign"]["key"], signers["foreign"]["path"], 9)
 
-        result = get_status_mdoc(mdoc_b64)
+        with pytest.raises(CertificateVerificationError, match="Untrusted mdoc signer"):
+            get_status_mdoc(_device_response(document))
 
-        assert isinstance(result, list)
-        assert len(result) == 2
-        assert result[0] == status_data_1
-        assert result[1] == status_data_2
+    def test_tampered_mso_rejected(self, signers, own_issuer):
+        document = _issue_mdoc_with_status(signers["own"]["key"], signers["own"]["path"], 3)
+        issuer_auth = document["issuerSigned"]["issuerAuth"]
+        signature = bytearray(issuer_auth[3])
+        signature[0] ^= 0xFF
+        issuer_auth[3] = bytes(signature)
+
+        with pytest.raises(CertificateVerificationError, match="signature not valid"):
+            get_status_mdoc(_device_response(document))
+
+    def test_unsigned_mso_rejected(self, own_issuer):
+        """The old behaviour (reading the status from an unsigned MSO) is gone."""
+        payload = cbor2.dumps(cbor2.CBORTag(24, cbor2.dumps({"status": {"status_list": {"idx": 1, "uri": "u"}}})))
+        document = {"issuerSigned": {"issuerAuth": [None, None, payload]}}
+
+        with pytest.raises(CertificateVerificationError):
+            get_status_mdoc(_device_response(document))
 
 
 class TestRevocationChoice:

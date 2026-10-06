@@ -50,7 +50,7 @@ from __future__ import annotations
 
 import datetime
 import logging
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 import jwt
 import requests
@@ -61,6 +61,7 @@ from cryptography.hazmat.primitives.asymmetric.types import CertificatePublicKey
 from sd_jwt.holder import SDJWTHolder
 
 from app.core.config import CONFIGURATION
+from app.core.log_utils import safe
 from app.core.errors import CertificateVerificationError
 from app.core.state import trusted_CAs
 from app.utils.crypto import certificate_validity
@@ -293,13 +294,13 @@ def call_trust_validator(
             description = response.json().get("description")
         except ValueError:
             description = response.text
-        logger.error(f"Trust validator HTTP {response.status_code} ({verification_context}): {description}")
+        logger.error(f"Trust validator HTTP {response.status_code} ({verification_context}): {safe(description)}")
     response.raise_for_status()
 
     body = response.json()
     trusted = bool(body.get("trusted", False))
     if not trusted:
-        logger.info(f"Trust validator: chain not trusted ({verification_context}): {body.get('error')}")
+        logger.info(f"Trust validator: chain not trusted ({verification_context}): {safe(body.get('error'))}")
     return trusted
 
 
@@ -323,7 +324,7 @@ def _trusted_by_validator(x5c_chain: List[str], verification_context: str, use_c
             url=validator["url"], chain=x5c_chain, verification_context=verification_context, use_case=use_case
         )
     except Exception as e:
-        logger.warning(f"Trust validator call failed, falling back to local trusted CAs: {e}")
+        logger.warning(f"Trust validator call failed, falling back to local trusted CAs: {safe(e)}")
         return False
     if not trusted:
         logger.info("Trust validator did not confirm the chain, falling back to local trusted CAs")
@@ -354,12 +355,15 @@ def verify_x5c_chain(
         raise ValueError(f"Invalid base64 encoding in x5c: {e}") from e
 
     if _trusted_by_validator(x5c_chain, verification_context, use_case):
+        logger.debug(f"x5c chain trusted by the trust validator ({verification_context})")
         return _load_certificates(chain_der[:1])[0]
 
     try:
-        return verify_chain_against_trusted_CAs(chain_der)
+        certificate = verify_chain_against_trusted_CAs(chain_der)
+        logger.debug(f"x5c chain trusted by local CA store: {certificate.subject.rfc4514_string()}")
+        return certificate
     except CertificateVerificationError as e:
-        logger.error(f"Certificate chain verification failed: {e}")
+        logger.error(f"Certificate chain verification failed: {safe(e)}")
         raise
 
 
@@ -477,17 +481,14 @@ def verify_jwt_with_x5c(
     return claims
 
 
-def unverified_x5c_public_key(jwt_raw: str) -> Tuple[CertificatePublicKeyTypes, str]:
-    """Extracts the ``x5c`` leaf public key without any trust check.
-
-    The JWT is **not** trusted; the key is only used afterwards to check
-    the signature of a credential presented back to the issuer.
+def x5c_leaf_certificate(jwt_raw: str) -> Tuple[x509.Certificate, str]:
+    """Returns the (not yet trusted) ``x5c`` leaf certificate and ``alg`` of a JWT.
 
     Args:
         jwt_raw: Compact JWT.
 
     Returns:
-        ``(public_key, alg)``.
+        ``(certificate, alg)``.
 
     Raises:
         ValueError: If the ``x5c`` header is missing or malformed.
@@ -497,25 +498,33 @@ def unverified_x5c_public_key(jwt_raw: str) -> Tuple[CertificatePublicKeyTypes, 
     if not x5c_chain:
         raise ValueError("x5c header not found in JWT")
     certificate = x509.load_der_x509_certificate(b64_decode_x5c(x5c_chain[0]), default_backend())
-    return certificate.public_key(), unverified_header["alg"]
+    return certificate, unverified_header["alg"]
 
 
-def verify_and_decode_sdjwt(sd_jwt: str) -> Dict[str, Any]:
-    """Verifies an SD-JWT's issuer signature with its ``x5c`` key and decodes it.
+def verify_and_decode_sdjwt(sd_jwt: str, is_trusted_signer: Callable[[x509.Certificate], bool]) -> Dict[str, Any]:
+    """Verifies an SD-JWT's issuer signature and decodes its payload.
+
+    The signer certificate (``x5c`` leaf) must be accepted by
+    ``is_trusted_signer`` before the signature is checked with its key.
 
     Args:
         sd_jwt: SD-JWT in compact serialization.
+        is_trusted_signer: Decides whether the signer certificate is trusted.
 
     Returns:
         The decoded issuer-signed JWT payload.
 
     Raises:
+        CertificateVerificationError: If the signer certificate is not trusted.
         ValueError: If ``x5c`` is missing / malformed or the key type is
             unsupported.
         jwt.InvalidTokenError: If signature verification fails.
     """
     issuer_jwt = SDJWTHolder(sd_jwt)._unverified_input_sd_jwt
-    public_key, alg = unverified_x5c_public_key(issuer_jwt)
+    certificate, alg = x5c_leaf_certificate(issuer_jwt)
+    if not is_trusted_signer(certificate):
+        raise CertificateVerificationError(f"Untrusted SD-JWT signer: {certificate.subject.rfc4514_string()}")
+    public_key = certificate.public_key()
     if not isinstance(public_key, SUPPORTED_PUBLIC_KEY_TYPES):
         raise ValueError(f"Unsupported key type: {type(public_key)}")
     return jwt.decode(issuer_jwt, key=public_key, algorithms=[alg])

@@ -41,7 +41,9 @@ from flask import Blueprint, Response, jsonify, redirect, request, session, url_
 from flask.helpers import make_response
 
 from app.core.config import CONFIGURATION
-from app.core.security import require_api_key
+from app.core.errors import OAuthEndpointError, oauth_error_response
+from app.core.log_utils import safe, summarize_credential_request
+from app.core.security import require_api_key, require_frontend_origin
 from app.core.state import oidc_metadata, session_manager
 from app.repositories.offer_store import clear_par, credential_offer_references
 from app.repositories.status_store import persist_client_status
@@ -106,25 +108,33 @@ def _is_introspection_success(result: Any) -> bool:
     return isinstance(result, tuple) and len(result) == 2 and isinstance(result[0], str)
 
 
-def _read_credential_request(invalid_jwt_error: str) -> Union[Dict[str, Any], Response]:
+def _read_credential_request(invalid_jwt_error: str) -> Dict[str, Any]:
     """Reads a credential request body (JSON, or a JWE with ``application/jwt``).
 
     Args:
-        invalid_jwt_error: ``error`` value returned when decryption fails.
+        invalid_jwt_error: ``error`` value used when the body cannot be read.
 
     Returns:
-        The request dictionary, or a ``400`` response.
-    """
-    if request.content_type != "application/jwt":
-        return request.get_json()
+        The request dictionary.
 
-    jwt_token = request.get_data(as_text=True)
-    logger.info(f", Started Credential Request (JWT), Token: {jwt_token}")
-    try:
-        return decrypt_jwe_credential_request(jwt_token)
-    except Exception as e:
-        logger.error(f"Failed to decrypt/verify JWT: {str(e)}")
-        return make_response(jsonify({"error": invalid_jwt_error}), 400)
+    Raises:
+        OAuthEndpointError: ``400`` if the JWE cannot be decrypted or the
+            body is not a JSON object.
+    """
+    if request.content_type == "application/jwt":
+        jwt_token = request.get_data(as_text=True)
+        logger.debug(f"Credential request received as JWE ({len(jwt_token)} chars)")
+        try:
+            body = decrypt_jwe_credential_request(jwt_token)
+        except Exception as e:
+            logger.warning(f"Failed to decrypt credential request JWE: {safe(e)}")
+            raise OAuthEndpointError(invalid_jwt_error) from e
+    else:
+        body = request.get_json(silent=True)
+
+    if not isinstance(body, dict):
+        raise OAuthEndpointError(invalid_jwt_error)
+    return body
 
 
 # ---------------------------------------------------------------------------
@@ -151,7 +161,7 @@ def verify_introspection(bearer_token: str) -> Any:
         response.raise_for_status()
         introspection_data = response.json()
     except requests.exceptions.RequestException as e:
-        logger.error(f"An error occurred during introspection request: {e}")
+        logger.error(f"Token introspection request failed: {safe(e)}")
         return jsonify({"error": "Failed to validate token with the issuer."}), 502
     except json.JSONDecodeError:
         logger.error("Failed to decode JSON from introspection response.")
@@ -162,7 +172,7 @@ def verify_introspection(bearer_token: str) -> Any:
 
     username = introspection_data.get("username")
     if not username:
-        logger.error("Token is active but missing username.")
+        logger.warning("Token is active but introspection returned no username.")
         return jsonify({"error": "invalid_token"}), 401
 
     # Introspection already confirmed the token is active/well-formed, so an
@@ -172,7 +182,7 @@ def verify_introspection(bearer_token: str) -> Any:
         at_claims = jwt.decode(bearer_token, options={"verify_signature": False})
         client_status = at_claims.get("client_status")
     except jwt.DecodeError:
-        logger.info("Access token is not a JWT; no client_status claim available.")
+        logger.debug("Access token is not a JWT; no client_status claim available.")
 
     if client_status and CONFIGURATION["status_validator"]["enabled"]:
         status_list = client_status["status"]["status_list"]
@@ -184,39 +194,41 @@ def verify_introspection(bearer_token: str) -> Any:
             )
         except StatusCheckError as e:
             # Fail closed: a WIA whose status cannot be checked is not accepted.
-            logger.error(f"WIA client_status could not be checked for session tied to {username}: {e}")
+            logger.error(f"WIA client_status could not be checked for session tied to {safe(username)}: {safe(e)}")
             return jsonify({"error": "invalid_token", "error_description": "Wallet status could not be verified"}), 401
         if revoked:
-            logger.error(f"WIA client_status revoked for session tied to {username}")
+            logger.error(f"WIA client_status revoked for session tied to {safe(username)}")
             return jsonify({"error": "invalid_token"}), 401
 
     return username, client_status
 
 
-def verify_credential_request(credential_request: Dict[str, Any]) -> Any:
+def verify_credential_request(credential_request: Dict[str, Any]) -> Dict[str, Any]:
     """Checks the structure of a credential request.
 
     Args:
         credential_request: Credential request body.
 
     Returns:
-        The request itself when valid, otherwise a ``(json_response, 400)``
-        tuple with ``invalid_credential_request`` or ``invalid_proof``.
-    """
-    invalid_request = (jsonify({"error": "invalid_credential_request"}), 400)
+        The request itself when valid.
 
+    Raises:
+        OAuthEndpointError: ``400`` with ``invalid_credential_request`` (no or
+            misspelled credential identifier) or ``invalid_proof`` (missing or
+            incomplete proof).
+    """
     if "credential_indentifier" in credential_request:
-        return invalid_request
+        raise OAuthEndpointError("invalid_credential_request")
     if "credential_identifier" not in credential_request and "credential_configuration_id" not in credential_request:
-        return invalid_request
+        raise OAuthEndpointError("invalid_credential_request")
     if "proof" not in credential_request and "proofs" not in credential_request:
-        return jsonify({"error": "invalid_proof"}), 400
+        raise OAuthEndpointError("invalid_proof")
 
     proof = credential_request.get("proof")
     if proof is not None:
         proof_type = proof.get("proof_type")
         if proof_type is None or (proof_type in ("attestation", "jwt") and proof_type not in proof):
-            return jsonify({"error": "invalid_proof"}), 400
+            raise OAuthEndpointError("invalid_proof")
 
     return credential_request
 
@@ -388,7 +400,7 @@ def auth_choice() -> HandlerResult:
         try:
             authorization_details = json.loads(json.loads(urllib.parse.unquote(authorization_details_str)))
         except json.JSONDecodeError as e:
-            logger.error(f"Error parsing authorization_details JSON: {e}")
+            logger.error(f"Error parsing authorization_details JSON: {safe(e)}")
             return jsonify({"error": "Invalid authorization_details parameter"}), 400
 
     credential_configuration_id = None
@@ -465,8 +477,6 @@ def credential() -> HandlerResult:
         return make_response(jsonify({"error": "invalid_token"}), 401)
 
     credential_request = _read_credential_request("invalid_credential_request")
-    if isinstance(credential_request, Response):
-        return credential_request
 
     introspection = verify_introspection(bearer_token=bearer_token)
     if not _is_introspection_success(introspection):
@@ -474,16 +484,16 @@ def credential() -> HandlerResult:
     session_id, wia_client_status = introspection
 
     validated_request = verify_credential_request(credential_request)
-    if isinstance(validated_request, tuple):
-        return validated_request
-
-    logger.info(f", Session ID: {session_id}, Credential Request, Payload: {validated_request}")
+    logger.info(f", Session ID: {session_id}, Credential Request, {summarize_credential_request(validated_request)}")
 
     response = _issue(validated_request, session_id, wia_client_status)
     _add_notification_id(session_id, response)
 
     if response.get("error", "Pending") != "Pending":
-        logger.error(f", Session ID: {session_id}, Credential response with error, Payload: {response}")
+        logger.warning(
+            f", Session ID: {session_id}, Credential request denied: "
+            f"error={safe(response.get('error'))} description={safe(response.get('error_description'))}"
+        )
         return jsonify(response), 400
 
     is_deferred = (
@@ -520,8 +530,7 @@ def notification() -> HandlerResult:
     Returns:
         ``204`` on success, ``401`` for authorization errors.
     """
-    notification_request = request.get_json()
-    logger.info(f", Started Notification Request, Payload: {notification_request}")
+    notification_request = request.get_json(silent=True) or {}
 
     auth_header = request.headers.get("Authorization")
     if not auth_header:
@@ -537,7 +546,14 @@ def notification() -> HandlerResult:
         return introspection
     session_id, _ = introspection
 
-    logger.info(f", Session ID: {session_id}, Notification Request, Payload: {notification_request}")
+    logger.info(
+        f", Session ID: {session_id}, Notification: event={safe(notification_request.get('event'), 50)} "
+        f"notification_id={safe(notification_request.get('notification_id'), 64)}"
+    )
+    logger.debug(
+        f", Session ID: {session_id}, Notification description: "
+        f"{safe(notification_request.get('event_description'))}"
+    )
     return make_response("", 204)
 
 
@@ -565,8 +581,6 @@ def deferred_credential() -> HandlerResult:
         error response.
     """
     deferred_request = _read_credential_request("Invalid JWT credential request")
-    if isinstance(deferred_request, Response):
-        return deferred_request
 
     if "transaction_id" not in deferred_request:
         return jsonify({"error": "invalid_transaction_id"}), 401
@@ -577,7 +591,7 @@ def deferred_credential() -> HandlerResult:
     except (ValueError, AttributeError):
         return jsonify({"error": "invalid_transaction_id_format"}), 401
 
-    logger.info(f", Started Deferred Request, Transaction ID: {deferred_transaction_id}")
+    logger.debug(f"Deferred credential request received, Transaction ID: {deferred_transaction_id}")
 
     auth_header = request.headers.get("Authorization")
     if not auth_header:
@@ -591,24 +605,24 @@ def deferred_credential() -> HandlerResult:
         return introspection
     session_id, wia_client_status = introspection
 
-    logger.info(f", Session ID: {session_id}, Deferred Request, Payload: {deferred_request}")
+    logger.info(f", Session ID: {session_id}, Deferred Request, Transaction ID: {deferred_transaction_id}")
 
     current_session = session_manager.get_session(session_id=session_id)
-    if deferred_transaction_id not in current_session.transaction_id:
-        return (
-            jsonify({"error": f"Transaction ID '{deferred_transaction_id}' is not associated with this session."}),
-            400,
+    if current_session is None or deferred_transaction_id not in current_session.transaction_id:
+        logger.warning(f", Session ID: {session_id}, Unknown deferred transaction {deferred_transaction_id}")
+        raise OAuthEndpointError(
+            "invalid_transaction_id", 400, "The transaction ID is not associated with this session."
         )
 
     validated_request = verify_credential_request(current_session.transaction_id[deferred_transaction_id])
-    if isinstance(validated_request, tuple):
-        return validated_request
-
     response = _issue(validated_request, session_id, wia_client_status)
 
     is_deferred = response.get("error") == "Pending"
     if "error" in response and not is_deferred:
-        logger.error(f", Session ID: {session_id}, Credential response with error, Payload: {response}")
+        logger.warning(
+            f", Session ID: {session_id}, Deferred credential request denied: "
+            f"error={safe(response.get('error'))} description={safe(response.get('error_description'))}"
+        )
         return jsonify(response), 400
 
     if is_deferred:
@@ -616,7 +630,10 @@ def deferred_credential() -> HandlerResult:
     else:
         _add_notification_id(session_id, response)
 
-    logger.info(f", Session ID: {session_id}, Deferred credential response, Payload: {response}")
+    logger.info(
+        f", Session ID: {session_id}, Deferred credential response: "
+        f"{'still pending' if is_deferred else str(len(response.get('credentials', []))) + ' credential(s)'}"
+    )
 
     encryption_request = (
         {**validated_request, "credential_response_encryption": deferred_request["credential_response_encryption"]}
@@ -716,7 +733,8 @@ def credentialOffer2() -> Response:
     offer = authorization_code_offer(frontend_url(), [configuration_id], session_id)
     uri = credential_offer_uri(CONFIGURATION["credential_offer_scheme"], offer)
 
-    logger.info(f", Session ID: {session_id}, Credential offer successfully generated, uri: {uri}")
+    logger.info(f", Session ID: {session_id}, Credential offer generated for {safe(configuration_id, 100)}")
+    logger.debug(f", Session ID: {session_id}, Credential offer URI: {safe(uri, 1000)}")
     return jsonify({"base64_img": qr_png_base64(uri), "session_id": session_id})
 
 
@@ -737,6 +755,7 @@ def credentialOfferCreate() -> HandlerResult:
 
 
 @oidc.route("/credential_offer", methods=["GET", "POST"])
+@require_frontend_origin
 def credentialOffer() -> HandlerResult:
     """Handles the credential offer form.
 
@@ -802,6 +821,9 @@ def offer_reference(reference_id: str) -> HandlerResult:
     if entry is None:
         return jsonify({"error": "not_found"}), 404
     return entry["credential_offer"]
+
+
+oidc.register_error_handler(OAuthEndpointError, oauth_error_response)
 
 
 @oidc.errorhandler(werkzeug.exceptions.BadRequest)

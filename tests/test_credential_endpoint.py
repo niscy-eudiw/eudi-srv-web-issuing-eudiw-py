@@ -265,10 +265,10 @@ class TestCredentialEndpoint:
     def test_credential_request_verification_failure(self, client, mock_dependencies):
         """Test when credential request verification fails"""
         session_id = "test-session-123"
-        error_response = ({"error": "invalid_credential_request"}, 400)
+        from app.core.errors import OAuthEndpointError
 
         mock_dependencies["introspection"].return_value = (session_id, None)
-        mock_dependencies["verify_request"].return_value = error_response
+        mock_dependencies["verify_request"].side_effect = OAuthEndpointError("invalid_credential_request")
 
         response = client.post(
             "/credential",

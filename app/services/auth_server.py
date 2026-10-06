@@ -25,6 +25,7 @@ from typing import Any, Dict, Optional
 import requests
 
 from app.core.config import CONFIGURATION
+from app.core.log_utils import safe
 from app.utils.http import DEFAULT_TIMEOUT
 
 logger = logging.getLogger(__name__)
@@ -164,7 +165,7 @@ def check_status_list_revocation(
     if response.status_code != 200:
         raise StatusCheckError(f"Status validator HTTP {response.status_code}: {data.get('error', response.text)}")
 
-    logger.info(f"Revocation check response: {data}")
+    logger.debug(f"Status validator response for {safe(status_uri, 300)} idx={status_idx}: {safe(data, 300)}")
     valid = data.get("valid")
     if not isinstance(valid, bool):
         raise StatusCheckError(f"Status validator returned no 'valid' flag: {data}")

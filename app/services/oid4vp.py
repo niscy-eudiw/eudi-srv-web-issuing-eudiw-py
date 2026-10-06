@@ -159,6 +159,10 @@ def oid4vp_verifier_requests(
     response_same = requests.request(
         "POST", url, headers=_JSON_HEADERS, data=payload_same_device, timeout=DEFAULT_TIMEOUT
     ).json()
+    logger.debug(
+        f"Verifier presentation requests created: cross_device={response_cross.get('transaction_id')} "
+        f"same_device={response_same.get('transaction_id')}"
+    )
     return response_cross, response_same
 
 
@@ -265,4 +269,6 @@ def fetch_presentation_result(url: str) -> requests.Response:
     Raises:
         requests.RequestException: On network errors.
     """
-    return requests.request("GET", url, headers=_JSON_HEADERS, timeout=DEFAULT_TIMEOUT)
+    response = requests.request("GET", url, headers=_JSON_HEADERS, timeout=DEFAULT_TIMEOUT)
+    logger.debug(f"Verifier presentation result fetched: HTTP {response.status_code}")
+    return response

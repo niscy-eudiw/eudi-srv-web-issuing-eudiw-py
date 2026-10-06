@@ -53,7 +53,7 @@ def _purge_expired(store: Dict[str, Dict[str, Any]], label: str) -> None:
     """
     now = datetime.now()
     for entry_id in [k for k, v in store.items() if now > v["expires"]]:
-        logger.info(f"Removing {label} reference id: {entry_id}")
+        logger.debug(f"Removing expired {label} reference id: {entry_id}")
         store.pop(entry_id, None)
 
 

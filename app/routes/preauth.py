@@ -32,6 +32,8 @@ import jwt
 from flask import Blueprint, Response, jsonify, request, session
 
 from app.core.config import CONFIGURATION
+from app.core.log_utils import safe
+from app.core.security import require_frontend_origin
 from app.core.state import session_manager
 from app.services.attributes import getAttributesForm, getAttributesForm2, optional_only, requested_credential_ids
 from app.services.auth_server import generate_preauth_code
@@ -77,6 +79,7 @@ def request_preauth_token(scope: str) -> str:
     """
     response = generate_preauth_code(scope)
     session_id = response.get("session_id")
+    logger.info(f", Session ID: {session_id}, Pre-authorized code obtained for scope {safe(scope, 200)}")
     session_manager.add_session(
         session_id=session_id,
         pre_authorized_code=response.get("preauth_code"),
@@ -126,6 +129,7 @@ def preauthRed() -> str:
 
 
 @preauth.route("/preauth_form", methods=["GET", "POST"])
+@require_frontend_origin
 def preauth_form() -> str:
     """Receives the attribute form and shows the consent page.
 
@@ -133,11 +137,11 @@ def preauth_form() -> str:
         The consent page.
     """
     form_data = parse_form(request.form)
-    logger.info(f"form_data: {form_data}")
 
     session_id = session["session_id"]
     current_session = session_manager.get_session(session_id=session_id)
-    logger.info(f"session_id: {session_id}")
+    logger.info(f", Session ID: {session_id}, Pre-authorized attribute form submitted")
+    logger.debug(f", Session ID: {session_id}, Form fields: {safe(sorted(form_data), 500)}")
 
     form_data.pop("proceed")
     cleaned_data = form_formatter(form_data, issuing_country=current_session.country)
@@ -159,6 +163,7 @@ def preauth_form() -> str:
 
 
 @preauth.route("/form_authorize_generate", methods=["GET", "POST"])
+@require_frontend_origin
 def form_authorize_generate() -> str:
     """Generates the credential offer after the user consented.
 
@@ -229,13 +234,13 @@ def credentialOfferReq2() -> Union[Dict[str, Any], Tuple[Response, int]]:
             use_case=trust_use_case("credential_offer_request"),
         )
     except CertificateVerificationError as e:
-        logger.warning(f"credentialOfferReq2 rejected: untrusted signer: {e}")
+        logger.warning(f"credentialOfferReq2 rejected: untrusted signer: {safe(e)}")
         return jsonify({"error": "invalid_request", "error_description": "Untrusted request signer"}), 401
     except jwt.InvalidTokenError as e:
-        logger.warning(f"credentialOfferReq2 rejected: invalid JWT: {e}")
+        logger.warning(f"credentialOfferReq2 rejected: invalid JWT: {safe(e)}")
         return jsonify({"error": "invalid_request", "error_description": "Invalid request JWT signature"}), 401
     except ValueError as e:
-        logger.warning(f"credentialOfferReq2 rejected: malformed JWT: {e}")
+        logger.warning(f"credentialOfferReq2 rejected: malformed JWT: {safe(e)}")
         return jsonify({"error": "invalid_request", "error_description": str(e)}), 400
 
     credentials = json_payload["credentials"]

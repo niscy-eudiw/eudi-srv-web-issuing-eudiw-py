@@ -112,9 +112,8 @@ class TestLoadConfig:
 
 
 def test_mock_config_shape():
-    mocked = config.mock_config()
-    assert mocked["expiry"]["session"] == 30
-    assert set(mocked["postgres"]) == {"host", "port", "dbname", "user", "password"}
+    # No database settings: tests never connect to Postgres.
+    assert config.mock_config() == {"expiry": {"session": 30}}
 
 
 class TestDetectTestEnv:

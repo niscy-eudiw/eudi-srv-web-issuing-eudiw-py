@@ -145,7 +145,7 @@ def mdocFormatter(
             current_session.max_credential_exp, tz=datetime.timezone.utc
         )
         if expiry_date >= max_expiry_date:
-            logger.info(
+            logger.debug(
                 f", Session ID: {session_id}, clamping mdoc expiry from "
                 f"{expiry_date.isoformat()} to WIA/KA ceiling {max_expiry_date.isoformat()}"
             )
@@ -192,6 +192,10 @@ def mdocFormatter(
         devicekeyinfo=device_publickey,
         cert_path=_country_key_entry(country)["certificate_path"],
         revocation=revocation_json,
+    )
+    logger.debug(
+        f", Session ID: {session_id}, Signed mdoc {credential_metadata['doctype']} "
+        f"(country={country}, expires={expiry_date.isoformat()}, status_list={revocation_json is not None})"
     )
     return urlsafe_b64encode_nopad(mdoci.dump())
 
@@ -317,7 +321,7 @@ def sdjwtFormatter(PID: Dict[str, Any], country: str, scope: Optional[str], sess
     current_session = session_manager.get_session(session_id=session_id) if session_id else None
     if current_session and current_session.max_credential_exp is not None:
         if exp >= current_session.max_credential_exp:
-            logger.info(
+            logger.debug(
                 f", Session ID: {session_id}, clamping sd-jwt exp from {exp} "
                 f"to WIA/KA ceiling {current_session.max_credential_exp}"
             )
@@ -385,6 +389,10 @@ def sdjwtFormatter(PID: Dict[str, Any], country: str, scope: Optional[str], sess
         keys["holder_key"],
         add_decoy_claims=False,
         extra_header_parameters=x5c,
+    )
+    logger.debug(
+        f", Session ID: {session_id}, Signed SD-JWT {vct} (country={country}, exp={exp}, "
+        f"status_list={revocation_json is not None}, claims={len(pid_data.get('claims', {}))})"
     )
     return sdjwt_at_issuer.sd_jwt_issuance
 

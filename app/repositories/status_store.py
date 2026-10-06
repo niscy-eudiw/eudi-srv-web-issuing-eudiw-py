@@ -228,7 +228,7 @@ def persist_client_status(session_id: str, client_status: dict[str, Any] | None)
                             ),
                         )
             conn.commit()
-        logger.info(f"Persisted client_status for session_id {session_id} to Postgres.")
+        logger.debug(f"Persisted client_status for session_id {session_id} to Postgres.")
     except Exception:
         logger.exception(f"Failed to persist client_status for session_id {session_id}")
         raise

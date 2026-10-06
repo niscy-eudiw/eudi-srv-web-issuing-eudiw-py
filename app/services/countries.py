@@ -36,6 +36,7 @@ from urllib.parse import urlencode
 import requests
 
 from app.core.config import CONFIGURATION
+from app.core.log_utils import safe
 from app.core.state import session_manager
 from app.utils.http import DEFAULT_TIMEOUT
 
@@ -129,9 +130,10 @@ def get_metadata(base_url: str) -> Dict[str, Any]:
             if res.status_code == 200:
                 data = res.json()
                 if "token_endpoint" in data:
+                    logger.debug(f"Discovered IdP metadata at {url}")
                     return data
         except Exception as e:
-            logger.error(f"Metadata fetch failed for {url}: {e}")
+            logger.error(f"Metadata fetch failed for {safe(url)}: {safe(e)}")
     raise ValueError("No valid OAuth/OIDC metadata found")
 
 
@@ -232,7 +234,7 @@ def exchange_authorization_code(country: str, code: str) -> str:
         response.raise_for_status()
         access_token = response.json().get("access_token")
     except requests.exceptions.RequestException as e:
-        logger.error(f"An error occurred: {e}")
+        logger.error(f"An error occurred: {safe(e)}")
         raise CountryConnectorError("Token request to the country identity provider failed") from e
 
     if not access_token:
@@ -296,7 +298,7 @@ def _collect_oauth(country: str, access_token: str) -> Dict[str, Any]:
         response.raise_for_status()
         user_data = response.json()
     except requests.exceptions.RequestException as e:
-        logger.error(f"An error occurred while fetching user data: {e}")
+        logger.error(f"An error occurred while fetching user data: {safe(e)}")
         raise CountryConnectorError("Failed to fetch user data from the country identity provider") from e
 
     if country != "PT":
@@ -310,6 +312,7 @@ def _collect_oauth(country: str, access_token: str) -> Dict[str, Any]:
             if attribute["state"] == "Available" and attribute["name"] in modifiers
         }
 
+    logger.debug(f"OAuth user info for {country}: fields {sorted(cleaned)}")
     _add_country_defaults(country, cleaned, OAUTH_BIRTH_PLACES)
     return cleaned
 
@@ -343,6 +346,7 @@ def _collect_openid(country: str, access_token: str) -> Dict[str, Any]:
         raise CountryConnectorError("openid connection failed") from e
 
     data.update(_apply_custom_modifiers(country, data))
+    logger.debug(f"OpenID user info for {country}: fields {safe(sorted(data), 500)}")
     _add_country_defaults(country, data, OPENID_BIRTH_PLACES)
     return data
 

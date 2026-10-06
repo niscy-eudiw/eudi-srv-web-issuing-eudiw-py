@@ -34,6 +34,7 @@ import jwt
 from flask import Blueprint, Response, jsonify, request
 
 from app.core.security import require_api_key
+from app.core.log_utils import safe
 from app.services.frontend_metadata import UnknownFrontendError, build_frontend_metadata, sign_frontend_metadata
 from app.services.metadata import MetadataSigningError, sign_issuer_metadata
 
@@ -111,7 +112,7 @@ def _unknown_frontend(frontend_id: str) -> Tuple[Response, int]:
     Returns:
         ``(json_response, 404)``.
     """
-    logger.warning(f"Metadata requested for unknown frontend_id {frontend_id}")
+    logger.warning(f"Metadata requested for unknown frontend_id {safe(frontend_id, 64)}")
     return _error("unknown_frontend", 404, f"Frontend '{frontend_id}' is not configured")
 
 
@@ -129,6 +130,7 @@ def frontend_metadata(frontend_id: str) -> Tuple[Response, int]:
         ``({"openid_credential_issuer", "openid_configuration",
         "oauth_authorization_server"}, 200)`` or ``404`` for an unknown frontend.
     """
+    logger.debug(f"Unsigned metadata requested for frontend {safe(frontend_id, 64)}")
     try:
         documents = build_frontend_metadata(frontend_id)
     except UnknownFrontendError:
@@ -150,6 +152,7 @@ def frontend_signed_metadata(frontend_id: str) -> Tuple[Response, int]:
         ``({"signed_metadata": <jwt>}, 200)``, ``404`` for an unknown frontend
         or ``500`` when signing fails.
     """
+    logger.debug(f"Signed metadata requested for frontend {safe(frontend_id, 64)}")
     try:
         signed = sign_frontend_metadata(frontend_id)
     except UnknownFrontendError:

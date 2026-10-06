@@ -751,7 +751,7 @@ class TestEdgeCases:
         mock_session_manager,
         mock_configuration,
     ):
-        """Test that preauth_form logs form data."""
+        """preauth_form logs a milestone at INFO and only field names at DEBUG, never values."""
         from flask import Response
 
         mock_form_formatter.return_value = {"data": "test"}
@@ -761,14 +761,13 @@ class TestEdgeCases:
         with client.session_transaction() as sess:
             sess["session_id"] = "test_session_id"
 
-        response = client.post(
-            "/preauth_form", data={"field": "value", "proceed": "yes"}
-        )
+        client.post("/preauth_form", data={"family_name": "Secret-Name", "proceed": "yes"})
 
-        # Verify logger was called
-        mock_cfg = mock_configuration
-        assert mock_logger.info.called
-        assert mock_logger.info.call_count >= 2
+        info_lines = [str(c.args[0]) for c in mock_logger.info.call_args_list]
+        debug_lines = [str(c.args[0]) for c in mock_logger.debug.call_args_list]
+        assert any("Pre-authorized attribute form submitted" in line for line in info_lines)
+        assert any("family_name" in line for line in debug_lines)
+        assert not any("Secret-Name" in line for line in info_lines + debug_lines)
 
     @patch("app.services.auth_server.requests.request")
     def test_request_preauth_token_returns_all_values(

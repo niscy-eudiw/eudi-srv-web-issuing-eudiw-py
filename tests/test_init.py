@@ -489,6 +489,20 @@ class TestCreateApp:
         assert app.config["SESSION_COOKIE_SAMESITE"] == "None"
         assert app.config["SESSION_COOKIE_SECURE"] is True
 
+    def test_session_cookie_samesite_configurable(self, mock_config_service):
+        """session_cookie_samesite overrides the default (None) when frontends share the site"""
+        from app.factory import create_app
+
+        mock_config_service["session_cookie_samesite"] = "Lax"
+        app = create_app(test_config={"TESTING": True, "SECRET_KEY": "k"})
+
+        assert app.config["SESSION_COOKIE_SAMESITE"] == "Lax"
+
+    def test_nosniff_header_on_every_response(self, client):
+        """X-Content-Type-Options: nosniff is added to all responses, errors included"""
+        assert client.get("/").headers["X-Content-Type-Options"] == "nosniff"
+        assert client.get("/does-not-exist").headers["X-Content-Type-Options"] == "nosniff"
+
 
 # ============================================================================
 # ROUTE TESTS

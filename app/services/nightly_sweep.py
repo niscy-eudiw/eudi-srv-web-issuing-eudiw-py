@@ -282,6 +282,10 @@ def run_sweep() -> None:
         for session_id in iter_session_ids(conn):
             sessions_checked += 1
             tree = load_session_status_tree(conn, session_id)
+            logger.debug(
+                f"Sweep session {session_id}: WIA status={'yes' if tree['wia']['status'] else 'no'}, "
+                f"{len(tree['key_storage_statuses'])} key attestation(s)"
+            )
 
             wia_status = tree["wia"]["status"]
             ka_statuses = [ka["status"] for ka in tree["key_storage_statuses"]]

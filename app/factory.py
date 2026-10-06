@@ -32,7 +32,7 @@ from __future__ import annotations
 import os
 from typing import Any, Mapping, Optional
 
-from flask import Flask
+from flask import Flask, Response
 from flask_cors import CORS
 from flask_session import Session
 
@@ -109,7 +109,7 @@ def create_app(test_config: Optional[Mapping[str, Any]] = None) -> Flask:
 
     configure_logging(app, app_config.CONFIGURATION["logging"])
 
-    app.logger.info("Running initialization setups...")
+    app.logger.debug("Running initialization setups...")
     setup_metadata()
     if app.config["LOAD_TRUSTED_CAS"]:
         setup_trusted_cas()
@@ -129,12 +129,23 @@ def create_app(test_config: Optional[Mapping[str, Any]] = None) -> Flask:
     app.config["SESSION_FILE_THRESHOLD"] = 50
     app.config["SESSION_PERMANENT"] = False
     app.config["SESSION_TYPE"] = "filesystem"
-    app.config.update(SESSION_COOKIE_SAMESITE="None", SESSION_COOKIE_SECURE=True)
+    # "None" lets a frontend on another site POST to the backend with the
+    # session cookie; use "Lax" when frontend and backend share a site.
+    app.config.update(
+        SESSION_COOKIE_SAMESITE=app_config.CONFIGURATION.get("session_cookie_samesite", "None"),
+        SESSION_COOKIE_SECURE=True,
+    )
     Session(app)
 
     # Only the configured frontends (and cors_allowed_origins) may call the
     # backend cross-origin with credentials (cookies).
     CORS(app, origins=allowed_cors_origins(), supports_credentials=True)
 
-    app.logger.info(" - DEBUG - FLASK started")
+    @app.after_request
+    def add_security_headers(response: Response) -> Response:
+        """Stops browsers from MIME-sniffing responses (e.g. JSON as HTML)."""
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        return response
+
+    app.logger.info("Flask application created (blueprints: %d)", len(app.blueprints))
     return app

@@ -33,7 +33,9 @@ from uuid import uuid4
 from flask import Blueprint, Response, redirect, request, session
 
 from app.core.config import CONFIGURATION
+from app.core.security import require_frontend_origin
 from app.core.constants import ConfService as cfgserv
+from app.core.log_utils import safe
 from app.core.state import session_manager
 from app.repositories.session_store import Session
 from app.services.attributes import getAttributesForm, getAttributesForm2, optional_only
@@ -109,6 +111,7 @@ def _display_authorization(current_session: Session, presentation_data: Dict[str
 
 
 @dynamic.route("/", methods=["GET", "POST"])
+@require_frontend_origin
 def Supported_Countries() -> HandlerResult:
     """Initial page: lets the user choose the country that authenticates them.
 
@@ -133,7 +136,7 @@ def Supported_Countries() -> HandlerResult:
 
     if len(display_countries) == 1:
         country = next(iter(display_countries))
-        logger.info(f", Session ID: {session_id}, Authorization selection, Type: {country}")
+        logger.info(f", Session ID: {session_id}, Authorization selection, Type: {safe(country, 20)}")
         return dynamic_R1(country)
 
     return post_redirect_with_payload(
@@ -148,6 +151,7 @@ def Supported_Countries() -> HandlerResult:
 
 
 @dynamic.route("/country_selected", methods=["GET", "POST"])
+@require_frontend_origin
 def country_selected() -> HandlerResult:
     """Handles the country chosen on the selection page.
 
@@ -155,7 +159,7 @@ def country_selected() -> HandlerResult:
         See :func:`dynamic_R1`.
     """
     form_country = request.form.get("country")
-    logger.info(f", Session ID: {session['session_id']}, Authorization selection, Type: {form_country}")
+    logger.info(f", Session ID: {session['session_id']}, Authorization selection, Type: {safe(form_country, 20)}")
     return dynamic_R1(form_country)
 
 
@@ -230,6 +234,7 @@ def red() -> HandlerResult:
 
     access_token = exchange_authorization_code(current_session.country, request.args.get("code"))
     session["access_token"] = access_token
+    logger.info(f", Session ID: {session_id}, Country IdP authentication completed ({current_session.country})")
 
     data = collect_user_data(country=current_session.country, session_id=session_id, access_token=access_token)
 
@@ -243,6 +248,7 @@ def red() -> HandlerResult:
 
 
 @dynamic.route("/auth_method", methods=["GET", "POST"])
+@require_frontend_origin
 def auth() -> HandlerResult:
     """Handles the authentication method chosen by the user.
 
@@ -266,6 +272,7 @@ def auth() -> HandlerResult:
 
 
 @dynamic.route("/form", methods=["GET", "POST"])
+@require_frontend_origin
 def Dynamic_form() -> HandlerResult:
     """Receives the attribute form filled in by the user.
 
@@ -280,6 +287,8 @@ def Dynamic_form() -> HandlerResult:
 
     form_data = parse_form(request.form)
     form_data.pop("proceed")
+    logger.info(f", Session ID: {session_id}, Attribute form submitted")
+    logger.debug(f", Session ID: {session_id}, Form fields: {safe(sorted(form_data), 500)}")
 
     cleaned_data = form_formatter(form_data, issuing_country=current_session.country)
     session_manager.update_user_data(session_id=session_id, user_data=cleaned_data)
@@ -293,6 +302,7 @@ def Dynamic_form() -> HandlerResult:
 
 
 @dynamic.route("/redirect_wallet", methods=["GET", "POST"])
+@require_frontend_origin
 def redirect_wallet() -> Response:
     """Returns the user to the authorization server after consent.
 
