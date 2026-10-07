@@ -869,9 +869,9 @@ class TestBrowserSessionEnds:
             assert response.status_code == 302
             with client.session_transaction() as s:
                 assert "session_id" not in s
-            # The same cookie cannot submit the form again.
-            with pytest.raises(KeyError):
-                client.post("/dynamic/form", data={"proceed": "1", "family_name": "x"})
+            # The same cookie cannot submit the form again (400, not a 500).
+            assert client.post("/dynamic/form", data={"proceed": "1", "family_name": "x"}).status_code == 400
+            assert client.post("/dynamic/redirect_wallet").status_code == 400
 
 
 class TestRateLimits:

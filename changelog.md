@@ -308,3 +308,4 @@ _06 Oct 2026_
 - Requests with only `credential_identifier` no longer fail with a server error.
 - The WIA `client_status` claim is read from the access token only after its signature is verified with the authorization server keys.
 - Log lines escape line breaks in every request-supplied or externally received value (log injection).
+- A browser request without an active issuance session (expired, or already handed back to the wallet) gets 400 instead of a 500.

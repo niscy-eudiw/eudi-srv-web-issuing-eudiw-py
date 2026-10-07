@@ -32,7 +32,7 @@ from http import HTTPStatus
 from typing import Any, Dict, Optional, Tuple, Union
 from uuid import uuid4
 
-from flask import Blueprint, Response, redirect, request, session
+from flask import Blueprint, Response, abort, redirect, request, session
 
 from app.core.config import CONFIGURATION, feature_enabled
 from app.core.security import require_frontend_origin
@@ -69,9 +69,17 @@ def _current_session() -> Tuple[str, Session]:
 
     Returns:
         ``(session_id, session)``.
+
+    Raises:
+        werkzeug.exceptions.BadRequest: When the browser has no issuance
+            session (never started, expired, or already handed to the wallet).
     """
-    session_id = session["session_id"]
-    return session_id, session_manager.get_session(session_id=session_id)
+    session_id = session.get("session_id")
+    current_session = session_manager.get_session(session_id=session_id) if session_id else None
+    if current_session is None:
+        logger.warning("Request without an active issuance session in this browser")
+        abort(400, description="No active issuance session: it expired or was already completed. Start again from the wallet.")
+    return session_id, current_session
 
 
 def _redirect_to_user_verification(session_id: str, jws_token: str) -> Response:

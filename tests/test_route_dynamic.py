@@ -2226,15 +2226,14 @@ class TestRedirectWallet:
         assert response.status_code == 302
         self.mock_get_session.assert_called_once_with(session_id="test_sess_456")
 
-    def test_missing_session_id_returns_500(self, client):
-        """Test missing 'session_id' in Flask session causes KeyError (500)"""
+    def test_missing_session_id_returns_400(self, client):
+        """A browser without an issuance session gets 400 (it used to be a 500)."""
         # Don't set session_id in session_transaction
         response = client.post(
             "/dynamic/redirect_wallet", data={"user_id": "test_user"}
         )
 
-        # Flask catches the KeyError on session["session_id"] and returns 500
-        assert response.status_code == 500
+        assert response.status_code == 400
 
 
 # -----------------------
