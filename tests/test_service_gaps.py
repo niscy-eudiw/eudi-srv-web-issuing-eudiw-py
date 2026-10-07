@@ -1,7 +1,6 @@
 """Edge and failure paths: mdoc verification, country IdP connectors, small helpers."""
 
 import base64
-import copy
 import datetime
 from unittest.mock import MagicMock, patch
 
@@ -107,7 +106,7 @@ class TestValidateCertificate:
             assert vp_validation.validate_certificate(issued_document) == (False, "Certificate not valid")
 
     def test_tampered_signature(self, issued_document, trusted):
-        document = copy.deepcopy(issued_document)
+        document = cbor2.loads(cbor2.dumps(issued_document))  # cbor2's C CBORTag cannot be deep-copied
         signature = bytearray(document["issuerSigned"]["issuerAuth"][3])
         signature[0] ^= 0xFF
         document["issuerSigned"]["issuerAuth"][3] = bytes(signature)
@@ -118,7 +117,7 @@ class TestValidateCertificate:
         assert vp_validation.validate_certificate(document) == (False, "Doctype from MSO not equal to doctype in document")
 
     def test_tampered_element_fails_digest(self, issued_document, trusted):
-        document = copy.deepcopy(issued_document)
+        document = cbor2.loads(cbor2.dumps(issued_document))  # cbor2's C CBORTag cannot be deep-copied
         elements = document["issuerSigned"]["nameSpaces"][DOCTYPE]
         item = cbor2.loads(elements[0].value)
         item["elementValue"] = "Mallory"

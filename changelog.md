@@ -293,6 +293,7 @@ _06 Oct 2026_
 - The Docker image runs as an unprivileged user (UID 10001) and only copies `app/`.
 - CI: SonarCloud runs on `pull_request` instead of `pull_request_target` (fork PR code ran with repository secrets) and actions are pinned to commit SHAs.
 - Removed the `/formatter/cbor` and `/formatter/sd-jwt` routes, which signed caller-supplied data with the issuer keys; issuance calls the formatters directly.
+- Dependencies: pyMDOC-CBOR moves to the niscy-eudiw fork 0.6.0, which no longer caps its dependencies through `cwt`, so `cryptography` goes from 41.0.7 (2023, missing later security fixes) to 50.0.2, with `cbor2` 5.9.0, `pycose` 1.1.0 and `jwcrypto` 1.6.1. `cwt` and `cbor_diag` are no longer installed. The fork also fixes batch-issued mdocs whose nested dates (e.g. mDL `driving_privileges`) were tagged twice, and brainpool device keys written with the wrong COSE curve identifier.
 
 ### Fixed
 - Reflected XSS in the auto-submit page: the payload was rendered unescaped inside a single-quoted attribute.
