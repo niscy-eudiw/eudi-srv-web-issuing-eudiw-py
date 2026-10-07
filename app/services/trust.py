@@ -24,11 +24,18 @@ the leaf certificate's public key.
 
 Trust policy:
     * If ``trust_validator.enabled`` is true, the external trust validator is
-      asked first. When it confirms the chain, the chain is trusted.
-    * If the validator rejects the chain, errors, or is not configured /
-      disabled, the chain is checked against the local trusted CA folder
-      (``trusted_CAs_path``, loaded into :data:`app.core.state.trusted_CAs`).
+      asked first. When it confirms the chain, the chain is trusted; when it
+      answers ``trusted: false``, the chain is rejected.
+    * Only if the validator errors, or is not configured / disabled, the
+      chain is checked against the local trusted CAs of its purpose (see
+      :func:`trust_store`).
     * Otherwise :class:`CertificateVerificationError` is raised.
+
+Certificate profile (:func:`check_leaf_certificate`, :func:`_check_is_ca`):
+    the leaf must not be a CA and, when it has ``keyUsage``, must allow
+    ``digitalSignature``; a PID document signer with ``extendedKeyUsage``
+    must list the mdoc DS purpose (:data:`MDOC_DS_EKU`). Issuing certificates
+    from the chain must have ``cA=TRUE`` and ``keyCertSign``.
 
 Trust validator API (``eudi-srv-trust-validator``, ``POST /trust``):
     request ``{"chain": [...], "verificationContext": ..., "useCase": ...}``;
@@ -44,12 +51,15 @@ Attributes:
     CREDENTIAL_OFFER_REQUEST_CONTEXT: Default context for the signed
         ``/credentialOfferReq2`` request
         (``trust_validator.contexts.credential_offer_request``).
+    TRUST_PURPOSES: Purposes that may have their own trust anchors
+        (``trusted_CAs_paths.<purpose>``).
 """
 
 from __future__ import annotations
 
 import datetime
 import logging
+import time
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 import jwt
@@ -63,7 +73,7 @@ from sd_jwt.holder import SDJWTHolder
 from app.core.config import CONFIGURATION
 from app.core.log_utils import safe
 from app.core.errors import CertificateVerificationError
-from app.core.state import trusted_CAs
+from app.core.state import trusted_CAs, trusted_CAs_by_purpose
 from app.utils.crypto import certificate_validity
 from app.utils.encoding import b64_decode_x5c, b64url_decode
 
@@ -99,6 +109,14 @@ VERIFICATION_CONTEXTS = frozenset(
 KEY_ATTESTATION_CONTEXT = "WalletProviderAttestation"
 CREDENTIAL_OFFER_REQUEST_CONTEXT = "WalletRelyingPartyAccessCertificate"
 
+PURPOSE_KEY_ATTESTATION = "key_attestation"
+PURPOSE_OFFER_REQUEST = "offer_request"
+PURPOSE_PID_SIGNER = "pid_signer"
+TRUST_PURPOSES = (PURPOSE_KEY_ATTESTATION, PURPOSE_OFFER_REQUEST, PURPOSE_PID_SIGNER)
+
+#: ISO/IEC 18013-5 extended key usage of an mdoc document signer.
+MDOC_DS_EKU = x509.ObjectIdentifier("1.0.18013.5.1.2")
+
 
 def _validator_config() -> Dict[str, Any]:
     """Returns the ``trust_validator`` configuration section (or ``{}``)."""
@@ -132,6 +150,21 @@ def trust_use_case(name: str) -> Optional[str]:
     return _validator_config().get("use_cases", {}).get(name)
 
 
+def trust_store(purpose: Optional[str]) -> Dict[Any, Dict[str, Any]]:
+    """Returns the trusted CAs that anchor chains of one purpose.
+
+    Args:
+        purpose: One of :data:`TRUST_PURPOSES`, or ``None``.
+
+    Returns:
+        The CAs loaded from ``trusted_CAs_paths.<purpose>`` when that folder is
+        configured, otherwise the shared store from ``trusted_CAs_path``.
+    """
+    if purpose is not None and purpose in trusted_CAs_by_purpose:
+        return trusted_CAs_by_purpose[purpose]
+    return trusted_CAs
+
+
 # ---------------------------------------------------------------------------
 # Chain verification
 # ---------------------------------------------------------------------------
@@ -155,6 +188,36 @@ def _check_validity(certificate: x509.Certificate, now: datetime.datetime, label
         raise CertificateVerificationError(f"{label} expired. Valid until: {not_after}")
 
 
+def _is_ca(certificate: x509.Certificate) -> bool:
+    """Tells whether a certificate has ``basicConstraints`` ``cA=TRUE``.
+
+    Args:
+        certificate: Certificate to inspect.
+
+    Returns:
+        ``False`` when the extension is absent or ``cA`` is false.
+    """
+    try:
+        return certificate.extensions.get_extension_for_class(x509.BasicConstraints).value.ca
+    except x509.ExtensionNotFound:
+        return False
+
+
+def _key_usage(certificate: x509.Certificate) -> Optional[x509.KeyUsage]:
+    """Returns a certificate's ``keyUsage`` extension, if any.
+
+    Args:
+        certificate: Certificate to inspect.
+
+    Returns:
+        The extension value, or ``None`` when absent.
+    """
+    try:
+        return certificate.extensions.get_extension_for_class(x509.KeyUsage).value
+    except x509.ExtensionNotFound:
+        return None
+
+
 def _check_is_ca(certificate: x509.Certificate, label: str) -> None:
     """Checks that a certificate may sign other certificates.
 
@@ -164,14 +227,40 @@ def _check_is_ca(certificate: x509.Certificate, label: str) -> None:
 
     Raises:
         CertificateVerificationError: Without ``basicConstraints`` ``cA=TRUE``
-            (a leaf certificate must not act as an issuer).
+            (a leaf certificate must not act as an issuer) or without the
+            ``keyCertSign`` key usage.
     """
-    try:
-        is_ca = certificate.extensions.get_extension_for_class(x509.BasicConstraints).value.ca
-    except x509.ExtensionNotFound:
-        is_ca = False
-    if not is_ca:
+    if not _is_ca(certificate):
         raise CertificateVerificationError(f"{label} is not a CA certificate")
+    key_usage = _key_usage(certificate)
+    if key_usage is None or not key_usage.key_cert_sign:
+        raise CertificateVerificationError(f"{label} is not allowed to sign certificates (keyCertSign)")
+
+
+def check_leaf_certificate(certificate: x509.Certificate, purpose: Optional[str] = None) -> None:
+    """Checks that a signer certificate is an end-entity signing certificate.
+
+    Args:
+        certificate: Leaf certificate.
+        purpose: One of :data:`TRUST_PURPOSES`; a :data:`PURPOSE_PID_SIGNER`
+            certificate with ``extendedKeyUsage`` must list :data:`MDOC_DS_EKU`.
+
+    Raises:
+        CertificateVerificationError: If the leaf is a CA, its ``keyUsage``
+            lacks ``digitalSignature``, or a PID signer has the wrong EKU.
+    """
+    if _is_ca(certificate):
+        raise CertificateVerificationError("Signer certificate must not be a CA certificate")
+    key_usage = _key_usage(certificate)
+    if key_usage is not None and not key_usage.digital_signature:
+        raise CertificateVerificationError("Signer certificate key usage does not allow digitalSignature")
+    if purpose == PURPOSE_PID_SIGNER:
+        try:
+            eku = certificate.extensions.get_extension_for_class(x509.ExtendedKeyUsage).value
+        except x509.ExtensionNotFound:
+            return
+        if MDOC_DS_EKU not in eku:
+            raise CertificateVerificationError("Document signer certificate lacks the mdoc DS extended key usage")
 
 
 def _check_issued_by(certificate: x509.Certificate, issuer: x509.Certificate, label: str) -> None:
@@ -211,15 +300,17 @@ def _load_certificates(chain_der: Sequence[bytes]) -> List[x509.Certificate]:
         raise CertificateVerificationError(f"Invalid certificate in x5c chain: {e}") from e
 
 
-def verify_chain_against_trusted_CAs(chain_der: Sequence[bytes]) -> x509.Certificate:
+def verify_chain_against_trusted_CAs(chain_der: Sequence[bytes], purpose: Optional[str] = None) -> x509.Certificate:
     """Verifies a certificate chain against the local trusted CA store.
 
     The chain is walked from the leaf. Each certificate must be valid now and
     be signed either by a trusted CA (which ends the walk) or by the next
-    certificate in the chain.
+    certificate in the chain, which must be a CA (:func:`_check_is_ca`). The
+    leaf must pass :func:`check_leaf_certificate`.
 
     Args:
         chain_der: DER certificates, leaf first.
+        purpose: Selects the trust anchors (:func:`trust_store`).
 
     Returns:
         The verified leaf certificate.
@@ -230,17 +321,19 @@ def verify_chain_against_trusted_CAs(chain_der: Sequence[bytes]) -> x509.Certifi
     """
     if not chain_der:
         raise CertificateVerificationError("Empty certificate chain")
-    if not trusted_CAs:
+    store = trust_store(purpose)
+    if not store:
         raise CertificateVerificationError("No trusted CAs loaded")
 
     chain = _load_certificates(chain_der)
+    check_leaf_certificate(chain[0], purpose)
     now = datetime.datetime.now(datetime.timezone.utc)
 
     for position, certificate in enumerate(chain):
         label = "Certificate" if position == 0 else f"Chain certificate {position}"
         _check_validity(certificate, now, label)
 
-        ca_info = trusted_CAs.get(certificate.issuer)
+        ca_info = store.get(certificate.issuer)
         if ca_info is not None:
             _check_issued_by(certificate, ca_info["certificate"], label)
             _check_validity(ca_info["certificate"], now, "Trusted CA certificate")
@@ -257,11 +350,12 @@ def verify_chain_against_trusted_CAs(chain_der: Sequence[bytes]) -> x509.Certifi
     raise CertificateVerificationError("Certificate chain does not lead to a trusted CA")
 
 
-def verify_certificate_against_trusted_CA(certificate_der: bytes) -> x509.Certificate:
+def verify_certificate_against_trusted_CA(certificate_der: bytes, purpose: Optional[str] = None) -> x509.Certificate:
     """Verifies a single certificate against the local trusted CA store.
 
     Args:
         certificate_der: DER encoded certificate.
+        purpose: Selects the trust anchors (:func:`trust_store`).
 
     Returns:
         The verified certificate.
@@ -269,7 +363,7 @@ def verify_certificate_against_trusted_CA(certificate_der: bytes) -> x509.Certif
     Raises:
         CertificateVerificationError: If verification fails.
     """
-    return verify_chain_against_trusted_CAs([certificate_der])
+    return verify_chain_against_trusted_CAs([certificate_der], purpose)
 
 
 def call_trust_validator(
@@ -324,7 +418,9 @@ def call_trust_validator(
     return trusted
 
 
-def _trusted_by_validator(x5c_chain: List[str], verification_context: str, use_case: Optional[str]) -> bool:
+def _trusted_by_validator(
+    x5c_chain: List[str], verification_context: str, use_case: Optional[str]
+) -> Optional[bool]:
     """Asks the trust validator, if enabled, whether the chain is trusted.
 
     Args:
@@ -333,53 +429,63 @@ def _trusted_by_validator(x5c_chain: List[str], verification_context: str, use_c
         use_case: Optional trust validator use case.
 
     Returns:
-        ``True`` only when the validator is enabled and confirms the chain;
-        validator errors are logged and count as ``False``.
+        The validator's answer, or ``None`` when it is disabled / not
+        configured or the call fails (logged); only then may the caller fall
+        back to the local trusted CAs.
     """
     validator = _validator_config()
     if not validator.get("enabled") or not validator.get("url"):
-        return False
+        return None
     try:
-        trusted = call_trust_validator(
+        return call_trust_validator(
             url=validator["url"], chain=x5c_chain, verification_context=verification_context, use_case=use_case
         )
     except Exception as e:
         logger.warning(f"Trust validator call failed, falling back to local trusted CAs: {safe(e)}")
-        return False
-    if not trusted:
-        logger.info("Trust validator did not confirm the chain, falling back to local trusted CAs")
-    return trusted
+        return None
 
 
 def verify_x5c_chain(
-    x5c_chain: List[str], verification_context: str, use_case: Optional[str] = None
+    x5c_chain: List[str], verification_context: str, use_case: Optional[str] = None, purpose: Optional[str] = None
 ) -> x509.Certificate:
     """Establishes trust in an ``x5c`` chain (trust validator, then local CAs).
+
+    A ``trusted: false`` answer of the validator is final; the local CAs are
+    only consulted when the validator is disabled or fails.
 
     Args:
         x5c_chain: ``x5c`` header value (base64 DER, leaf first).
         verification_context: Trust validator context.
         use_case: Optional trust validator use case.
+        purpose: Selects the local trust anchors (:func:`trust_store`).
 
     Returns:
         The trusted leaf certificate.
 
     Raises:
         ValueError: If a chain entry is not valid base64.
-        CertificateVerificationError: If an entry is not a certificate, or
-            neither the trust validator nor the local trusted CAs accept the chain.
+        CertificateVerificationError: If an entry is not a certificate, the
+            leaf is not a signing certificate, the trust validator rejects the
+            chain, or (validator unavailable) the local trusted CAs do not
+            accept it.
     """
     try:
         chain_der = [b64url_decode(entry) for entry in x5c_chain]
     except Exception as e:
         raise ValueError(f"Invalid base64 encoding in x5c: {e}") from e
 
-    if _trusted_by_validator(x5c_chain, verification_context, use_case):
+    trusted = _trusted_by_validator(x5c_chain, verification_context, use_case)
+    if trusted is True:
         logger.debug(f"x5c chain trusted by the trust validator ({verification_context})")
-        return _load_certificates(chain_der[:1])[0]
+        leaf = _load_certificates(chain_der[:1])[0]
+        check_leaf_certificate(leaf, purpose)
+        return leaf
+    if trusted is False:
+        logger.warning(f"x5c chain rejected by the trust validator ({verification_context})")
+        raise CertificateVerificationError("Certificate chain rejected by the trust validator")
 
     try:
-        certificate = verify_chain_against_trusted_CAs(chain_der)
+        certificate = verify_chain_against_trusted_CAs(chain_der, purpose)
         logger.debug(f"x5c chain trusted by local CA store: {certificate.subject.rfc4514_string()}")
         return certificate
     except CertificateVerificationError as e:
@@ -443,6 +549,7 @@ def extract_public_key_from_x5c(
     allowed_algorithms: Optional[List[str]] = None,
     verification_context: str = KEY_ATTESTATION_CONTEXT,
     use_case: Optional[str] = None,
+    purpose: Optional[str] = None,
 ) -> Tuple[CertificatePublicKeyTypes, str]:
     """Extracts the signing key of a JWT after establishing trust in its ``x5c`` chain.
 
@@ -452,6 +559,7 @@ def extract_public_key_from_x5c(
             when ``None``.
         verification_context: Trust validator context.
         use_case: Optional trust validator use case.
+        purpose: Selects the local trust anchors (:func:`trust_store`).
 
     Returns:
         ``(public_key, alg)``.
@@ -461,7 +569,7 @@ def extract_public_key_from_x5c(
         CertificateVerificationError: If the chain is not trusted.
     """
     alg, x5c_chain = _x5c_header(jwt_raw, allowed_algorithms)
-    certificate = verify_x5c_chain(x5c_chain, verification_context, use_case)
+    certificate = verify_x5c_chain(x5c_chain, verification_context, use_case, purpose)
     return certificate.public_key(), alg
 
 
@@ -474,6 +582,9 @@ def verify_jwt_with_x5c(
     verification_context: str = KEY_ATTESTATION_CONTEXT,
     use_case: Optional[str] = None,
     required_claims: Sequence[str] = (),
+    purpose: Optional[str] = None,
+    max_age_seconds: Optional[int] = None,
+    expected_typ: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Verifies a JWT signed with a trusted ``x5c`` certificate chain.
 
@@ -486,25 +597,42 @@ def verify_jwt_with_x5c(
         verification_context: Trust validator context.
         use_case: Optional trust validator use case.
         required_claims: Claims that must be present (e.g. ``exp``, ``iat``).
+        purpose: Selects the local trust anchors (:func:`trust_store`).
+        max_age_seconds: When set, ``iat`` is required and may be at most
+            this old (and not in the future).
+        expected_typ: When set, the ``typ`` header must equal it if present.
 
     Returns:
         The decoded claims.
 
     Raises:
-        ValueError: If the JWT structure is invalid.
+        ValueError: If the JWT structure or ``typ`` is invalid.
         CertificateVerificationError: If the chain is not trusted.
         jwt.InvalidTokenError: If signature or claims validation fails.
     """
-    public_key, alg = extract_public_key_from_x5c(jwt_raw, allowed_algorithms, verification_context, use_case)
+    public_key, alg = extract_public_key_from_x5c(
+        jwt_raw, allowed_algorithms, verification_context, use_case, purpose
+    )
     logger.debug(f"Expected audience: {audience}, Expected issuer: {issuer}, verify_exp: {verify_exp}")
+    required = list(required_claims)
+    if max_age_seconds is not None and "iat" not in required:
+        required.append("iat")
     claims = jwt.decode(
         jwt_raw,
         key=public_key,
         algorithms=[alg],
         audience=audience,
         issuer=issuer,
-        options={"verify_exp": verify_exp, "require": list(required_claims)},
+        options={"verify_exp": verify_exp, "require": required},
     )
+    if expected_typ is not None:
+        typ = jwt.get_unverified_header(jwt_raw).get("typ")  # signed header, verified above
+        if typ is not None and typ != expected_typ:
+            raise ValueError(f"JWT typ must be {expected_typ}")
+    if max_age_seconds is not None:
+        iat = claims["iat"]
+        if not isinstance(iat, (int, float)) or iat < time.time() - max_age_seconds:
+            raise jwt.InvalidIssuedAtError(f"JWT is older than {max_age_seconds} s")
     logger.debug("JWT signature and claims verified successfully")
     return claims
 

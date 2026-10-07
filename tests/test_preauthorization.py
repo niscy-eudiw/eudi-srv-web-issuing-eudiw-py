@@ -68,6 +68,14 @@ def mock_session_manager():
         yield mock
 
 
+@pytest.fixture(autouse=True)
+def supported_credentials():
+    """Credential ids the /preauth tests request (credentials_id is validated)."""
+    ids = ["credential_1", "credential_2", "single_credential", "c1", "c2", "cred_1"]
+    with patch.dict("app.core.state.oidc_metadata", {"credential_configurations_supported": {i: {} for i in ids}}):
+        yield
+
+
 @pytest.fixture
 def mock_configuration():
     """Mock configuration services."""
@@ -89,7 +97,7 @@ def mock_configuration():
             "base_url": "http://127.0.0.1:6005"
         },
         "credential_offer_scheme": "haip-vci://",
-        "test_features": {"form_countries": True, "tx_code_in_offer": True},
+        "test_features": {"form_countries": True, "tx_code_in_offer": True, "credential_offer_request": True},
     }
     
     with patch.dict("app.routes.preauth.CONFIGURATION", mock_cfg):
@@ -132,7 +140,7 @@ class TestPreauthRed:
         with client.session_transaction() as sess:
             sess["credential_offer_URI"] = "openid-credential-offer://"
 
-        response = client.get('/preauth?credentials_id=["credential_1","credential_2"]')
+        response = client.post('/preauth?credentials_id=["credential_1","credential_2"]')
 
         # Assert
         assert response.status_code == 302
@@ -163,7 +171,7 @@ class TestPreauthRed:
         mock_session_manager,
         mock_configuration,
     ):
-        """Test preauth with empty credentials list."""
+        """An empty credentials list is invalid input: no pre-authorized code is requested."""
         from flask import Response
 
         mock_request_token.return_value = "test_session_id"
@@ -174,10 +182,10 @@ class TestPreauthRed:
         with client.session_transaction() as sess:
             sess["credential_offer_URI"] = "openid-credential-offer://"
 
-        response = client.get("/preauth?credentials_id=[]")
+        response = client.post("/preauth?credentials_id=[]")
 
-        mock_request_token.assert_called_once_with(scope="")
-        assert response.status_code == 302
+        mock_request_token.assert_not_called()
+        assert response.status_code == 400
 
     @patch("app.routes.preauth.request_preauth_token")
     @patch("app.routes.preauth.getAttributesForm")
@@ -208,7 +216,7 @@ class TestPreauthRed:
         with client.session_transaction() as sess:
             sess["credential_offer_URI"] = "openid-credential-offer://"
 
-        response = client.get('/preauth?credentials_id=["credential_1"]')
+        response = client.post('/preauth?credentials_id=["credential_1"]')
 
         # Check that optional attributes don't include mandatory ones
         call_args = mock_post_redirect.call_args[1]["data_payload"]
@@ -637,7 +645,7 @@ class TestEdgeCases:
             mock_update_auth_details
         )
 
-        response = client.get('/preauth?credentials_id=["credential_1"]')
+        response = client.post('/preauth?credentials_id=["credential_1"]')
         assert response.status_code == 302
 
     @patch("app.routes.preauth.form_formatter")
@@ -733,7 +741,7 @@ class TestEdgeCases:
         with client.session_transaction() as sess:
             sess["credential_offer_URI"] = "openid-credential-offer://"
 
-        response = client.get('/preauth?credentials_id=["single_credential"]')
+        response = client.post('/preauth?credentials_id=["single_credential"]')
 
         assert response.status_code == 302
 
@@ -827,7 +835,7 @@ class TestCompleteCodeCoverage:
         with client.session_transaction() as sess:
             sess["credential_offer_URI"] = "openid-credential-offer://"
 
-        response = client.get('/preauth?credentials_id=["c1","c2"]')
+        response = client.post('/preauth?credentials_id=["c1","c2"]')
 
         # Verify all update methods were called
         assert mock_session_manager.update_authorization_details.called
@@ -950,7 +958,7 @@ class TestCredentialOfferReq2Trust:
         root = make_cert("Root CA", "Root CA", root_key.public_key(), root_key, ca=True)
         return {
             "root": root,
-            "leaf": make_cert("Requester", "Root CA", leaf_key.public_key(), root_key, ca=True),
+            "leaf": make_cert("Requester", "Root CA", leaf_key.public_key(), root_key, ca=False),
             "untrusted": make_cert("Requester", "Other CA", leaf_key.public_key(), other_key, ca=False),
             "leaf_key": leaf_key,
             "other_key": other_key,

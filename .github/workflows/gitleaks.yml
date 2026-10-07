@@ -1,3 +1,6 @@
+# Secret scanning: Gitleaks scans the full git history with gitleaks/gitleaks.toml
+# and uploads gitleaks-report.json as a build artifact (non-blocking).
+# Runs on every push and on manual dispatch. Needs secrets: none.
 name: Secret Scanning - Gitleaks
 on:
   push:
@@ -17,7 +20,7 @@ jobs:
             docker create --name GL --entrypoint /bin/bash --interactive --volume ${{ github.workspace }}:/src zricethezav/gitleaks 
             docker start GL
             docker exec GL git config --global --add safe.directory '/src'
-            docker exec --user $(id -u):$(id -g) GL gitleaks detect --source=/src --verbose -c /src/gitleaks/gitleaks.toml --report-path /src/gitleaks-report.json
+            docker exec --user "$(id -u):$(id -g)" GL gitleaks detect --source=/src --verbose -c /src/gitleaks/gitleaks.toml --report-path /src/gitleaks-report.json
         continue-on-error: true
  
       - name: upload_artifacts   

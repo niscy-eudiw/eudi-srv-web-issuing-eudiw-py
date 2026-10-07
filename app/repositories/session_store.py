@@ -48,10 +48,11 @@ _MASKED_IN_REPR = frozenset(
         "verified_attributes",
         "oid4vp_nonce",
         "client_status",
+        "deferred_holder_keys",
     }
 )
-# Collection attributes that are serialized / shown only when non-empty.
-_SERIALIZED_WHEN_TRUTHY = ("transaction_id", "notification_ids")
+# Attributes that are serialized / shown only when non-empty (or true).
+_SERIALIZED_WHEN_TRUTHY = ("transaction_id", "notification_ids", "deferred_holder_keys", "credential_issued")
 
 
 @dataclass(repr=False)
@@ -81,6 +82,10 @@ class Session:
         client_status: WIA / key attestation status tree.
         verified_attributes: Attributes read from a verified PID presentation;
             the attribute form cannot change them.
+        deferred_holder_keys: Deferred transaction id -> holder keys proven by
+            the credential request that created it (reused, not re-verified:
+            its ``c_nonce`` is spent).
+        credential_issued: Whether a credential was issued in this session.
     """
 
     session_id: str
@@ -104,6 +109,8 @@ class Session:
     max_credential_exp: Optional[int] = None
     client_status: Optional[Dict] = None
     verified_attributes: Optional[Dict[str, Any]] = None
+    deferred_holder_keys: Dict[str, Any] = field(default_factory=dict)
+    credential_issued: bool = False
 
     def __post_init__(self) -> None:
         """Normalizes ``None`` collections passed explicitly by callers."""
@@ -111,6 +118,8 @@ class Session:
             self.transaction_id = {}
         if self.notification_ids is None:
             self.notification_ids = []
+        if self.deferred_holder_keys is None:
+            self.deferred_holder_keys = {}
 
     def _optional_items(self) -> List[tuple[str, Any]]:
         """Lists the optional attributes that carry a value.
@@ -456,6 +465,14 @@ class SessionManager:
         """
         self._set_attribute(session_id, "is_batch_credential", is_batch_credential)
 
+    def mark_credential_issued(self, session_id: str) -> None:
+        """Records that a credential was issued in the session.
+
+        Args:
+            session_id: Target session.
+        """
+        self._set_attribute(session_id, "credential_issued", True)
+
     def update_max_credential_exp(self, session_id: str, max_credential_exp: int) -> None:
         """Updates the TS3 2.4.3 credential expiry ceiling.
 
@@ -550,13 +567,17 @@ class SessionManager:
             self._sessions_by_preauth_code_ref_lock,
         )
 
-    def add_transaction_id(self, session_id: str, transaction_id: str, credential_request: Dict) -> None:
+    def add_transaction_id(
+        self, session_id: str, transaction_id: str, credential_request: Dict, holder_keys: Any = None
+    ) -> None:
         """Registers a deferred-issuance transaction on a session.
 
         Args:
             session_id: Target session.
             transaction_id: New transaction id.
             credential_request: Credential request to replay when issuing.
+            holder_keys: Holder keys proven by that request
+                (:class:`app.services.credential_issuance.ProvenKeys`).
         """
         with self._sessions_lock, self._sessions_by_transaction_id_lock:
             session_obj = self._sessions.get(session_id)
@@ -566,6 +587,8 @@ class SessionManager:
                 )
                 return
             session_obj.transaction_id[transaction_id] = credential_request
+            if holder_keys is not None:
+                session_obj.deferred_holder_keys[transaction_id] = holder_keys
             self._sessions_by_transaction_id[transaction_id] = session_obj
             logger.debug(f"Added transaction_id '{transaction_id}' to session_id '{session_id}'.")
 

@@ -566,7 +566,7 @@ class TestGlobalVariables:
         assert isinstance(state.trusted_CAs, dict)
 
     def test_is_test_env_detection(self):
-        """Test IS_TEST_ENV detection (pytest is loaded)"""
+        """IS_TEST_ENV is on: .env.test sets EUDIW_TEST_ENV=true"""
         from app.core import config
 
         assert config._detect_test_env() is True

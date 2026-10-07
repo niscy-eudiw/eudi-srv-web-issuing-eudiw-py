@@ -30,6 +30,7 @@ from typing import Any, Optional, Tuple
 from flask import Response, jsonify, redirect, request
 from werkzeug.exceptions import HTTPException
 
+from app.core.log_utils import safe
 from app.utils.http import url_get
 
 logger = logging.getLogger(__name__)
@@ -155,7 +156,7 @@ def page_not_found(e: Exception) -> Tuple[Response, int]:
     Returns:
         ``(json_response, 404)``.
     """
-    logger.warning("404 Not Found: %s", request.path)
+    logger.warning("404 Not Found: %s", safe(request.path))
     return (
         jsonify(
             {

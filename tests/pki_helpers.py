@@ -17,8 +17,29 @@ def make_name(common_name):
     return x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, common_name)])
 
 
-def make_cert(subject, issuer, public_key, signing_key, *, ca, not_before=None, not_after=None):
-    """Creates a certificate for ``subject`` signed by ``signing_key`` as ``issuer``."""
+def key_usage(*, ca):
+    """Returns the usual ``keyUsage``: keyCertSign / cRLSign for a CA, digitalSignature otherwise."""
+    return x509.KeyUsage(
+        digital_signature=not ca,
+        content_commitment=False,
+        key_encipherment=False,
+        data_encipherment=False,
+        key_agreement=False,
+        key_cert_sign=ca,
+        crl_sign=ca,
+        encipher_only=False,
+        decipher_only=False,
+    )
+
+
+def make_cert(
+    subject, issuer, public_key, signing_key, *, ca, not_before=None, not_after=None, usage="default", extensions=()
+):
+    """Creates a certificate for ``subject`` signed by ``signing_key`` as ``issuer``.
+
+    ``usage`` is the ``keyUsage`` extension: ``"default"`` adds :func:`key_usage`,
+    ``None`` omits it. ``extensions`` are extra ``(extension, critical)`` pairs.
+    """
     builder = (
         x509.CertificateBuilder()
         .subject_name(make_name(subject))
@@ -29,6 +50,12 @@ def make_cert(subject, issuer, public_key, signing_key, *, ca, not_before=None, 
         .not_valid_after(not_after or NOW + datetime.timedelta(days=30))
         .add_extension(x509.BasicConstraints(ca=ca, path_length=None), critical=True)
     )
+    if usage == "default":
+        usage = key_usage(ca=ca)
+    if usage is not None:
+        builder = builder.add_extension(usage, critical=True)
+    for extension, critical in extensions:
+        builder = builder.add_extension(extension, critical=critical)
     return builder.sign(signing_key, hashes.SHA256())
 
 

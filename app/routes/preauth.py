@@ -27,7 +27,7 @@ from __future__ import annotations
 import json
 import logging
 from http import HTTPStatus
-from typing import Any, Dict, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import jwt
 from flask import Blueprint, Response, jsonify, request, session
@@ -35,13 +35,19 @@ from flask import Blueprint, Response, jsonify, request, session
 from app.core.config import CONFIGURATION, feature_enabled
 from app.core.log_utils import safe
 from app.core.security import require_frontend_origin
-from app.core.state import session_manager
+from app.core.state import oidc_metadata, session_manager
 from app.services.attributes import getAttributesForm, getAttributesForm2, optional_only, requested_credential_ids
 from app.services.auth_server import generate_preauth_code
 from app.services.credential_offer import credential_offer_uri, pre_authorized_offer
 from app.services.presentation import InvalidFormError, form_formatter, presentation_formatter
 from app.core.errors import CertificateVerificationError
-from app.services.trust import CREDENTIAL_OFFER_REQUEST_CONTEXT, trust_context, trust_use_case, verify_jwt_with_x5c
+from app.services.trust import (
+    CREDENTIAL_OFFER_REQUEST_CONTEXT,
+    PURPOSE_OFFER_REQUEST,
+    trust_context,
+    trust_use_case,
+    verify_jwt_with_x5c,
+)
 from app.utils.forms import parse_form
 from app.utils.frontend import frontend_url
 from app.utils.http import post_redirect_with_payload
@@ -94,20 +100,54 @@ def request_preauth_token(scope: str) -> str:
     return session_id
 
 
-@preauth.route("/preauth", methods=["GET"])
-def preauthRed() -> str:
-    """Starts a pre-authorized flow for the credentials chosen in the offer form.
+def _requested_credentials(raw: Any) -> Optional[List[str]]:
+    """Parses and validates the ``credentials_id`` parameter.
 
-    Query parameters:
-        credentials_id: JSON list of credential configuration ids.
+    Args:
+        raw: Parameter value: a JSON list of credential configuration ids.
 
     Returns:
-        The attribute form page.
+        The ids, or ``None`` when the value is missing, not a non-empty JSON
+        list of strings, or names a credential the issuer does not support.
+    """
+    if not isinstance(raw, str) or not raw:
+        return None
+    try:
+        credential_list = json.loads(raw)
+    except ValueError:
+        return None
+    supported = oidc_metadata.get("credential_configurations_supported") or {}
+    if (
+        not isinstance(credential_list, list)
+        or not credential_list
+        or not all(isinstance(c, str) and c in supported for c in credential_list)
+    ):
+        return None
+    return credential_list
+
+
+@preauth.route("/preauth", methods=["POST"])
+@require_frontend_origin
+def preauthRed() -> Union[str, Tuple[str, int]]:
+    """Starts a pre-authorized flow for the credentials chosen in the offer form.
+
+    POST only (it obtains a pre-authorized code), reached from
+    ``/credential_offer`` by a ``307`` redirect that re-posts the offer form.
+
+    Parameters (query or form):
+        credentials_id: JSON list of supported credential configuration ids.
+
+    Returns:
+        The attribute form page, ``400`` for a missing or invalid
+        ``credentials_id``, or ``403`` when the feature is off.
     """
     if not feature_enabled("form_countries"):
         return "Pre-authorized form issuance is disabled", HTTPStatus.FORBIDDEN
 
-    credential_list = json.loads(request.args.get("credentials_id"))
+    credential_list = _requested_credentials(request.values.get("credentials_id"))
+    if credential_list is None:
+        logger.warning(f"/preauth rejected: invalid credentials_id {safe(request.values.get('credentials_id'), 200)}")
+        return "Invalid or missing credentials_id", HTTPStatus.BAD_REQUEST
     session_id = request_preauth_token(scope=" ".join(credential_list))
     session["session_id"] = session_id
 
@@ -135,7 +175,7 @@ def preauthRed() -> str:
     )
 
 
-@preauth.route("/preauth_form", methods=["GET", "POST"])
+@preauth.route("/preauth_form", methods=["POST"])
 @require_frontend_origin
 def preauth_form() -> str:
     """Receives the attribute form and shows the consent page.
@@ -231,10 +271,12 @@ def generate_offer(data: Dict[str, Any]) -> str:
 def credentialOfferReq2() -> Union[Dict[str, Any], Tuple[Response, int]]:
     """Creates a pre-authorized offer from a signed request.
 
-    The ``request`` JWT must carry an ``x5c`` chain trusted by the trust
-    validator or the local trusted CAs (see :mod:`app.services.trust`); its
-    signature is verified, and ``exp`` and ``iat`` are required (lifetime at
-    most :data:`OFFER_REQUEST_MAX_LIFETIME`).
+    Test only: the signer chooses both the credential type and its data, so
+    the endpoint answers ``403`` unless the ``credential_offer_request`` test
+    feature is on. The ``request`` JWT must carry an ``x5c`` chain trusted by
+    the trust validator or the local trusted CAs (see
+    :mod:`app.services.trust`); its signature is verified, and ``exp`` and
+    ``iat`` are required (lifetime at most :data:`OFFER_REQUEST_MAX_LIFETIME`).
 
     Form parameters:
         request: JWT whose payload has ``credentials: [{credential_configuration_id, data}]``.
@@ -243,8 +285,13 @@ def credentialOfferReq2() -> Union[Dict[str, Any], Tuple[Response, int]]:
         ``{"credential_offer", "tx_code"}`` (the bare offer with the
         ``tx_code`` value inside when the ``tx_code_in_offer`` test feature is
         on), ``400`` when ``request`` is missing or malformed,
-        or ``401`` when the JWT is not signed by a trusted certificate.
+        ``401`` when the JWT is not signed by a trusted certificate, or
+        ``403`` when the feature is off.
     """
+    if not feature_enabled("credential_offer_request"):
+        logger.warning("credentialOfferReq2 rejected: credential_offer_request test feature is off")
+        return jsonify({"error": "access_denied", "error_description": "Credential offer requests are disabled"}), 403
+
     json_token = request.form.get("request")
     if not json_token:
         return jsonify({"error": "invalid_request", "error_description": "Missing request JWT"}), 400
@@ -255,6 +302,7 @@ def credentialOfferReq2() -> Union[Dict[str, Any], Tuple[Response, int]]:
             verification_context=trust_context("credential_offer_request", CREDENTIAL_OFFER_REQUEST_CONTEXT),
             use_case=trust_use_case("credential_offer_request"),
             required_claims=("exp", "iat"),
+            purpose=PURPOSE_OFFER_REQUEST,
         )
         if json_payload["exp"] - json_payload["iat"] > OFFER_REQUEST_MAX_LIFETIME:
             raise jwt.InvalidTokenError(f"Request JWT lifetime exceeds {OFFER_REQUEST_MAX_LIFETIME} s")

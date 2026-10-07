@@ -24,6 +24,7 @@ def config(tmp_path):
     cfg = {
         "service_url": "https://backend.test",
         "backend_api_key": "k",
+        "admin_api_key": "k",
         "wallet_tester_url": "https://tester.test",
         "credential_offer_scheme": "openid-credential-offer://",
         "expiry": {"form": 5},
@@ -291,7 +292,9 @@ class TestLogs:
         (tmp_path / "as.log").write_text("AS 0c6f8a52-1b2c-4d3e-8f90-123456789abc token issued\n")
         config["logging"]["authorization_server_path"] = str(tmp_path / "as.log")
 
-        body = client.get("/logs?session_id=0c6f8a52-1b2c-4d3e-8f90-123456789abc", headers=API_KEY).get_json()
+        issued = MagicMock(credential_issued=True)
+        with patch.object(oidc_routes.session_manager, "get_session", return_value=issued):
+            body = client.get("/logs?session_id=0c6f8a52-1b2c-4d3e-8f90-123456789abc", headers=API_KEY).get_json()
 
         assert body["logs"] == ["INFO 0c6f8a52-1b2c-4d3e-8f90-123456789abc started", "INFO 0c6f8a52-1b2c-4d3e-8f90-123456789abc Credential Issuance Successful", "AS 0c6f8a52-1b2c-4d3e-8f90-123456789abc token issued"]
         assert body["count"] == 3 and body["successful"] is True
@@ -334,7 +337,7 @@ class TestCredentialOffers:
             app_ctx = client.application
             app_ctx.add_url_rule("/preauth", "preauth.preauthRed", lambda: "ok")
             response = client.post("/credential_offer", data=self._form(**{"Authorization Code Grant": "pre_auth_code"}))
-        assert response.status_code == 302 and "/preauth?credentials_id=" in response.headers["Location"]
+        assert response.status_code == 307 and "/preauth?credentials_id=" in response.headers["Location"]
 
     def test_authorization_code_offer_stored_and_served(self, client, config):
         with patch.dict("app.core.state.oidc_metadata", {"credential_configurations_supported": {"pid": {}}}, clear=True), patch.dict(

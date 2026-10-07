@@ -20,6 +20,7 @@ import base64
 import cbor2
 from unittest.mock import patch, MagicMock
 from datetime import datetime, timedelta, timezone
+from cryptography import x509
 from pycose.headers import X5chain
 
 from app.services.vp_validation import validate_vp_token, validate_certificate
@@ -90,9 +91,11 @@ class TestValidateCertificate:
         mock_cert.signature = b"sig"
         mock_cert.tbs_certificate_bytes = b"bytes"
         mock_cert.signature_hash_algorithm = MagicMock()
+        # A document signer without basicConstraints / keyUsage / EKU.
+        mock_cert.extensions.get_extension_for_class.side_effect = x509.ExtensionNotFound("absent", None)
         return mock_cert
 
-    @patch("app.services.vp_validation.trusted_CAs", {})
+    @patch.dict("app.core.state.trusted_CAs", {}, clear=True)
     def test_certificate_not_trusted(self):
         mock_cert = self.make_mock_cert("Fake CA")
         mdoc = {"issuerSigned": {"issuerAuth": b"auth"}}
@@ -109,8 +112,8 @@ class TestValidateCertificate:
             result = validate_certificate(mdoc)
         assert result == (False, "Certificate wasn't emitted by a Trusted CA ")
 
-    @patch(
-        "app.services.vp_validation.trusted_CAs",
+    @patch.dict(
+        "app.core.state.trusted_CAs",
         {
             "Fake CA": {
                 "certificate": MagicMock(),
@@ -119,6 +122,7 @@ class TestValidateCertificate:
                 "not_valid_after": datetime.now(timezone.utc) + timedelta(days=1),
             }
         },
+        clear=True,
     )
     def test_certificate_expired(self):
         mock_cert = self.make_mock_cert()
@@ -161,8 +165,8 @@ class TestValidateCertificate:
             result = validate_certificate(mdoc)
         assert result == (False, "Certificate not valid")
 
-    @patch(
-        "app.services.vp_validation.trusted_CAs",
+    @patch.dict(
+        "app.core.state.trusted_CAs",
         {
             "Fake CA": {
                 "certificate": MagicMock(),
@@ -171,6 +175,7 @@ class TestValidateCertificate:
                 "not_valid_after": datetime.now(timezone.utc) + timedelta(days=1),
             }
         },
+        clear=True,
     )
     def test_valid_certificate_success(self):
         mock_cert = self.make_mock_cert()
@@ -230,8 +235,8 @@ class TestValidateCertificate:
         with patch("app.services.vp_validation.Sign1Message.decode") as mock_decode, patch(
             "app.services.vp_validation.x509.load_der_x509_certificate",
             return_value=mock_cert,
-        ), patch(
-            "app.services.vp_validation.trusted_CAs",
+        ), patch.dict(
+            "app.core.state.trusted_CAs",
             {
                 "Fake CA": {
                     "certificate": MagicMock(),
@@ -240,6 +245,7 @@ class TestValidateCertificate:
                     "not_valid_after": datetime.now(timezone.utc) + timedelta(days=1),
                 }
             },
+            clear=True,
         ):
             message = MagicMock()
             message.payload = b"payload"

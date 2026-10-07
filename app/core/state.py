@@ -30,6 +30,10 @@ Attributes:
         metadata.
     trusted_CAs: Trusted CAs, keyed by the CA certificate subject (i.e. the
         issuer name of the certificates they sign).
+    trusted_CAs_by_purpose: Purpose (``key_attestation``, ``offer_request``,
+        ``pid_signer``) -> CA store like :data:`trusted_CAs`, only for the
+        purposes with their own ``trusted_CAs_paths`` folder; the others use
+        :data:`trusted_CAs`.
     session_manager: Singleton in-memory session store.
 """
 
@@ -43,6 +47,7 @@ from app.repositories.session_store import SessionManager
 oidc_metadata: dict[str, Any] = {}
 oidc_metadata_clean: dict[str, Any] = {}
 trusted_CAs: dict[Any, dict[str, Any]] = {}
+trusted_CAs_by_purpose: dict[str, dict[Any, dict[str, Any]]] = {}
 
 session_manager = SessionManager(default_expiry_minutes=CONFIGURATION["expiry"]["session"])
 

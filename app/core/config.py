@@ -28,13 +28,12 @@ configuration is used instead.
 
 Attributes:
     CONFIGURATION: The process-wide configuration dictionary.
-    IS_TEST_ENV: ``True`` when running under pytest or in CI.
+    IS_TEST_ENV: ``True`` only when ``EUDIW_TEST_ENV=true`` is set.
 """
 
 from __future__ import annotations
 
 import os
-import sys
 from typing import Any
 
 import yaml
@@ -135,18 +134,22 @@ def mock_config() -> dict[str, Any]:
     return {"expiry": {"session": 30}}
 
 
+#: Environment variable that switches the test-environment defaults on.
+TEST_ENV_VARIABLE = "EUDIW_TEST_ENV"
+
+
 def _detect_test_env() -> bool:
-    """Detects whether the process runs under pytest or a CI pipeline.
+    """Tells whether the process runs as a test environment.
+
+    The test environment relaxes start-up checks (random session key, no
+    trusted CAs, no background services), so it needs an explicit opt-in:
+    generic variables such as ``CI``, which build and container platforms
+    set, or the presence of pytest, do not enable it.
 
     Returns:
-        ``True`` for pytest, ``CI=true`` or ``SONARCLOUD=true``.
+        ``True`` only for ``EUDIW_TEST_ENV=true``.
     """
-    return (
-        "pytest" in sys.modules
-        or any("pytest" in arg for arg in sys.argv)
-        or os.getenv("CI") == "true"
-        or os.getenv("SONARCLOUD") == "true"
-    )
+    return os.getenv(TEST_ENV_VARIABLE) == "true"
 
 
 CONFIGURATION: dict[str, Any] = mock_config() if os.getenv("MOCK_CONFIGURATION") else load_config()

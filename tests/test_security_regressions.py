@@ -136,6 +136,8 @@ class TestSelfAssertedIdentity:
         verified = {"family_name": "Real", "birth_date": "1980-02-03", "nationality": ["PT"]}
         with patch.object(
             dynamic_routes.session_manager, "get_session", return_value=_session(verified_attributes=verified)
+        ), patch.object(
+            dynamic_routes, "_form_attribute_names", return_value={"family_name", "given_name", "birth_date"}
         ), patch.object(dynamic_routes.session_manager, "update_user_data") as store, patch.object(
             dynamic_routes, "presentation_formatter", return_value={}
         ), patch.object(dynamic_routes, "post_redirect_with_payload", return_value="consent"):
@@ -159,7 +161,7 @@ class TestSelfAssertedIdentity:
     @pytest.mark.parametrize(
         "method, path",
         [
-            ("get", '/preauth?credentials_id=["pid"]'),
+            ("post", '/preauth?credentials_id=["pid"]'),
             ("post", "/preauth_form"),
             ("post", "/form_authorize_generate"),
         ],
@@ -182,11 +184,116 @@ class TestSelfAssertedIdentity:
         offer.assert_called_once_with(sessions["s1"].user_data)
 
 
+class TestVerifiedPidOverride:
+    """Verified PID values were only rebound for exact-name scalar form fields."""
+
+    VERIFIED = {
+        "family_name": "Real",
+        "birth_date": "1980-02-03",
+        "age_over_18": True,
+        "nationality": ["PT"],
+        "place_of_birth": {"country": "PT", "locality": "Lisboa"},
+        "expiry_date": "2030-01-01",
+    }
+    #: Form of a PID request that has both the mdoc and SD-JWT names.
+    MANDATORY = {
+        name: {"type": "string", "filled_value": None, "mandatory": True}
+        for name in ("family_name", "given_name", "birth_date", "age_over_18", "nationality", "place_of_birth")
+    }
+    OPTIONAL = {"birthdate": {"type": "string"}, "nationalities": {"type": "list"}, "birth_place": {"type": "list"}}
+
+    def _submit(self, client, data):
+        with patch.object(
+            dynamic_routes.session_manager, "get_session", return_value=_session(verified_attributes=self.VERIFIED)
+        ), patch.object(dynamic_routes, "getAttributesForm", return_value=dict(self.MANDATORY)), patch.object(
+            dynamic_routes, "getAttributesForm2", return_value=dict(self.OPTIONAL)
+        ), patch.object(dynamic_routes.session_manager, "update_user_data") as store, patch.object(
+            dynamic_routes, "presentation_formatter", return_value={}
+        ), patch.object(dynamic_routes, "post_redirect_with_payload", return_value="consent"):
+            response = client.post("/dynamic/form", data={"proceed": "1", **data})
+        assert response.status_code == 200
+        return store.call_args.kwargs["user_data"]
+
+    def _assert_verified(self, stored):
+        assert stored["family_name"] == "Real"
+        assert stored["birth_date"] == stored["birthdate"] == "1980-02-03"
+        assert stored["age_over_18"] is True
+        assert stored["nationality"] == stored["nationalities"] == ["PT"]
+        assert stored["place_of_birth"] == stored["birth_place"] == {"country": "PT", "locality": "Lisboa"}
+
+    @pytest.mark.parametrize("key", ["[family_name]", "family_name][x", "[family_name][]"])
+    def test_bracketed_name_cannot_override(self, client, key):
+        stored = self._submit(client, {key: "ATTACKER", "given_name": "Extra"})
+        self._assert_verified(stored)
+        assert stored["given_name"] == "Extra"
+
+    def test_non_scalar_values_cannot_be_overridden(self, client):
+        stored = self._submit(
+            client,
+            {
+                "age_over_18": "false",
+                "nationality[]": ["XX", "YY"],
+                "place_of_birth[0][country]": "XX",
+                "place_of_birth[0][locality]": "Nowhere",
+            },
+        )
+        self._assert_verified(stored)
+
+    def test_aliases_cannot_override(self, client):
+        stored = self._submit(
+            client,
+            {
+                "birthdate": "1999-09-09",
+                "birth_place[0][country]": "XX",
+                "nationalities[0][country_code]": "XX",
+            },
+        )
+        self._assert_verified(stored)
+
+    def test_attributes_outside_the_form_ignored(self, client):
+        stored = self._submit(client, {"issuing_authority": "Forged", "family_name ": "ATTACKER", "[]": "x"})
+        assert {"issuing_authority", "family_name "}.isdisjoint(stored)
+        # PID metadata is not copied into the new credential either.
+        assert "expiry_date" not in stored and stored["issuing_country"] == "FC"
+        self._assert_verified(stored)
+
+
+class TestCredentialOfferRequestDisabled:
+    """credentialOfferReq2: any trusted signer chose the credential type and data, PID included."""
+
+    def _token(self):
+        import time
+
+        now = int(time.time())
+        return _jwt({"credentials": [{"credential_configuration_id": "pid", "data": {"family_name": "X"}}], "iat": now, "exp": now + 300})
+
+    def test_disabled_by_default(self, client):
+        with patch.object(preauth_routes, "verify_jwt_with_x5c") as verify, patch.object(
+            preauth_routes, "request_preauth_token"
+        ) as start, patch.object(preauth_routes, "session_manager") as sessions:
+            response = client.post("/credentialOfferReq2", data={"request": self._token()})
+        assert response.status_code == 403
+        assert response.get_json()["error"] == "access_denied"
+        verify.assert_not_called()
+        start.assert_not_called()
+        sessions.update_user_data.assert_not_called()
+
+    @pytest.mark.parametrize("value", [False, "true", 1])
+    def test_only_explicit_true_enables(self, client, config, value):
+        config["test_features"] = {"credential_offer_request": value, "form_countries": True, "tx_code_in_offer": True}
+        with patch.object(preauth_routes, "request_preauth_token") as start:
+            response = client.post("/credentialOfferReq2", data={"request": self._token()})
+        assert response.status_code == 403
+        start.assert_not_called()
+
+
 class TestTxCodeInOffer:
     """The tx_code (second factor) travelled inside the credential offer."""
 
-    def test_tx_code_returned_beside_the_offer(self, client):
+    def test_tx_code_returned_beside_the_offer(self, client, config):
         import time
+
+        config["test_features"] = {"credential_offer_request": True}
 
         now = int(time.time())
         token = _jwt({"credentials": [{"credential_configuration_id": "pid", "data": {"family_name": "Doe"}}], "iat": now, "exp": now + 300})
@@ -643,7 +750,7 @@ class TestLogsExactMatch:
         app = Flask(__name__)
         app.config.update(TESTING=True, SECRET_KEY="test")
         app.register_blueprint(oidc)
-        config = {"backend_api_key": "k" * 40, "logging": {"backend_path": str(log)}}
+        config = {"admin_api_key": "k" * 40, "logging": {"backend_path": str(log)}}
         with patch_configuration(config):
             yield app.test_client()
 
@@ -704,7 +811,7 @@ class TestMetadataSigner:
         app = Flask(__name__)
         app.config.update(TESTING=True)
         app.register_blueprint(metadata)
-        config = {"backend_api_key": "k" * 40, "frontend": {"frontends_config": {"fe": {}}}}
+        config = {"admin_api_key": "k" * 40, "frontend": {"frontends_config": {"fe": {}}}}
         with patch_configuration(config), patch.object(
             metadata_routes, "sign_issuer_metadata",
             side_effect=MetadataSigningError("Failed to load private key", "/etc/eudiw/keys/fe.key: bad password"),
@@ -745,6 +852,16 @@ class TestFormIndexDos:
             dynamic_routes.session_manager, "update_user_data"
         ) as store:
             response = client.post("/dynamic/form", data={"proceed": "1", "x[9999999999]": "1"})
+        assert response.status_code == 400
+        store.assert_not_called()
+
+    def test_key_without_name_returns_400(self, client, config):
+        """``[]=x`` raised IndexError in the parser (500)."""
+        config["test_features"] = {"form_countries": True}
+        with patch.object(dynamic_routes.session_manager, "get_session", return_value=_session()), patch.object(
+            dynamic_routes.session_manager, "update_user_data"
+        ) as store:
+            response = client.post("/dynamic/form", data={"proceed": "1", "[]": "x"})
         assert response.status_code == 400
         store.assert_not_called()
 
@@ -836,8 +953,10 @@ class TestX5cTrust:
         "claims",
         [{}, {"iat": 1}, {"exp": 4102444800}, {"iat": 1700000000, "exp": 1700000000 + 86400}],
     )
-    def test_offer_request_needs_short_lived_exp_and_iat(self, client, pki, claims):
+    def test_offer_request_needs_short_lived_exp_and_iat(self, client, config, pki, claims):
         import time
+
+        config["test_features"] = {"credential_offer_request": True}
 
         import jwt as pyjwt
         from cryptography.hazmat.primitives.asymmetric import ec
@@ -885,7 +1004,7 @@ class TestRateLimits:
         )
         config = {
             "service_url": "https://backend.test/",
-            "backend_api_key": "k" * 40,
+            "admin_api_key": "k" * 40,
             "frontend": {"default": "fe", "frontends_config": {"fe": {"url": "https://fe.test"}}},
             "keys": {"credential_encryption_key": b"Key_Sample"},
             "logging": {"backend_path": "/tmp/log/fakepath.log", "log_level": "INFO"},
@@ -1047,3 +1166,891 @@ class TestSessionRepr:
         text = repr(session)
         assert "secret-code" not in text and "12345" not in text and "Doe" not in text
         assert "tx_code=<set>" in text and "country='FC'" in text
+
+
+# ---------------------------------------------------------------------------
+# Final review (2026-10-07)
+# ---------------------------------------------------------------------------
+
+
+class TestTrustAnchorsPerPurpose:
+    """One CA store anchored key attestations, offer requests and PID signers alike;
+    a trust validator "trusted: false" fell back to it; any certificate profile passed."""
+
+    @pytest.fixture
+    def pki(self):
+        from cryptography.hazmat.primitives.asymmetric import ec
+
+        from pki_helpers import make_cert
+
+        keys = {name: ec.generate_private_key(ec.SECP256R1()) for name in ("ka", "offer", "mid", "leaf")}
+        ka_root = make_cert("KA Root", "KA Root", keys["ka"].public_key(), keys["ka"], ca=True)
+        offer_root = make_cert("Offer Root", "Offer Root", keys["offer"].public_key(), keys["offer"], ca=True)
+        return {"keys": keys, "ka_root": ka_root, "offer_root": offer_root}
+
+    def _leaf(self, pki, **kwargs):
+        from pki_helpers import make_cert
+
+        keys = pki["keys"]
+        return make_cert("Signer", "Offer Root", keys["leaf"].public_key(), keys["offer"], **{"ca": False, **kwargs})
+
+    @pytest.fixture
+    def stores(self, pki):
+        from app.core import state
+        from pki_helpers import ca_entry
+
+        shared = {pki["offer_root"].subject: ca_entry(pki["offer_root"])}
+        own = {"key_attestation": {pki["ka_root"].subject: ca_entry(pki["ka_root"])}}
+        with patch.dict(state.trusted_CAs, shared, clear=True), patch.dict(state.trusted_CAs_by_purpose, own, clear=True):
+            yield
+
+    def test_offer_request_ca_does_not_anchor_key_attestations(self, pki, stores):
+        from app.core.errors import CertificateVerificationError
+        from app.services import trust
+        from pki_helpers import x5c
+
+        chain = x5c(self._leaf(pki))
+        with patch_configuration({"trust_validator": {"enabled": False}}):
+            # offer_request has no folder of its own: the shared store anchors it.
+            assert trust.verify_x5c_chain(chain, "ctx", purpose="offer_request").subject.rfc4514_string() == "CN=Signer"
+            with pytest.raises(CertificateVerificationError, match="not issued by a trusted CA"):
+                trust.verify_x5c_chain(chain, "ctx", purpose="key_attestation")
+
+    def test_setup_loads_per_purpose_folders_with_fallback(self, pki, tmp_path):
+        from cryptography.hazmat.primitives import serialization
+
+        from app.core import state
+        from app.services import metadata, trust
+
+        for folder, cert in (("shared", pki["offer_root"]), ("pid", pki["ka_root"])):
+            (tmp_path / folder).mkdir()
+            (tmp_path / folder / "ca.pem").write_bytes(cert.public_bytes(serialization.Encoding.PEM))
+        config = {"trusted_CAs_path": str(tmp_path / "shared"), "trusted_CAs_paths": {"pid_signer": str(tmp_path / "pid")}}
+        with patch.dict(state.trusted_CAs, {}, clear=True), patch.dict(state.trusted_CAs_by_purpose, {}, clear=True):
+            with patch_configuration(config):
+                metadata.setup_trusted_cas()
+            assert list(trust.trust_store("pid_signer")) == [pki["ka_root"].subject]
+            assert list(trust.trust_store("key_attestation")) == [pki["offer_root"].subject]
+            assert list(trust.trust_store("offer_request")) == [pki["offer_root"].subject]
+
+    def test_validator_rejection_is_not_overridden_locally(self, pki, stores):
+        from app.core.errors import CertificateVerificationError
+        from app.services import trust
+        from pki_helpers import x5c
+
+        config = {"trust_validator": {"enabled": True, "url": "https://tv.test/trust"}}
+        with patch_configuration(config), patch.object(trust, "call_trust_validator", return_value=False):
+            with pytest.raises(CertificateVerificationError, match="rejected by the trust validator"):
+                trust.verify_x5c_chain(x5c(self._leaf(pki)), "ctx", purpose="offer_request")
+        # An unreachable validator still falls back to the local store.
+        with patch_configuration(config), patch.object(trust, "call_trust_validator", side_effect=ConnectionError):
+            assert trust.verify_x5c_chain(x5c(self._leaf(pki)), "ctx", purpose="offer_request")
+
+    @pytest.mark.parametrize("profile", ["ca_leaf", "no_digital_signature", "validator_ca_leaf"])
+    def test_leaf_must_be_a_signing_certificate(self, pki, stores, profile):
+        from app.core.errors import CertificateVerificationError
+        from app.services import trust
+        from pki_helpers import key_usage, x5c
+
+        if profile == "no_digital_signature":
+            leaf = self._leaf(pki, usage=key_usage(ca=True))
+        else:
+            leaf = self._leaf(pki, ca=True)
+        config = {"trust_validator": {"enabled": profile == "validator_ca_leaf", "url": "https://tv.test/trust"}}
+        with patch_configuration(config), patch.object(trust, "call_trust_validator", return_value=True):
+            with pytest.raises(CertificateVerificationError, match="must not be a CA|digitalSignature"):
+                trust.verify_x5c_chain(x5c(leaf), "ctx", purpose="offer_request")
+
+    def test_intermediate_needs_key_cert_sign(self, pki, stores):
+        from app.core.errors import CertificateVerificationError
+        from app.services import trust
+        from pki_helpers import make_cert, x5c
+
+        keys = pki["keys"]
+        mid = make_cert("Mid", "Offer Root", keys["mid"].public_key(), keys["offer"], ca=True, usage=None)
+        leaf = make_cert("Signer", "Mid", keys["leaf"].public_key(), keys["mid"], ca=False)
+        with patch_configuration({}):
+            with pytest.raises(CertificateVerificationError, match="keyCertSign"):
+                trust.verify_x5c_chain(x5c(leaf, mid), "ctx", purpose="offer_request")
+
+    @pytest.mark.parametrize("eku, accepted", [(None, True), ("1.0.18013.5.1.2", True), ("1.3.6.1.5.5.7.3.2", False)])
+    def test_pid_signer_extended_key_usage(self, pki, eku, accepted):
+        from cryptography import x509
+
+        from app.core.errors import CertificateVerificationError
+        from app.services import trust
+
+        extensions = [(x509.ExtendedKeyUsage([x509.ObjectIdentifier(eku)]), False)] if eku else []
+        leaf = self._leaf(pki, extensions=extensions)
+        if accepted:
+            trust.check_leaf_certificate(leaf, "pid_signer")
+        else:
+            with pytest.raises(CertificateVerificationError, match="mdoc DS"):
+                trust.check_leaf_certificate(leaf, "pid_signer")
+        trust.check_leaf_certificate(leaf, "offer_request")  # the EKU only binds PID signers
+
+    def test_pid_presentation_uses_the_pid_signer_anchors(self, pki):
+        from cryptography.hazmat.primitives import serialization
+
+        from app.core import state
+        from app.services import vp_validation
+        from pki_helpers import ca_entry
+
+        leaf = self._leaf(pki)
+        message = MagicMock(uhdr={vp_validation.X5chain: leaf.public_bytes(serialization.Encoding.DER)})
+        shared = {pki["offer_root"].subject: ca_entry(pki["offer_root"])}
+        own = {"pid_signer": {pki["ka_root"].subject: ca_entry(pki["ka_root"])}}
+        with patch.dict(state.trusted_CAs, shared, clear=True), patch.dict(
+            state.trusted_CAs_by_purpose, own, clear=True
+        ), patch.object(vp_validation.Sign1Message, "decode", return_value=message):
+            result = vp_validation.validate_certificate({"issuerSigned": {"issuerAuth": []}})
+        assert result == (False, vp_validation._UNTRUSTED_CA)
+
+
+class TestSeparateAdminApiKey:
+    """One backend_api_key, held by every frontend, also opened /logs,
+    /admin/sessions/client_status and the metadata signer."""
+
+    FRONTEND_KEY = "f" * 40
+    ADMIN_KEY = "a" * 40
+
+    @pytest.fixture
+    def admin_client(self, tmp_path):
+        from app.routes import oidc as oidc_routes
+        from app.routes.metadata import metadata
+        from app.routes.oidc import oidc
+
+        app = Flask(__name__)
+        app.config.update(TESTING=True, SECRET_KEY="test")
+        app.register_blueprint(oidc)
+        app.register_blueprint(metadata)
+        config = {
+            "backend_api_key": self.FRONTEND_KEY,
+            "admin_api_key": self.ADMIN_KEY,
+            "logging": {"backend_path": str(tmp_path / "none.log")},
+            "frontend": {"default": "fe", "frontends_config": {"fe": {"url": "https://fe.test"}}},
+        }
+        with patch_configuration(config) as cfg, patch.object(oidc_routes, "session_manager") as sessions:
+            sessions.get_all_client_statuses.return_value = {}
+            yield app.test_client(), cfg
+
+    ADMIN_REQUESTS = [
+        ("get", "/logs?session_id=0c6f8a52-1b2c-4d3e-8f90-123456789abc"),
+        ("get", "/admin/sessions/client_status"),
+        ("post", "/metadata/metadata_signer"),
+    ]
+
+    @pytest.mark.parametrize("method, path", ADMIN_REQUESTS)
+    def test_frontend_key_does_not_open_admin_endpoints(self, admin_client, method, path):
+        client, _ = admin_client
+        response = getattr(client, method)(path, json={}, headers={"X-Api-Key": self.FRONTEND_KEY})
+        assert response.status_code == 401
+
+    @pytest.mark.parametrize("method, path", ADMIN_REQUESTS)
+    def test_admin_key_opens_admin_endpoints(self, admin_client, method, path):
+        client, _ = admin_client
+        response = getattr(client, method)(path, json={}, headers={"X-Api-Key": self.ADMIN_KEY})
+        assert response.status_code not in (401, 503)
+
+    @pytest.mark.parametrize("method, path", ADMIN_REQUESTS)
+    def test_unset_admin_key_fails_closed(self, admin_client, method, path):
+        client, config = admin_client
+        del config["admin_api_key"]
+        response = getattr(client, method)(path, json={}, headers={"X-Api-Key": self.FRONTEND_KEY})
+        assert response.status_code == 503
+
+    def test_admin_key_does_not_read_frontend_metadata(self, admin_client):
+        client, _ = admin_client
+        assert client.get("/metadata/fe", headers={"X-Api-Key": self.ADMIN_KEY}).status_code == 401
+
+
+class TestSignedDisplayPayloads:
+    """The frontend could not tell a display payload posted by the backend from a forged one."""
+
+    KEY_A = "A" * 32
+    KEY_B = "B" * 48
+
+    @pytest.fixture
+    def frontends(self):
+        from app.utils import http
+
+        config = {
+            "service_url": "https://backend.test",
+            "credential_offer_scheme": "openid-credential-offer://",
+            "frontend": {
+                "default": "fa",
+                "frontends_config": {
+                    "fa": {"url": "https://fe.test", "payload_key": self.KEY_A},
+                    "fb": {"url": "https://fe.test/b", "payload_key": self.KEY_B},
+                    "fc": {"url": "https://other.test"},
+                },
+            },
+        }
+        app = Flask(__name__)
+        with patch_configuration(config), patch.object(http, "_unsigned_frontends_warned", set()), app.app_context():
+            yield config
+
+    @staticmethod
+    def _fields(page):
+        import html
+        import re
+
+        return {name: html.unescape(value) for name, value in re.findall(r'name="(payload(?:_jwt)?)" value="([^"]*)"', page)}
+
+    def test_payload_jwt_matches_the_spec(self, frontends):
+        import jwt as pyjwt
+
+        from app.utils.http import post_redirect_with_payload
+
+        fields = self._fields(post_redirect_with_payload("https://fe.test/display_form", {"session_id": "s1", "n": [1]}))
+        token = fields["payload_jwt"]
+        assert pyjwt.get_unverified_header(token) == {"alg": "HS256", "typ": "JWT"}
+        claims = pyjwt.decode(token, self.KEY_A.encode(), algorithms=["HS256"], audience="fa")
+        assert claims["payload"] == json.loads(fields["payload"]) == {"session_id": "s1", "n": [1]}
+        assert claims["exp"] - claims["iat"] == 300
+
+    def test_each_frontend_gets_its_own_key_and_audience(self, frontends):
+        import jwt as pyjwt
+
+        from app.utils.http import post_redirect_with_payload
+
+        token = self._fields(post_redirect_with_payload("https://fe.test/b/display_form", {}))["payload_jwt"]
+        assert pyjwt.decode(token, self.KEY_B.encode(), algorithms=["HS256"], audience="fb")["aud"] == "fb"
+        with pytest.raises(pyjwt.InvalidSignatureError):
+            pyjwt.decode(token, self.KEY_A.encode(), algorithms=["HS256"], audience="fb")
+
+    def test_frontend_without_key_gets_no_jwt_and_one_warning(self, frontends, caplog):
+        from app.utils.http import post_redirect_with_payload
+
+        for _ in range(3):
+            fields = self._fields(post_redirect_with_payload("https://other.test/display_form", {"a": 1}))
+            assert set(fields) == {"payload"}
+        assert sum("has no payload_key" in r.getMessage() for r in caplog.records) == 1
+
+    @pytest.mark.parametrize("key", ["short", "x" * 31, 12345678901234567890123456789012345])
+    def test_weak_payload_key_rejected(self, frontends, key):
+        from app.utils.http import post_redirect_with_payload
+
+        frontends["frontend"]["frontends_config"]["fa"]["payload_key"] = key
+        with pytest.raises(ValueError, match="payload_key"):
+            post_redirect_with_payload("https://fe.test/display_form", {})
+
+    def test_route_pages_carry_the_signature(self, frontends):
+        from app.routes import oidc as oidc_routes
+        from app.routes.oidc import oidc
+
+        app = Flask(__name__)
+        app.config.update(TESTING=True, SECRET_KEY="test")
+        app.register_blueprint(oidc)
+        with patch.object(oidc_routes, "credential_display_names", return_value={}):
+            page = app.test_client().get("/credential_offer_choice?frontend_id=fa").get_data(as_text=True)
+        assert "payload_jwt" in self._fields(page)
+
+
+PID_CONFIG = "eu.europa.ec.eudi.pid_mdoc"
+DEFERRED_CONFIG = "eu.europa.ec.eudi.pid_mdoc_deferred"
+
+
+@pytest.fixture
+def issuance():
+    """Real proofs and c_nonces; batch size 2; issuance and sessions mocked."""
+    from app.services import credential_issuance as ci
+    from proof_helpers import proof_config
+
+    policy = {"credential_metadata": {"credential_reuse_policy": {"options": [{"details": ["once_only"], "batch_size": 2}]}}}
+    configs = {PID_CONFIG: policy, DEFERRED_CONFIG: policy}
+    sessions = MagicMock()
+    sessions.get_session.return_value = MagicMock(frontend_id="fe1")
+    with patch_configuration({"status_validator": {"enabled": False}, **proof_config()}), patch.dict(
+        ci.oidc_metadata, {"credential_configurations_supported": configs}, clear=True
+    ), patch.object(ci, "session_manager", sessions), patch.object(
+        ci, "issue_credentials_for_session", return_value={"credentials": [{"credential": "c"}]}
+    ) as issue:
+        yield issue
+
+
+def _proofs_request(*tokens, configuration_id=PID_CONFIG):
+    return {"credential_configuration_id": configuration_id, "proofs": {"jwt": list(tokens)}}
+
+
+class TestSingleUseCNonce:
+    """A c_nonce stayed valid for its whole hour, so a captured proof could be replayed."""
+
+    def test_replayed_proof_rejected(self, issuance):
+        from app.services import credential_issuance as ci
+        from proof_helpers import proof_jwt
+
+        token, _ = proof_jwt()
+        assert "credentials" in ci.generate_credentials(_proofs_request(token), "s1")
+        replay = ci.generate_credentials(_proofs_request(token), "s1")
+        assert replay["error"] == "invalid_nonce" and "already been used" in replay["error_description"]
+        assert issuance.call_count == 1
+
+    def test_new_proof_with_spent_nonce_rejected(self, issuance):
+        from app.services import credential_issuance as ci
+        from proof_helpers import c_nonce, proof_jwt
+
+        nonce = c_nonce()
+        assert "credentials" in ci.generate_credentials(_proofs_request(proof_jwt(nonce=nonce)[0]), "s1")
+        assert ci.generate_credentials(_proofs_request(proof_jwt(nonce=nonce)[0]), "s1")["error"] == "invalid_nonce"
+
+    def test_batch_proofs_may_share_the_request_nonce(self, issuance):
+        from app.services import credential_issuance as ci
+        from proof_helpers import c_nonce, proof_jwt
+
+        nonce = c_nonce()
+        result = ci.generate_credentials(_proofs_request(proof_jwt(nonce=nonce)[0], proof_jwt(nonce=nonce)[0]), "s1")
+        assert "credentials" in result
+
+    def test_rejected_request_does_not_spend_the_nonce(self, issuance):
+        from app.services import credential_issuance as ci
+        from proof_helpers import c_nonce, proof_jwt
+
+        nonce = c_nonce()
+        good, bad = proof_jwt(nonce=nonce)[0], proof_jwt(nonce=nonce, aud="https://evil.test")[0]
+        assert ci.generate_credentials(_proofs_request(good, bad), "s1")["error"] == "invalid_proof"
+        assert "credentials" in ci.generate_credentials(_proofs_request(good), "s1")
+
+    def test_nonce_without_identifier_rejected(self, issuance):
+        import time
+
+        from jwcrypto import jwk
+
+        from app.services import credential_issuance as ci
+        from proof_helpers import nonce_key_pem, proof_jwt
+
+        now = int(time.time())
+        legacy = ci.encrypt_jwe(
+            {"iss": "https://backend.test", "iat": now, "exp": now + 60, "aud": ["https://backend.test/credential"]},
+            jwk.JWK.from_pem(nonce_key_pem()),
+            alg="RSA-OAEP",
+            enc="A256GCM",
+        )
+        result = ci.generate_credentials(_proofs_request(proof_jwt(nonce=legacy)[0]), "s1")
+        assert result["error"] == "invalid_nonce" and not issuance.called
+
+    def test_deferred_retrieval_reuses_the_proven_keys(self, issuance):
+        from app.services import credential_issuance as ci
+        from proof_helpers import proof_jwt
+
+        request = _proofs_request(proof_jwt()[0], configuration_id=DEFERRED_CONFIG)
+        proven = ci.ProvenKeys()
+        assert "credentials" in ci.generate_credentials(request, "s1", holder_keys=proven)
+        assert proven.verified and len(proven.keys) == 1
+        with patch.object(ci, "verify_proof_jwt") as verify:
+            # Same stored request: its nonce is spent, so it must not be checked again.
+            assert "credentials" in ci.generate_credentials(request, "s1", holder_keys=proven)
+        verify.assert_not_called()
+        assert issuance.call_args_list[0].args == issuance.call_args_list[1].args
+
+
+def _encrypted_nonce(**claims):
+    """Encrypts a c_nonce payload to the test nonce key (defaults: valid for a minute)."""
+    import time
+
+    from jwcrypto import jwk
+
+    from app.services import credential_issuance as ci
+    from proof_helpers import nonce_key_pem
+
+    now = int(time.time())
+    payload = {"iss": "https://backend.test", "jti": "j1", "iat": now, "exp": now + 60, "aud": ["https://backend.test/credential"]}
+    payload.update(claims)
+    return ci.encrypt_jwe(payload, jwk.JWK.from_pem(nonce_key_pem()), alg="RSA-OAEP", enc="A256GCM")
+
+
+class TestCNonceConformance:
+    """OpenID4VCI 1.0: nonce reuse is the issuer's choice (§13.8); a missing nonce is invalid_proof (§8.3.1.2)."""
+
+    def test_single_use_is_the_default(self, issuance):
+        from app.services import credential_issuance as ci
+        from proof_helpers import c_nonce, proof_jwt
+
+        assert "proof_validation" not in ci.CONFIGURATION and ci._nonce_single_use() is True
+        nonce = c_nonce()
+        assert "credentials" in ci.generate_credentials(_proofs_request(proof_jwt(nonce=nonce)[0]), "s1")
+        replay = ci.generate_credentials(_proofs_request(proof_jwt(nonce=nonce)[0]), "s1")
+        assert replay["error"] == "invalid_nonce" and "already been used" in replay["error_description"]
+
+    def test_reuse_allowed_when_switched_off(self, issuance):
+        from app.services import credential_issuance as ci
+        from proof_helpers import c_nonce, proof_jwt
+
+        nonce = c_nonce()
+        with patch.dict(ci.CONFIGURATION, {"proof_validation": {"single_use_nonce": False}}), patch.object(
+            ci.used_nonces, "consume_all"
+        ) as store:
+            for _ in range(3):
+                assert "credentials" in ci.generate_credentials(_proofs_request(proof_jwt(nonce=nonce)[0]), "s1")
+        store.assert_not_called()
+        assert issuance.call_count == 3
+
+    @pytest.mark.parametrize("single_use", [True, False])
+    def test_missing_nonce_is_invalid_proof(self, issuance, single_use):
+        from app.services import credential_issuance as ci
+        from proof_helpers import proof_jwt
+
+        with patch.dict(ci.CONFIGURATION, {"proof_validation": {"single_use_nonce": single_use}}):
+            result = ci.generate_credentials(_proofs_request(proof_jwt(nonce=None)[0]), "s1")
+        assert result == {"error": "invalid_proof", "error_description": "Proof has no c_nonce"}
+        assert not issuance.called
+
+    def test_missing_nonce_accepted_when_not_required(self, issuance):
+        from app.services import credential_issuance as ci
+        from proof_helpers import proof_jwt
+
+        with patch.dict(ci.CONFIGURATION, {"proof_validation": {"require_nonce": False}}):
+            assert "credentials" in ci.generate_credentials(_proofs_request(proof_jwt(nonce=None)[0]), "s1")
+
+    @pytest.mark.parametrize("single_use", [True, False])
+    @pytest.mark.parametrize(
+        "make_nonce",
+        [
+            lambda: "not-a-jwe",
+            lambda: 42,
+            lambda: _encrypted_nonce(exp=1),
+            lambda: _encrypted_nonce(aud=["https://other.test/credential"]),
+            lambda: _encrypted_nonce(jti=None),
+        ],
+        ids=["undecryptable", "not-a-string", "expired", "unknown-audience", "no-identifier"],
+    )
+    def test_bad_or_expired_nonce_is_invalid_nonce(self, issuance, make_nonce, single_use):
+        from app.services import credential_issuance as ci
+        from proof_helpers import proof_jwt
+
+        with patch.dict(ci.CONFIGURATION, {"proof_validation": {"single_use_nonce": single_use}}):
+            result = ci.generate_credentials(_proofs_request(proof_jwt(nonce=make_nonce())[0]), "s1")
+        assert result["error"] == "invalid_nonce" and not issuance.called
+
+    def test_nonce_from_another_issuer_key_is_invalid_nonce(self, issuance):
+        from jwcrypto import jwk
+
+        from app.services import credential_issuance as ci
+        from proof_helpers import proof_jwt
+
+        foreign = ci.encrypt_jwe({"iss": "https://backend.test"}, jwk.JWK.generate(kty="RSA", size=2048), alg="RSA-OAEP", enc="A256GCM")
+        assert ci.generate_credentials(_proofs_request(proof_jwt(nonce=foreign)[0]), "s1")["error"] == "invalid_nonce"
+
+
+class TestDeferredCredentialRoute:
+    """/deferred_credential re-verified the stored proofs (it would fail once nonces are single-use)."""
+
+    def test_deferred_flow_with_single_use_nonce(self, issuance):
+        from app.repositories.session_store import SessionManager
+        from app.routes import oidc as oidc_routes
+        from app.routes.oidc import oidc
+        from app.services import credential_issuance as ci
+        from proof_helpers import proof_jwt
+
+        manager = SessionManager()
+        manager.add_session("s1", frontend_id="fe1", credentials_requested=[DEFERRED_CONFIG])
+        app = Flask(__name__)
+        app.config.update(TESTING=True, SECRET_KEY="test")
+        app.register_blueprint(oidc)
+        with patch.object(oidc_routes, "session_manager", manager), patch.object(ci, "session_manager", manager), patch.object(
+            oidc_routes, "verify_introspection", return_value=("s1", None)
+        ), patch.object(oidc_routes, "vct2id", return_value=None):
+            client = app.test_client()
+            headers = {"Authorization": "Bearer t"}
+            first = client.post("/credential", headers=headers, json=_proofs_request(proof_jwt()[0], configuration_id=DEFERRED_CONFIG))
+            assert first.status_code == 202
+            transaction_id = first.get_json()["transaction_id"]
+            deferred = client.post("/deferred_credential", headers=headers, json={"transaction_id": transaction_id})
+        assert deferred.status_code == 200 and deferred.get_json()["credentials"] == [{"credential": "c"}]
+        assert manager.get_session("s1").credential_issued is True
+
+
+class TestProofCountLimit:
+    """Any number of proofs was verified (trust / status calls each) before the batch size was applied."""
+
+    def test_too_many_proofs_rejected_before_any_work(self, issuance):
+        from app.services import credential_issuance as ci
+
+        with patch.object(ci, "verify_proof_jwt") as verify, patch.object(ci, "decode_verify_attestation") as attest:
+            result = ci.generate_credentials(
+                {"credential_configuration_id": PID_CONFIG, "proofs": {"jwt": ["a", "b"], "attestation": ["c"]}}, "s1"
+            )
+        assert result["error"] == "invalid_credential_request"
+        verify.assert_not_called()
+        attest.assert_not_called()
+        assert not issuance.called
+
+    def test_issuer_batch_size_applies_without_a_reuse_policy(self, issuance):
+        from app.services import credential_issuance as ci
+
+        ci.oidc_metadata["credential_configurations_supported"]["other"] = {}
+        assert ci.max_proofs("other") == ci.issuer_metadata_template()["batch_credential_issuance"]["batch_size"]
+        with patch.object(ci, "verify_proof_jwt") as verify:
+            result = ci.generate_credentials(_proofs_request(*["x"] * (ci.max_proofs("other") + 1), configuration_id="other"), "s1")
+        assert result["error"] == "invalid_credential_request"
+        verify.assert_not_called()
+
+
+class TestKeyAttestationFreshness:
+    """Key attestations without iat / exp, of any age or with any typ were accepted."""
+
+    @pytest.fixture
+    def attestation(self, issuance):
+        import json as _json
+        import time
+
+        import jwt as pyjwt
+        from cryptography.hazmat.primitives.asymmetric import ec
+
+        from app.core import state
+        from pki_helpers import ca_entry, make_cert, x5c
+
+        ca_key, signer_key = ec.generate_private_key(ec.SECP256R1()), ec.generate_private_key(ec.SECP256R1())
+        root = make_cert("WP Root", "WP Root", ca_key.public_key(), ca_key, ca=True)
+        signer = make_cert("Wallet Provider", "WP Root", signer_key.public_key(), ca_key, ca=False)
+        attested = ec.generate_private_key(ec.SECP256R1())
+        attested_jwk = _json.loads(pyjwt.algorithms.ECAlgorithm.to_jwk(attested.public_key()))
+
+        def build(typ="key-attestation+jwt", drop=(), age=0):
+            from proof_helpers import c_nonce
+
+            now = int(time.time())
+            claims = {"attested_keys": [attested_jwk], "iat": now - age, "exp": now + 3600, "nonce": c_nonce()}
+            for name in drop:
+                claims.pop(name)
+            # typ None: PyJWT then leaves the header out (it adds "JWT" otherwise).
+            headers = {"x5c": x5c(signer), "typ": typ}
+            return pyjwt.encode(claims, signer_key, algorithm="ES256", headers=headers)
+
+        with patch.dict(state.trusted_CAs, {root.subject: ca_entry(root)}, clear=True), patch.dict(
+            state.trusted_CAs_by_purpose, {}, clear=True
+        ):
+            yield build
+
+    def _request(self, token):
+        return {"credential_configuration_id": PID_CONFIG, "proofs": {"attestation": [token]}}
+
+    @pytest.mark.parametrize("variant", ["fresh", "no_typ"])
+    def test_valid_attestation_accepted(self, attestation, issuance, variant):
+        from app.services import credential_issuance as ci
+
+        token = attestation(typ=None) if variant == "no_typ" else attestation()
+        assert "credentials" in ci.generate_credentials(self._request(token), "s1")
+
+    @pytest.mark.parametrize(
+        "kwargs",
+        [{"drop": ("iat",)}, {"drop": ("exp",)}, {"age": 25 * 3600}, {"typ": "JWT"}, {"typ": "openid4vci-proof+jwt"}],
+    )
+    def test_invalid_attestation_rejected(self, attestation, issuance, kwargs):
+        from app.services import credential_issuance as ci
+
+        result = ci.generate_credentials(self._request(attestation(**kwargs)), "s1")
+        assert result["error"] == "invalid_proof" and not issuance.called
+
+    def test_max_age_is_configurable(self, attestation, issuance):
+        from app.services import credential_issuance as ci
+
+        ci.CONFIGURATION["proof_validation"] = {"key_attestation_max_age_seconds": 3600}
+        result = ci.generate_credentials(self._request(attestation(age=2 * 3600)), "s1")
+        assert result["error"] == "invalid_proof"
+
+
+class TestLogInjection:
+    """Messages without safe() could forge log lines; /logs trusted forged lines;
+    /notification logged any caller-chosen notification_id."""
+
+    SESSION = "0c6f8a52-1b2c-4d3e-8f90-123456789abc"
+
+    @pytest.fixture
+    def configured_logging(self, tmp_path):
+        import logging
+
+        from app.core.logging_setup import configure_logging
+
+        names = ["", "werkzeug", "gunicorn.error", "gunicorn.access"]
+        app = Flask(__name__)
+        loggers = [logging.getLogger(n) for n in names] + [app.logger]
+        saved = [(lg, list(lg.handlers), lg.level, lg.propagate, list(lg.filters)) for lg in loggers]
+        log_file = tmp_path / "backend.log"
+        try:
+            configure_logging(app, {"backend_path": str(log_file), "log_level": "INFO"})
+            yield log_file
+        finally:
+            for lg, handlers, level, propagate, filters in saved:
+                for handler in lg.handlers:
+                    if handler not in handlers:
+                        handler.close()
+                lg.handlers[:] = handlers
+                lg.setLevel(level)
+                lg.propagate = propagate
+                lg.filters[:] = filters
+
+    def test_every_record_is_one_line(self, configured_logging):
+        import logging
+
+        forged = "x\nINFO | app.routes.oidc | INFO | , Session ID: victim, Credential Issuance Successful\r"
+        logging.getLogger("app.anything").warning("Unsanitized %s", forged)
+        logging.getLogger("app.anything").warning(forged)
+        for handler in logging.getLogger().handlers:
+            handler.flush()
+        lines = configured_logging.read_text().splitlines()
+        assert not any(line.startswith("INFO | app.routes.oidc") for line in lines)
+        assert sum("Credential Issuance Successful" in line for line in lines) == 2
+        assert all("\\n" in line for line in lines if "Credential Issuance Successful" in line)
+
+    def test_404_path_is_escaped(self, caplog):
+        from app.core.errors import page_not_found
+
+        app = Flask(__name__)
+        app.register_error_handler(404, page_not_found)
+        with caplog.at_level("WARNING"):
+            app.test_client().get("/nope%0aINFO%20forged")
+        [message] = [r.getMessage() for r in caplog.records if "404" in r.getMessage()]
+        assert "\n" not in message and "\\n" in message
+
+    @pytest.fixture
+    def oidc_client(self, tmp_path):
+        from app.repositories.session_store import SessionManager
+        from app.routes import oidc as oidc_routes
+        from app.routes.oidc import oidc
+
+        manager = SessionManager()
+        manager.add_session(self.SESSION)
+        manager.add_session("other")
+        manager.store_notification_id("other", "foreign-id")
+        manager.store_notification_id(self.SESSION, "own-id")
+        log = tmp_path / "backend.log"
+        log.write_text(f"WARNING | Rejected ... , Session ID: {self.SESSION}, Credential Issuance Successful\n")
+        app = Flask(__name__)
+        app.config.update(TESTING=True, SECRET_KEY="test")
+        app.register_blueprint(oidc)
+        config = {"admin_api_key": "k" * 40, "logging": {"backend_path": str(log)}}
+        with patch_configuration(config), patch.object(oidc_routes, "session_manager", manager), patch.object(
+            oidc_routes, "verify_introspection", return_value=(self.SESSION, None)
+        ):
+            yield app.test_client(), manager
+
+    def test_logs_success_comes_from_the_session(self, oidc_client):
+        client, manager = oidc_client
+        query = {"session_id": self.SESSION}
+        headers = {"X-Api-Key": "k" * 40}
+        assert client.get("/logs", query_string=query, headers=headers).get_json()["successful"] is False
+        manager.mark_credential_issued(self.SESSION)
+        assert client.get("/logs", query_string=query, headers=headers).get_json()["successful"] is True
+
+    @pytest.mark.parametrize("notification_id", ["foreign-id", "unknown\nINFO forged", None, ["own-id"]])
+    def test_foreign_notification_id_rejected_unlogged(self, oidc_client, caplog, notification_id):
+        client, _ = oidc_client
+        with caplog.at_level("DEBUG"):
+            response = client.post(
+                "/notification",
+                headers={"Authorization": "Bearer t"},
+                json={"notification_id": notification_id, "event": "credential_accepted"},
+            )
+        assert response.status_code == 400 and response.get_json()["error"] == "invalid_notification_id"
+        assert not any("foreign-id" in r.getMessage() or "forged" in r.getMessage() for r in caplog.records)
+
+    def test_own_notification_accepted(self, oidc_client):
+        client, _ = oidc_client
+        response = client.post(
+            "/notification", headers={"Authorization": "Bearer t"}, json={"notification_id": "own-id", "event": "credential_accepted"}
+        )
+        assert response.status_code == 204
+
+
+class TestSessionStoreAndSizeLimits:
+    """Anonymous GETs created server-side sessions for any frontend_id; the session file
+    threshold was fixed at 50; request bodies were unbounded."""
+
+    @pytest.fixture
+    def factory_config(self, monkeypatch):
+        monkeypatch.setattr("app.services.metadata._build_credential_encryption_metadata", MagicMock(return_value="enc"))
+        return {
+            "service_url": "https://backend.test/",
+            "frontend": {"default": "fe", "frontends_config": {"fe": {"url": "https://fe.test"}}},
+            "keys": {"credential_encryption_key": b"Key_Sample"},
+            "logging": {"backend_path": "/tmp/log/fakepath.log", "log_level": "INFO"},
+            "rate_limiting": {"enabled": False},
+        }
+
+    def _create(self, config):
+        from app.factory import create_app
+
+        with patch_configuration(config):
+            return create_app(test_config={"TESTING": True, "SECRET_KEY": "k" * 40})
+
+    def test_defaults(self, factory_config):
+        app = self._create(factory_config)
+        assert app.config["SESSION_FILE_THRESHOLD"] == 10000
+        assert app.config["MAX_CONTENT_LENGTH"] == 1024 * 1024
+
+    def test_configurable(self, factory_config):
+        factory_config.update(session_file_threshold=123, max_content_length=4096)
+        app = self._create(factory_config)
+        assert app.config["SESSION_FILE_THRESHOLD"] == 123 and app.config["MAX_CONTENT_LENGTH"] == 4096
+
+    def test_oversized_body_rejected_before_the_view(self, factory_config):
+        from app.routes import oidc as oidc_routes
+
+        factory_config["max_content_length"] = 1024
+        app = self._create(factory_config)
+        with patch_configuration(factory_config), patch.object(oidc_routes, "verify_introspection") as introspect:
+            response = app.test_client().post(
+                "/credential", headers={"Authorization": "Bearer t"}, json={"proofs": {"jwt": ["x" * 4096]}}
+            )
+        assert response.status_code == 413
+        introspect.assert_not_called()
+
+    def test_short_payload_key_refused_at_start_up(self, factory_config):
+        factory_config["frontend"]["frontends_config"]["fe"]["payload_key"] = "too-short"
+        with pytest.raises(RuntimeError, match="payload_key"):
+            self._create(factory_config)
+
+    @pytest.fixture
+    def offer_client(self):
+        from app.routes import oidc as oidc_routes
+        from app.routes.oidc import oidc
+
+        app = Flask(__name__)
+        app.config.update(TESTING=True, SECRET_KEY="test")
+        app.register_blueprint(oidc)
+        with patch_configuration(json.loads(json.dumps(CONFIG))), patch.object(
+            oidc_routes, "credential_display_names", return_value={}
+        ):
+            yield app.test_client()
+
+    @pytest.mark.parametrize("frontend_id", ["unknown", "../fe", ""])
+    def test_unknown_frontend_gets_404_without_a_session(self, offer_client, frontend_id):
+        response = offer_client.get("/credential_offer_choice", query_string={"frontend_id": frontend_id})
+        assert response.status_code == 404
+        assert "Set-Cookie" not in response.headers
+
+    def test_known_frontend_still_served(self, offer_client):
+        response = offer_client.get("/credential_offer_choice", query_string={"frontend_id": "fe"})
+        assert response.status_code == 200 and "Set-Cookie" in response.headers
+
+
+class TestPreauthPostOnly:
+    """GET /preauth created a pre-authorized code (CSRF by link); a missing or unknown
+    credentials_id raised a 500 or reached the authorization server."""
+
+    @pytest.fixture
+    def preauth_client(self, client, config):
+        from app.core import state
+
+        config["test_features"] = {"form_countries": True}
+        with patch.dict(state.oidc_metadata, {"credential_configurations_supported": {"pid": {}}}), patch.object(
+            preauth_routes, "request_preauth_token"
+        ) as token:
+            yield client, token
+
+    @pytest.mark.parametrize("path", ['/preauth?credentials_id=["pid"]', "/preauth_form"])
+    def test_get_not_allowed(self, preauth_client, path):
+        client, token = preauth_client
+        assert client.get(path).status_code == 405
+        token.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "credentials_id", [None, "", "not json", "{}", "[]", '["unknown"]', '["pid", 3]', '"pid"', '[["pid"]]']
+    )
+    def test_invalid_credentials_id_rejected(self, preauth_client, credentials_id):
+        client, token = preauth_client
+        data = {} if credentials_id is None else {"credentials_id": credentials_id}
+        response = client.post("/preauth", data=data)
+        assert response.status_code == 400
+        token.assert_not_called()
+
+    def test_cross_site_post_rejected(self, preauth_client):
+        client, token = preauth_client
+        response = client.post("/preauth", data={"credentials_id": '["pid"]'}, headers={"Origin": "https://evil.test"})
+        assert response.status_code == 403
+        token.assert_not_called()
+
+    def test_offer_form_reposts_to_preauth(self, preauth_client):
+        from app.routes.oidc import oidc
+
+        client, _ = preauth_client
+        client.application.register_blueprint(oidc)
+        form = {"proceed": "1", "credential_offer_URI": "openid-credential-offer://", "Authorization Code Grant": "pre_auth_code", "pid": "on"}
+        response = client.post("/credential_offer", data=form)
+        assert response.status_code == 307 and "/preauth?credentials_id=" in response.headers["Location"]
+
+
+class TestResponseEncryptionParameters:
+    """Bad credential_response_encryption was only detected after the credentials were signed."""
+
+    @pytest.fixture
+    def credential_client(self):
+        from jwcrypto import jwk
+
+        from app.routes import oidc as oidc_routes
+        from app.routes.oidc import oidc
+
+        app = Flask(__name__)
+        app.config.update(TESTING=True, SECRET_KEY="test")
+        app.register_blueprint(oidc)
+        session = _session(credentials_requested=["pid"], scope=None)
+        with patch_configuration(json.loads(json.dumps(CONFIG))), patch.object(
+            oidc_routes, "verify_introspection", return_value=("s1", None)
+        ), patch.object(oidc_routes, "session_manager") as sessions, patch.object(
+            oidc_routes, "generate_credentials", return_value={"credentials": [{"credential": "c"}]}
+        ) as generate, patch.object(oidc_routes, "vct2id", return_value=None), patch.object(
+            oidc_routes, "persist_client_status"
+        ):
+            sessions.get_session.return_value = session
+            public = json.loads(jwk.JWK.generate(kty="EC", crv="P-256").export_public())
+            yield app.test_client(), generate, public
+
+    def _post(self, client, encryption):
+        return client.post(
+            "/credential",
+            headers={"Authorization": "Bearer t"},
+            json={
+                "credential_configuration_id": "pid",
+                "proof": {"proof_type": "jwt", "jwt": "x"},
+                "credential_response_encryption": encryption,
+            },
+        )
+
+    @pytest.mark.parametrize(
+        "variant",
+        ["not_object", "jwk_string", "private_jwk", "enc_number", "enc_unadvertised", "alg_missing", "alg_rsa1_5", "alg_list", "bad_jwk"],
+    )
+    def test_rejected_before_issuance(self, credential_client, variant):
+        from jwcrypto import jwk
+
+        client, generate, public = credential_client
+        base = {"jwk": public, "alg": "ECDH-ES", "enc": "A256GCM"}
+        encryption = {
+            "not_object": "ECDH-ES",
+            "jwk_string": {**base, "jwk": json.dumps(public)},
+            "private_jwk": {**base, "jwk": json.loads(jwk.JWK.generate(kty="EC", crv="P-256").export_private())},
+            "enc_number": {**base, "enc": 256},
+            "enc_unadvertised": {**base, "enc": "A256KW"},
+            "alg_missing": {"jwk": public, "enc": "A256GCM"},
+            "alg_rsa1_5": {**base, "alg": "RSA1_5"},
+            "alg_list": {**base, "alg": ["ECDH-ES"]},
+            "bad_jwk": {**base, "jwk": {"kty": "EC", "crv": "P-256", "x": "AA", "y": "AA"}},
+        }[variant]
+        response = self._post(client, encryption)
+        assert response.status_code == 400 and response.get_json()["error"] == "invalid_encryption_parameters"
+        generate.assert_not_called()
+
+    def test_valid_parameters_encrypt_the_response(self, credential_client):
+        client, generate, public = credential_client
+        response = self._post(client, {"jwk": public, "alg": "ECDH-ES", "enc": "A256GCM"})
+        assert response.status_code == 200 and response.headers["Content-Type"] == "application/jwt"
+        generate.assert_called_once()
+
+
+class TestExplicitTestEnvironment:
+    """CI=true (set by many build platforms) switched on the relaxed test defaults."""
+
+    @pytest.mark.parametrize("variable", ["CI", "SONARCLOUD", "GITHUB_ACTIONS"])
+    def test_generic_ci_variables_do_not_enable_it(self, monkeypatch, variable):
+        from app.core import config
+
+        monkeypatch.delenv("EUDIW_TEST_ENV", raising=False)
+        monkeypatch.setenv(variable, "true")
+        assert config._detect_test_env() is False
+
+    def test_explicit_variable_enables_it(self, monkeypatch):
+        from app.core import config
+
+        monkeypatch.setenv("EUDIW_TEST_ENV", "true")
+        assert config._detect_test_env() is True

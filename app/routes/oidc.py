@@ -42,7 +42,7 @@ from flask.helpers import make_response
 from app.core.config import CONFIGURATION
 from app.core.errors import OAuthEndpointError, oauth_error_response
 from app.core.log_utils import safe, summarize_credential_request
-from app.core.security import require_api_key, require_frontend_origin
+from app.core.security import require_admin_api_key, require_frontend_origin
 from app.core.state import oidc_metadata, session_manager
 from app.repositories.offer_store import clear_par, credential_offer_references
 from app.repositories.status_store import persist_client_status
@@ -65,6 +65,9 @@ from app.services.auth_server import (
 from app.services.dpop import DPoPError, expected_htu, verify_dpop_request
 from app.services.credential_issuance import (
     DEFERRED_ONLY_CONFIGURATION,
+    InvalidEncryptionParametersError,
+    ProvenKeys,
+    check_response_encryption,
     create_c_nonce,
     encrypt_jwe,
     decrypt_jwe_credential_request,
@@ -319,6 +322,24 @@ def require_authorized_configuration(session_id: str, credential_request: Dict[s
         )
 
 
+def require_valid_response_encryption(credential_request: Dict[str, Any]) -> None:
+    """Rejects unusable ``credential_response_encryption`` before issuance.
+
+    Args:
+        credential_request: Request that may carry ``credential_response_encryption``.
+
+    Raises:
+        OAuthEndpointError: ``400 invalid_encryption_parameters``.
+    """
+    if "credential_response_encryption" not in credential_request:
+        return
+    try:
+        check_response_encryption(credential_request["credential_response_encryption"])
+    except InvalidEncryptionParametersError as e:
+        logger.warning(f"Credential response encryption rejected: {safe(e)}")
+        raise OAuthEndpointError("invalid_encryption_parameters", description=str(e)) from e
+
+
 def encrypt_response(credential_request: Dict[str, Any], credential_response: Dict[str, Any]) -> Response:
     """Encrypts a credential response as a compact JWE.
 
@@ -371,13 +392,20 @@ def encrypt_response(credential_request: Dict[str, Any], credential_response: Di
 # ---------------------------------------------------------------------------
 
 
-def _issue(validated_request: Dict[str, Any], session_id: str, wia_client_status: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+def _issue(
+    validated_request: Dict[str, Any],
+    session_id: str,
+    wia_client_status: Optional[Dict[str, Any]],
+    holder_keys: ProvenKeys,
+) -> Dict[str, Any]:
     """Records the WIA status and generates the credential(s).
 
     Args:
         validated_request: Validated credential request.
         session_id: Issuance session.
         wia_client_status: ``client_status`` from the access token.
+        holder_keys: Keys proven by the request (filled in), or by the
+            request that started a deferred transaction (reused).
 
     Returns:
         The credential response dict (possibly with ``error``).
@@ -387,7 +415,10 @@ def _issue(validated_request: Dict[str, Any], session_id: str, wia_client_status
         session_manager.update_client_status_exp(session_id, wia_client_status.get("exp"))
 
     response = generate_credentials(
-        credential_request=validated_request, session_id=session_id, wia_client_status=wia_client_status
+        credential_request=validated_request,
+        session_id=session_id,
+        wia_client_status=wia_client_status,
+        holder_keys=holder_keys,
     )
     if not isinstance(response, dict):
         return {"error": "invalid_proof", "error_description": "Unable to read proof"}
@@ -436,6 +467,7 @@ def _finish(
             return body
 
     if not is_deferred:
+        session_manager.mark_credential_issued(session_id)
         logger.info(f", Session ID: {session_id}, Credential Issuance Successful")
     return body, status
 
@@ -579,8 +611,10 @@ def credential() -> HandlerResult:
     validated_request = verify_credential_request(credential_request)
     logger.info(f", Session ID: {session_id}, Credential Request, {summarize_credential_request(validated_request)}")
     require_authorized_configuration(session_id, validated_request)
+    require_valid_response_encryption(validated_request)
 
-    response = _issue(validated_request, session_id, wia_client_status)
+    holder_keys = ProvenKeys()
+    response = _issue(validated_request, session_id, wia_client_status, holder_keys)
     _add_notification_id(session_id, response)
 
     if response.get("error", "Pending") != "Pending":
@@ -596,8 +630,12 @@ def credential() -> HandlerResult:
     )
     if is_deferred:
         transaction_id = str(uuid.uuid4())
+        # The proofs' c_nonces may be spent (or expire): the deferred request reuses the keys.
         session_manager.add_transaction_id(
-            session_id=session_id, transaction_id=transaction_id, credential_request=validated_request
+            session_id=session_id,
+            transaction_id=transaction_id,
+            credential_request=validated_request,
+            holder_keys=holder_keys,
         )
         response = {"transaction_id": transaction_id, "interval": DEFERRED_INTERVAL_SECONDS}
 
@@ -605,11 +643,11 @@ def credential() -> HandlerResult:
 
 
 @oidc.route("/admin/sessions/client_status", methods=["GET"])
-@require_api_key
+@require_admin_api_key
 def get_all_sessions_client_status() -> HandlerResult:
     """Returns the client_status of every active session that has one.
 
-    Requires the ``X-Api-Key`` header (``backend_api_key``).
+    Requires the ``X-Api-Key`` header (``admin_api_key``).
 
     Returns:
         ``({session_id: client_status}, 200)``.
@@ -621,10 +659,17 @@ def get_all_sessions_client_status() -> HandlerResult:
 def notification() -> HandlerResult:
     """OpenID4VCI notification endpoint.
 
+    The ``notification_id`` must be one issued to the access token's session
+    (:meth:`SessionManager.get_session_by_notification_id`); nothing from the
+    request is logged before that check.
+
     Returns:
-        ``204`` on success, ``401`` for authorization errors.
+        ``204`` on success, ``400`` ``invalid_notification_id`` for an unknown
+        or foreign id, ``401`` for authorization errors.
     """
-    notification_request = request.get_json(silent=True) or {}
+    notification_request = request.get_json(silent=True)
+    if not isinstance(notification_request, dict):
+        notification_request = {}
 
     auth_header = request.headers.get("Authorization")
     if not auth_header:
@@ -639,6 +684,12 @@ def notification() -> HandlerResult:
     if not _is_introspection_success(introspection):
         return introspection
     session_id, _ = introspection
+
+    notification_id = notification_request.get("notification_id")
+    owner = session_manager.get_session_by_notification_id(notification_id) if isinstance(notification_id, str) else None
+    if owner is None or owner.session_id != session_id:
+        logger.warning(f", Session ID: {safe(session_id, 64)}, Notification rejected: unknown notification_id")
+        return jsonify({"error": "invalid_notification_id"}), 400
 
     logger.info(
         f", Session ID: {safe(session_id, 64)}, Notification: event={safe(notification_request.get('event'), 50)} "
@@ -709,7 +760,12 @@ def deferred_credential() -> HandlerResult:
         )
 
     validated_request = verify_credential_request(current_session.transaction_id[deferred_transaction_id])
-    response = _issue(validated_request, session_id, wia_client_status)
+    require_valid_response_encryption(deferred_request)
+    holder_keys = current_session.deferred_holder_keys.get(deferred_transaction_id)
+    if holder_keys is None:
+        logger.warning(f", Session ID: {session_id}, Deferred transaction {deferred_transaction_id} has no proven keys")
+        raise OAuthEndpointError("invalid_transaction_id", 400, "The transaction has no proven holder keys.")
+    response = _issue(validated_request, session_id, wia_client_status, holder_keys)
 
     is_deferred = response.get("error") == "Pending"
     if "error" in response and not is_deferred:
@@ -752,13 +808,19 @@ def _offer_choice_filter(cid: str, cfg: Dict[str, Any]) -> bool:
 
 
 @oidc.route("credential_offer_choice", methods=["GET"])
-def credential_offer() -> str:
+def credential_offer() -> HandlerResult:
     """Shows the credential selection page for building a credential offer.
 
+    An unknown ``frontend_id`` gets ``404`` before the browser session is
+    touched, so anonymous GETs cannot fill the server-side session store.
+
     Returns:
-        The frontend POST-redirect page.
+        The frontend POST-redirect page, or ``404`` for an unknown frontend.
     """
     frontend_id = request.args.get("frontend_id")
+    if frontend_id is not None and frontend_id not in (CONFIGURATION["frontend"].get("frontends_config") or {}):
+        logger.warning(f"credential_offer_choice: unknown frontend_id {safe(frontend_id, 64)}")
+        return jsonify({"error": "unknown_frontend"}), 404
     session["frontend_id"] = frontend_id
 
     return post_redirect_with_payload(
@@ -772,14 +834,16 @@ def credential_offer() -> str:
 
 
 @oidc.route("/logs", methods=["GET"])
-@require_api_key
+@require_admin_api_key
 def get_logs_by_session() -> HandlerResult:
     """Returns the backend / authorization server log lines of a session.
 
-    Requires the ``X-Api-Key`` header (``backend_api_key``).
+    Requires the ``X-Api-Key`` header (``admin_api_key``).
 
     Returns:
-        ``{session_id, count, successful, logs}`` or ``400``.
+        ``{session_id, count, successful, logs}`` or ``400``. ``successful``
+        comes from the session store (a credential was issued in the live
+        session), never from the log text, which request values could forge.
     """
     session_id = request.args.get("session_id")
     if not session_id:
@@ -808,11 +872,12 @@ def get_logs_by_session() -> HandlerResult:
         except FileNotFoundError:
             continue
 
+    current_session = session_manager.get_session(session_id=session_id)
     return jsonify(
         {
             "session_id": session_id,
             "count": len(matches),
-            "successful": any("Credential Issuance Successful" in line for line in matches),
+            "successful": bool(current_session is not None and current_session.credential_issued is True),
             "logs": matches,
         }
     )
@@ -885,7 +950,8 @@ def credentialOffer() -> HandlerResult:
 
     if auth_choice == "pre_auth_code":
         session["credential_offer_URI"] = credential_offer_URI
-        return redirect(url_for("preauth.preauthRed", credentials_id=json.dumps(credentials_id)))
+        # 307 keeps the POST: /preauth is POST-only (it creates a pre-authorized code).
+        return redirect(url_for("preauth.preauthRed", credentials_id=json.dumps(credentials_id)), code=307)
 
     frontend_id = session.get("frontend_id")
     offer = authorization_code_offer(frontend_url(frontend_id), credentials_id, generate_unique_id())

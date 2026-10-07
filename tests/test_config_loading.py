@@ -119,23 +119,22 @@ def test_mock_config_shape():
 class TestDetectTestEnv:
     @pytest.fixture(autouse=True)
     def _clean(self, monkeypatch):
-        monkeypatch.delenv("CI", raising=False)
-        monkeypatch.delenv("SONARCLOUD", raising=False)
+        monkeypatch.delenv("EUDIW_TEST_ENV", raising=False)
         monkeypatch.setattr(sys, "argv", ["flask", "run"])
-        monkeypatch.delitem(sys.modules, "pytest")
 
     def test_production_like_process(self):
         assert config._detect_test_env() is False
 
-    @pytest.mark.parametrize("variable", ["CI", "SONARCLOUD"])
-    def test_ci_variables(self, monkeypatch, variable):
-        monkeypatch.setenv(variable, "true")
+    def test_explicit_opt_in(self, monkeypatch):
+        monkeypatch.setenv("EUDIW_TEST_ENV", "true")
         assert config._detect_test_env() is True
 
-    def test_ci_variable_must_be_true(self, monkeypatch):
-        monkeypatch.setenv("CI", "false")
+    @pytest.mark.parametrize("value", ["false", "1", "TRUE", ""])
+    def test_opt_in_must_be_true(self, monkeypatch, value):
+        monkeypatch.setenv("EUDIW_TEST_ENV", value)
         assert config._detect_test_env() is False
 
-    def test_pytest_in_argv(self, monkeypatch):
+    def test_pytest_alone_does_not_enable_it(self, monkeypatch):
         monkeypatch.setattr(sys, "argv", ["/usr/bin/pytest", "-q"])
-        assert config._detect_test_env() is True
+        assert "pytest" in sys.modules
+        assert config._detect_test_env() is False

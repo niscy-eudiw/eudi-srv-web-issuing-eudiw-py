@@ -108,6 +108,16 @@ def _template(name: str) -> Dict[str, Any]:
     return copy.deepcopy(_load_template(name))
 
 
+def issuer_metadata_template() -> Dict[str, Any]:
+    """Returns the credential issuer metadata template shared by all frontends.
+
+    Returns:
+        A private copy of ``metadata_config.json`` (``batch_credential_issuance``,
+        ``credential_response_encryption``...).
+    """
+    return _template("metadata_config.json")
+
+
 def _frontend(frontend_id: str) -> Dict[str, Any]:
     """Returns the configuration of a frontend.
 

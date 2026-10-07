@@ -47,6 +47,7 @@ from cryptography.hazmat.primitives.serialization import load_pem_private_key
 
 from app.core import state
 from app.core.config import CONFIGURATION
+from app.services.trust import TRUST_PURPOSES
 from app.utils.crypto import certificate_validity
 from app.utils.encoding import b64url_uint, urlsafe_b64encode_nopad
 from app.utils.frontend import frontend_config
@@ -277,18 +278,19 @@ def _load_trusted_ca(pem_data: bytes) -> tuple[x509.Name, Dict[str, Any]]:
     }
 
 
-def setup_trusted_cas(trusted_cas_path: Optional[str] = None) -> None:
-    """Loads every ``*.pem`` CA certificate into :data:`app.core.state.trusted_CAs`.
+def _load_trusted_ca_directory(directory: str) -> Dict[x509.Name, Dict[str, Any]]:
+    """Loads every ``*.pem`` CA certificate of a directory.
 
     Args:
-        trusted_cas_path: Directory of PEM files; defaults to
-            ``CONFIGURATION["trusted_CAs_path"]``.
+        directory: Directory of PEM files.
+
+    Returns:
+        CA subject -> CA info (see :func:`_load_trusted_ca`).
 
     Raises:
         FileNotFoundError: If the directory does not exist.
         ValueError: If a file is not a valid PEM certificate.
     """
-    directory = trusted_cas_path or CONFIGURATION["trusted_CAs_path"]
     try:
         ec_keys: Dict[x509.Name, Dict[str, Any]] = {}
         for file in os.listdir(directory):
@@ -302,9 +304,40 @@ def setup_trusted_cas(trusted_cas_path: Optional[str] = None) -> None:
     except Exception as e:
         logger.exception(f"TrustedCA Error: An unexpected error occurred.\n {e}")
         raise
-
     logger.info(f"Loaded {len(ec_keys)} trusted CA certificate(s) from {directory}")
-    state.replace_contents(state.trusted_CAs, ec_keys)
+    return ec_keys
+
+
+def setup_trusted_cas(trusted_cas_path: Optional[str] = None) -> None:
+    """Loads the trusted CA certificates into :mod:`app.core.state`.
+
+    The shared store (:data:`app.core.state.trusted_CAs`) comes from
+    ``trusted_CAs_path``. Each purpose in
+    :data:`app.services.trust.TRUST_PURPOSES` may have its own folder under
+    ``trusted_CAs_paths.<purpose>``
+    (:data:`app.core.state.trusted_CAs_by_purpose`); a purpose without one
+    uses the shared store.
+
+    Args:
+        trusted_cas_path: Directory of PEM files; defaults to
+            ``CONFIGURATION["trusted_CAs_path"]``.
+
+    Raises:
+        FileNotFoundError: If a directory does not exist.
+        ValueError: If a file is not a valid PEM certificate.
+    """
+    directory = trusted_cas_path or CONFIGURATION["trusted_CAs_path"]
+    shared = _load_trusted_ca_directory(directory)
+
+    purpose_paths = CONFIGURATION.get("trusted_CAs_paths") or {}
+    by_purpose = {
+        purpose: _load_trusted_ca_directory(purpose_paths[purpose])
+        for purpose in TRUST_PURPOSES
+        if purpose_paths.get(purpose)
+    }
+
+    state.replace_contents(state.trusted_CAs, shared)
+    state.replace_contents(state.trusted_CAs_by_purpose, by_purpose)
 
 
 # ---------------------------------------------------------------------------

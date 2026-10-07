@@ -120,6 +120,28 @@ To run the EUDIW Issuer, please follow these simple steps (some of which may hav
    
    - **`status_validator`** — URL for the service where revocation/validity status of Referenced Tokens can be checked against a Token Status List
      - `url`: endpoint of the Status Validator service
+     - `enabled`: `false` skips the status checks
+
+   - **Secrets and API keys** — no defaults; endpoints whose key is unset answer 503.
+     - `secret_key`: Flask session cookie key, at least 32 random characters (or the `FLASK_SECRET_KEY` environment variable)
+     - `backend_api_key`: the frontends read their metadata with it
+     - `admin_api_key`: `GET /logs`, `GET /admin/sessions/client_status`, `POST /metadata/metadata_signer`; never give it to a frontend
+     - `frontend.frontends_config.<frontend_id>.payload_key`: optional, at least 32 characters, the same value as the frontend's `payload_key`; signs the payloads posted to the frontend's `/display_*` pages (`payload_jwt`)
+
+   - **Trust anchors**
+     - `trusted_CAs_path`: folder of trusted CA certificates (`*.pem`)
+     - `trusted_CAs_paths.{key_attestation, offer_request, pid_signer}`: optional per-purpose folders; a purpose left out uses `trusted_CAs_path`
+
+   - **Optional limits and checks** (defaults in brackets)
+     - `proof_validation.require_nonce` [`true`]: proofs must carry a `c_nonce` (missing: `invalid_proof`; unknown, expired or reused: `invalid_nonce`)
+     - `proof_validation.single_use_nonce` [`true`]: a `c_nonce` is accepted once; `false` lets a wallet reuse it until it expires
+     - `proof_validation.key_attestation_max_age_seconds` [`86400`]
+     - `rate_limiting.{enabled [true], trusted_proxies [0], storage_uri ["memory://"], limits}`: per-client limits on sensitive endpoints (429 when exceeded)
+     - `max_content_length` [`1048576`]: largest request body in bytes (413 above)
+     - `session_file_threshold` [`10000`]: server-side browser session files kept
+     - `test_features.{form_countries, passport_age_verification, tx_code_in_offer, credential_offer_request}` [all `false`]: demo-only features that accept self-asserted data
+
+   Every key is described in `app/config_issuer_backend_example.yaml`.
 
 8. Install Authorization Server
     - Install the service according to [Issuer Authorization Server](https://github.com/eu-digital-identity-wallet/eudi-srv-issuer-oidc-py/blob/main/install.md)

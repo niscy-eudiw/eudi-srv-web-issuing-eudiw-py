@@ -65,6 +65,7 @@ def _config(signing_material, **frontend_overrides):
     return {
         "service_url": BACKEND_URL,
         "backend_api_key": API_KEY,
+        "admin_api_key": API_KEY,
         "authorization_server": {"base_url": AUTH_URL},
         "frontend": {"default": FRONTEND_ID, "frontends_config": {FRONTEND_ID: frontend}},
     }

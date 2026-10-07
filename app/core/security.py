@@ -17,10 +17,11 @@
 ###############################################################################
 """Request authentication and CSRF protection.
 
-* Endpoints used by other EUDIW services (log retrieval, client status,
-  metadata) are protected with a shared API key configured as
-  ``backend_api_key``; callers send it in the ``X-Api-Key`` header
-  (:func:`require_api_key`).
+* Endpoints used by other EUDIW services are protected with shared API keys
+  sent in the ``X-Api-Key`` header: the frontends read their metadata with
+  ``backend_api_key`` (:func:`require_api_key`); the administrative endpoints
+  (log retrieval, client status, metadata signing) need the separate
+  ``admin_api_key`` (:func:`require_admin_api_key`).
 * Browser form POSTs coming from the frontends are protected against
   cross-site request forgery by checking the ``Origin`` (or ``Referer``)
   header against the configured frontends (:func:`require_frontend_origin`).
@@ -47,6 +48,9 @@ from app.utils.frontend import allowed_cors_origins
 logger = logging.getLogger(__name__)
 
 API_KEY_HEADER = "X-Api-Key"
+#: Configuration keys of the frontend and the administrative API keys.
+BACKEND_API_KEY = "backend_api_key"
+ADMIN_API_KEY = "admin_api_key"
 
 F = TypeVar("F", bound=Callable[..., Any])
 
@@ -55,59 +59,70 @@ F = TypeVar("F", bound=Callable[..., Any])
 PLACEHOLDER_API_KEYS = frozenset({"change-me", "changeme", "secret"})
 
 
-def configured_api_key() -> Optional[str]:
-    """Returns the configured backend API key.
+def configured_api_key(name: str = BACKEND_API_KEY) -> Optional[str]:
+    """Returns a configured API key.
+
+    Args:
+        name: Configuration key (:data:`BACKEND_API_KEY` or :data:`ADMIN_API_KEY`).
 
     Returns:
-        ``CONFIGURATION["backend_api_key"]``, or ``None`` when unset, empty
-        or still an example placeholder.
+        ``CONFIGURATION[name]``, or ``None`` when unset, empty or still an
+        example placeholder.
     """
-    key = CONFIGURATION.get("backend_api_key")
+    key = CONFIGURATION.get(name)
     if not key or str(key) in PLACEHOLDER_API_KEYS:
         return None
     return str(key)
 
 
-def is_valid_api_key(candidate: Optional[str]) -> bool:
+def is_valid_api_key(candidate: Optional[str], name: str = BACKEND_API_KEY) -> bool:
     """Checks a presented API key in constant time.
 
     Args:
         candidate: Key sent by the caller.
+        name: Configuration key of the expected API key.
 
     Returns:
-        ``True`` if a key is configured and ``candidate`` matches it.
+        ``True`` if that key is configured and ``candidate`` matches it.
     """
-    expected = configured_api_key()
+    expected = configured_api_key(name)
     if not expected or not candidate:
         return False
     return hmac.compare_digest(candidate.encode(), expected.encode())
 
 
-def require_api_key(view: F) -> F:
-    """Decorator rejecting requests without the backend API key.
-
-    Fails closed: when no ``backend_api_key`` is configured the endpoint
-    answers ``503``.
+def _api_key_guard(name: str) -> Callable[[F], F]:
+    """Builds a decorator rejecting requests without the API key ``name``.
 
     Args:
-        view: Flask view function.
+        name: Configuration key of the API key.
 
     Returns:
-        The wrapped view. It answers ``401`` for a missing / wrong key and
-        ``503`` when no key is configured.
+        The decorator. Wrapped views answer ``401`` for a missing / wrong key
+        and ``503`` when the key is not configured (fail closed).
     """
 
-    @functools.wraps(view)
-    def wrapper(*args: Any, **kwargs: Any) -> Any:
-        if configured_api_key() is None:
-            logger.error(f"{safe(request.path)} called but backend_api_key is not configured")
-            return jsonify({"error": "service_unavailable", "error_description": "API key not configured"}), 503
-        if not is_valid_api_key(request.headers.get(API_KEY_HEADER)):
-            logger.warning(f"Rejected {safe(request.path)}: missing or invalid {API_KEY_HEADER}")
-            return jsonify({"error": "unauthorized", "error_description": "Missing or invalid API key"}), 401
-        return view(*args, **kwargs)
+    def decorator(view: F) -> F:
+        @functools.wraps(view)
+        def wrapper(*args: Any, **kwargs: Any) -> Any:
+            if configured_api_key(name) is None:
+                logger.error(f"{safe(request.path)} called but {name} is not configured")
+                return jsonify({"error": "service_unavailable", "error_description": "API key not configured"}), 503
+            if not is_valid_api_key(request.headers.get(API_KEY_HEADER), name):
+                logger.warning(f"Rejected {safe(request.path)}: missing or invalid {API_KEY_HEADER}")
+                return jsonify({"error": "unauthorized", "error_description": "Missing or invalid API key"}), 401
+            return view(*args, **kwargs)
 
-    return wrapper  # type: ignore[return-value]
+        return wrapper  # type: ignore[return-value]
+
+    return decorator
+
+
+#: Guards the frontend metadata reads with ``backend_api_key``.
+require_api_key = _api_key_guard(BACKEND_API_KEY)
+#: Guards the administrative endpoints (logs, client status, metadata
+#: signing) with ``admin_api_key``.
+require_admin_api_key = _api_key_guard(ADMIN_API_KEY)
 
 
 def _request_origin() -> Optional[str]:

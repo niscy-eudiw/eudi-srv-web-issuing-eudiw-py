@@ -42,7 +42,7 @@ from app.core.errors import handle_exception, page_not_found
 from app.core.logging_setup import configure_logging
 from app.core.rate_limit import init_rate_limits
 from app.utils.frontend import allowed_cors_origins, frontend_origins
-from app.utils.http import AUTO_SUBMIT_SCRIPT_HASH
+from app.utils.http import AUTO_SUBMIT_SCRIPT_HASH, frontend_payload_key
 
 #: Blueprints registered by :func:`create_app`, as ``(module, attribute)``.
 BLUEPRINTS = (
@@ -81,6 +81,11 @@ def _start_background_services(app: Flask) -> None:
     app.logger.info("Background services started (status DB pool, nightly sweep).")
 
 
+#: Defaults of ``session_file_threshold`` (server-side session files kept)
+#: and ``max_content_length`` (largest request body, bytes).
+DEFAULT_SESSION_FILE_THRESHOLD = 10000
+DEFAULT_MAX_CONTENT_LENGTH = 1024 * 1024
+
 #: Secret key values that are publicly known and must never sign sessions.
 WEAK_SECRET_KEYS = frozenset({"dev", "change-me", "secret", "changeme"})
 _MIN_SECRET_KEY_LENGTH = 32
@@ -113,6 +118,20 @@ def _check_secret_key(app: Flask) -> None:
     )
 
 
+def _check_payload_keys() -> None:
+    """Rejects a frontend ``payload_key`` too short to sign display payloads.
+
+    Raises:
+        RuntimeError: When a configured key is shorter than 32 characters.
+    """
+    frontends = (app_config.CONFIGURATION.get("frontend") or {}).get("frontends_config") or {}
+    for frontend_id in frontends:
+        try:
+            frontend_payload_key(frontend_id)
+        except ValueError as e:
+            raise RuntimeError(str(e)) from e
+
+
 def create_app(test_config: Optional[Mapping[str, Any]] = None) -> Flask:
     """Creates and configures the Flask application.
 
@@ -136,12 +155,15 @@ def create_app(test_config: Optional[Mapping[str, Any]] = None) -> Flask:
         SECRET_KEY=app_config.CONFIGURATION.get("secret_key") or os.environ.get("FLASK_SECRET_KEY"),
         INIT_BACKGROUND_SERVICES=not app_config.IS_TEST_ENV,
         LOAD_TRUSTED_CAS=not app_config.IS_TEST_ENV,
+        # Larger bodies get 413 before any view parses them.
+        MAX_CONTENT_LENGTH=int(app_config.CONFIGURATION.get("max_content_length") or DEFAULT_MAX_CONTENT_LENGTH),
     )
     if test_config is None:
         app.config.from_pyfile("config.py", silent=True)
     else:
         app.config.from_mapping(test_config)
     _check_secret_key(app)
+    _check_payload_keys()
 
     os.makedirs(app.instance_path, exist_ok=True)
 
@@ -165,7 +187,9 @@ def create_app(test_config: Optional[Mapping[str, Any]] = None) -> Flask:
     _register_blueprints(app)
     init_rate_limits(app)
 
-    app.config["SESSION_FILE_THRESHOLD"] = 50
+    app.config["SESSION_FILE_THRESHOLD"] = int(
+        app_config.CONFIGURATION.get("session_file_threshold") or DEFAULT_SESSION_FILE_THRESHOLD
+    )
     app.config["SESSION_PERMANENT"] = False
     app.config["SESSION_TYPE"] = "filesystem"
     # "None" lets a frontend on another site POST to the backend with the

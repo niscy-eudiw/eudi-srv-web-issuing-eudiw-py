@@ -29,7 +29,7 @@ import hmac
 import logging
 import secrets
 from http import HTTPStatus
-from typing import Any, Dict, Optional, Tuple, Union
+from typing import Any, Dict, Iterable, Set, Tuple, Union
 from uuid import uuid4
 
 from flask import Blueprint, Response, abort, redirect, request, session
@@ -49,7 +49,12 @@ from app.services.countries import (
     is_form_country,
     openid_authorization_url,
 )
-from app.services.presentation import InvalidFormError, form_formatter, presentation_formatter
+from app.services.presentation import (
+    InvalidFormError,
+    form_formatter,
+    presentation_formatter,
+    verified_form_formatter,
+)
 from app.utils.forms import parse_form
 from app.utils.frontend import frontend_url
 from app.utils.http import post_redirect_with_payload, url_get
@@ -142,19 +147,16 @@ def _selectable_countries(current_session: Session) -> Dict[str, str]:
     }
 
 
-def _bind_verified_attributes(form_data: Dict[str, Any], verified: Optional[Dict[str, Any]]) -> None:
-    """Restores the verified PID values in a submitted attribute form.
-
-    The form is pre-filled from a verified PID presentation; the user may
-    add attributes but cannot change the verified ones.
+def _form_attribute_names(credentials_requested: Iterable[str]) -> Set[str]:
+    """Lists the attributes the form for the requested credentials shows.
 
     Args:
-        form_data: Parsed form, updated in place.
-        verified: Attribute name -> verified value.
+        credentials_requested: Credential configuration ids.
+
+    Returns:
+        The mandatory and optional attribute names.
     """
-    for name, value in (verified or {}).items():
-        if name in form_data and isinstance(value, (str, int, float)) and not isinstance(value, bool):
-            form_data[name] = str(value)
+    return set(getAttributesForm(credentials_requested)) | set(getAttributesForm2(credentials_requested))
 
 
 @dynamic.route("/", methods=["GET", "POST"])
@@ -353,12 +355,21 @@ def Dynamic_form() -> HandlerResult:
 
     form_data = parse_form(request.form)
     form_data.pop("proceed", None)
-    _bind_verified_attributes(form_data, current_session.verified_attributes)
     logger.info(f", Session ID: {session_id}, Attribute form submitted")
     logger.debug(f", Session ID: {session_id}, Form fields: {safe(sorted(form_data), 500)}")
 
     try:
-        cleaned_data = form_formatter(form_data, issuing_country=current_session.country)
+        if current_session.verified_attributes:
+            # The verified PID values come from the session, never from the
+            # form; the form only adds the other attributes it shows.
+            cleaned_data = verified_form_formatter(
+                form_data,
+                verified=current_session.verified_attributes,
+                allowed=_form_attribute_names(current_session.credentials_requested),
+                issuing_country=current_session.country,
+            )
+        else:
+            cleaned_data = form_formatter(form_data, issuing_country=current_session.country)
     except InvalidFormError as e:
         logger.warning(f", Session ID: {session_id}, Attribute form rejected: {safe(e)}")
         return "Invalid attribute form", HTTPStatus.BAD_REQUEST

@@ -17,12 +17,15 @@
 ###############################################################################
 """``/metadata`` blueprint: per-frontend issuer metadata (unsigned and signed).
 
-All endpoints are for other EUDIW services (the frontends) and require the
-backend API key in the ``X-Api-Key`` header (see :mod:`app.core.security`).
+All endpoints are for other EUDIW services and require an API key in the
+``X-Api-Key`` header (see :mod:`app.core.security`).
 
-* ``GET /metadata/<frontend_id>``: unsigned metadata documents of a frontend.
-* ``GET /metadata/<frontend_id>/signed``: signed credential issuer metadata.
-* ``POST /metadata/metadata_signer``: signs arbitrary issuer metadata.
+* ``GET /metadata/<frontend_id>``: unsigned metadata documents of a frontend
+  (``backend_api_key``).
+* ``GET /metadata/<frontend_id>/signed``: signed credential issuer metadata
+  (``backend_api_key``).
+* ``POST /metadata/metadata_signer``: signs arbitrary issuer metadata
+  (``admin_api_key``).
 """
 
 from __future__ import annotations
@@ -34,7 +37,7 @@ import jwt
 from flask import Blueprint, Response, jsonify, request
 
 from app.core.config import CONFIGURATION
-from app.core.security import require_api_key
+from app.core.security import require_admin_api_key, require_api_key
 from app.core.log_utils import safe
 from app.services.frontend_metadata import UnknownFrontendError, build_frontend_metadata, sign_frontend_metadata
 from app.services.metadata import MetadataSigningError, sign_issuer_metadata
@@ -62,11 +65,12 @@ def _error(message: str, status: int, details: Any = None) -> Tuple[Response, in
 
 
 @metadata.route("metadata_signer", methods=["POST"])
-@require_api_key
+@require_admin_api_key
 def metadata_signer() -> Tuple[Response, int]:
     """Signs issuer metadata according to OpenID4VCI 12.2.3 (Signed Metadata).
 
-    Requires the ``X-Api-Key`` header.
+    Requires the ``X-Api-Key`` header (``admin_api_key``): the caller chooses
+    what is signed with a frontend's key.
 
     JSON body:
         metadata (required): Issuer metadata object.

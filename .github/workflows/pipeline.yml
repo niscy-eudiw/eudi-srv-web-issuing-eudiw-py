@@ -1,3 +1,7 @@
+# CI/CD image pipeline: builds the Docker image (linux/amd64 + linux/arm64) and
+# pushes it to ghcr.io/<owner>/<repo>.
+# Runs on push to dev, preprod and main, on v* tags, and on manual dispatch.
+# Needs secrets: GHCR_KEY (token with write:packages for ghcr.io).
 name: CI/CD Pipeline
 
 on:

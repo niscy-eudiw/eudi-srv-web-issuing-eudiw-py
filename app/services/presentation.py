@@ -29,7 +29,7 @@ import base64
 import datetime
 import json
 import re
-from typing import Any, Dict, Iterable, List
+from typing import Any, Collection, Dict, FrozenSet, Iterable, List, Mapping, Set, Tuple
 
 from app.core.constants import ConfService as cfgserv
 from app.core.state import oidc_metadata
@@ -59,6 +59,13 @@ SEAFARER_CONFIGURATION = "eu.europa.ec.eudi.seafarer_mdoc"
 MDL_SCOPE = "org.iso.18013.5.1.mDL"
 #: Largest list index accepted in a form key such as ``capacities[3][code]``.
 MAX_FORM_INDEX = 99
+#: Attribute names that carry the same value; :func:`form_formatter` copies
+#: each one into the others, so protecting one name must protect all of them.
+ATTRIBUTE_ALIASES: Tuple[FrozenSet[str], ...] = (
+    frozenset({"birth_date", "birthdate"}),
+    frozenset({"birth_place", "place_of_birth"}),
+    frozenset({"nationality", "nationalities"}),
+)
 
 
 class InvalidFormError(ValueError):
@@ -99,6 +106,8 @@ def _set_nested(target: Dict[str, Any], key: str, value: Any) -> None:
         InvalidFormError: If a list index is too large.
     """
     parts = _KEY_PARTS.findall(key)
+    if not parts:
+        raise InvalidFormError("Form key without an attribute name")
     current: Any = target
     for i, part in enumerate(parts[:-1]):
         if part.isdigit():
@@ -204,6 +213,87 @@ def form_formatter(form_data: Dict[str, Any], issuing_country: str) -> Dict[str,
     }
     final_data["issuing_country"] = issuing_country
     return final_data
+
+
+def form_key_root(key: str) -> str:
+    """Returns the top-level attribute a form key writes to.
+
+    Parsed as :func:`_set_nested` does, so ``[family_name]`` and
+    ``family_name][x`` both name ``family_name``.
+
+    Args:
+        key: Form key, possibly bracketed.
+
+    Returns:
+        The attribute name, or ``""`` when the key has none.
+    """
+    parts = _KEY_PARTS.findall(key)
+    return parts[0] if parts else ""
+
+
+def with_aliases(names: Iterable[str]) -> Set[str]:
+    """Extends attribute names with their aliases (see :data:`ATTRIBUTE_ALIASES`).
+
+    Args:
+        names: Attribute names.
+
+    Returns:
+        ``names`` plus every alias of each of them.
+    """
+    extended = set(names)
+    for group in ATTRIBUTE_ALIASES:
+        if extended & group:
+            extended |= group
+    return extended
+
+
+def verified_form_formatter(
+    form_data: Mapping[str, Any],
+    verified: Mapping[str, Any],
+    allowed: Collection[str],
+    issuing_country: str,
+) -> Dict[str, Any]:
+    """Builds the user data of a session whose identity comes from a verified PID.
+
+    The verified values of the form's attributes (or of their aliases) are
+    the base and are never taken from the form. Only form fields whose
+    attribute (see :func:`form_key_root`) is in ``allowed`` and is neither
+    verified nor an alias of a verified attribute are added; the others are
+    ignored, whatever their type or spelling.
+
+    Args:
+        form_data: Flat form fields (see :func:`app.utils.forms.parse_form`).
+        verified: Attribute name -> value read from the verified PID.
+        allowed: Attribute names of the form shown for the requested
+            credentials (``getAttributesForm`` / ``getAttributesForm2``).
+        issuing_country: Country of the issuance session.
+
+    Returns:
+        The normalized user data (see :func:`form_formatter`).
+
+    Raises:
+        InvalidFormError: If a kept form field is malformed.
+    """
+    protected = with_aliases(verified)
+    user_fields = {
+        key: value
+        for key, value in form_data.items()
+        if (root := form_key_root(key)) in allowed and root not in protected
+    }
+    cleaned_data = form_formatter(user_fields, issuing_country=issuing_country)
+
+    # Every alias is filled, as form_formatter does (birthdate from birth_date...).
+    bound = dict(verified)
+    for group in ATTRIBUTE_ALIASES:
+        source = next((name for name in sorted(group) if name in verified), None)
+        if source is not None:
+            bound.update({alias: verified[source] for alias in group - verified.keys()})
+    # Only the form's attributes: PID metadata such as expiry_date or
+    # issuing_authority must not reach the new credential.
+    form_attributes = with_aliases(allowed)
+    cleaned_data.update({name: value for name, value in bound.items() if name in form_attributes})
+    cleaned_data["issuing_country"] = issuing_country
+    return cleaned_data
 
 
 def _to_display_base64(value: str) -> str:

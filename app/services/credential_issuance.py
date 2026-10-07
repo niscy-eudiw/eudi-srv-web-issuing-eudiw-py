@@ -21,6 +21,13 @@ Turns a validated credential request into a call to the credential
 formatters: extracts holder keys from the proofs, verifies key attestations
 (and their revocation status), caps the batch size and computes the expiry
 ceiling imposed by the wallet / key attestations (TS3 2.2.2.1, 2.4.3).
+
+By default each ``c_nonce`` is accepted by one credential request only
+(:mod:`app.repositories.nonce_store`); ``proof_validation.single_use_nonce:
+false`` lets a wallet reuse a nonce until it expires (OpenID4VCI 1.0 section 13.8
+leaves the nonce lifetime to the issuer). A deferred request keeps the holder
+keys proven by the first request (:class:`ProvenKeys`) instead of verifying
+its proofs again.
 """
 
 from __future__ import annotations
@@ -28,7 +35,9 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import secrets
 import time
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 import jwt
@@ -38,10 +47,19 @@ from jwcrypto import jwe, jwk
 
 from app.core.config import CONFIGURATION
 from app.core.log_utils import safe
+from app.core.errors import CertificateVerificationError
 from app.core.state import oidc_metadata, session_manager
+from app.repositories.nonce_store import used_nonces
 from app.services.auth_server import StatusCheckError, check_status_list_revocation
 from app.services.dynamic_formatter import issue_credentials_for_session
-from app.services.trust import KEY_ATTESTATION_CONTEXT, trust_context, trust_use_case, verify_jwt_with_x5c
+from app.services.frontend_metadata import issuer_metadata_template
+from app.services.trust import (
+    KEY_ATTESTATION_CONTEXT,
+    PURPOSE_KEY_ATTESTATION,
+    trust_context,
+    trust_use_case,
+    verify_jwt_with_x5c,
+)
 from app.utils.encoding import b64url_decode
 
 logger = logging.getLogger(__name__)
@@ -56,10 +74,41 @@ PROOF_ALGORITHMS = ("ES256",)
 #: Accepted clock skew for ``iat`` and maximum proof age.
 PROOF_IAT_LEEWAY_SECONDS = 60
 PROOF_MAX_AGE_SECONDS = 3600
+#: Key attestation ``typ`` header (checked when present) and default maximum
+#: age (``proof_validation.key_attestation_max_age_seconds``).
+KEY_ATTESTATION_TYP = "key-attestation+jwt"
+KEY_ATTESTATION_MAX_AGE_SECONDS = 24 * 3600
 
 
 class InvalidProofError(Exception):
     """Raised when a proof (JWT or key attestation) is not acceptable."""
+
+
+class InvalidNonceError(InvalidProofError):
+    """Raised when a proof's ``c_nonce`` is not acceptable (OpenID4VCI ``invalid_nonce``)."""
+
+
+class TooManyProofsError(Exception):
+    """Raised when a request carries more proofs than the batch size allows."""
+
+
+class InvalidEncryptionParametersError(ValueError):
+    """Raised when ``credential_response_encryption`` is malformed or not supported."""
+
+
+@dataclass
+class ProvenKeys:
+    """Holder keys proven by a credential request, kept for deferred issuance.
+
+    Attributes:
+        keys: Holder keys in the formatter's ``proofs`` format.
+        ka_exps: ``key_storage_status.exp`` of the verified key attestations.
+        verified: Whether the keys come from verified proofs.
+    """
+
+    keys: List[Dict[str, Any]] = field(default_factory=list)
+    ka_exps: List[int] = field(default_factory=list)
+    verified: bool = False
 
 
 class CredentialValidityError(Exception):
@@ -137,37 +186,81 @@ def _nonce_required() -> bool:
     return bool((CONFIGURATION.get("proof_validation") or {}).get("require_nonce", True))
 
 
-def verify_c_nonce(c_nonce: Any) -> Dict[str, Any]:
+def _nonce_single_use() -> bool:
+    """Tells whether a ``c_nonce`` is accepted by one credential request only.
+
+    Returns:
+        ``proof_validation.single_use_nonce`` from the configuration (default
+        ``True``). When ``False``, a valid nonce can be reused until it expires.
+    """
+    return bool((CONFIGURATION.get("proof_validation") or {}).get("single_use_nonce", True))
+
+
+def verify_c_nonce(c_nonce: Any, nonces: Optional[Dict[str, float]] = None) -> Dict[str, Any]:
     """Checks that a ``c_nonce`` was issued by :func:`create_c_nonce` and is still valid.
 
-    The nonce is a JWE only this issuer can decrypt, so no server-side
-    nonce store is needed.
+    The nonce is a JWE only this issuer can decrypt. Its ``jti`` (inside the
+    encrypted, authenticated payload) identifies it for the single-use check,
+    which the caller makes once all proofs of a request are verified
+    (:func:`_consume_nonces`).
+
+    OpenID4VCI 1.0 section 8.3.1.2: a proof without a ``c_nonce`` is an
+    ``invalid_proof``; a proof with an invalid one is an ``invalid_nonce``.
 
     Args:
         c_nonce: Nonce from a proof.
+        nonces: When given, receives ``jti -> exp`` of the nonce.
 
     Returns:
         The nonce claims.
 
     Raises:
-        InvalidProofError: If the nonce is missing, cannot be decrypted, was
-            not issued for this credential endpoint or has expired.
+        InvalidProofError: If the nonce is missing.
+        InvalidNonceError: If the nonce cannot be decrypted, was not issued
+            for this credential endpoint, has no ``jti`` or has expired.
     """
-    if not isinstance(c_nonce, str) or not c_nonce:
+    if c_nonce is None or c_nonce == "":
         raise InvalidProofError("Proof has no c_nonce")
+    if not isinstance(c_nonce, str):
+        raise InvalidNonceError("c_nonce is not valid")
     try:
         token = jwe.JWE()
         token.deserialize(c_nonce, key=jwk.JWK.from_pem(CONFIGURATION["keys"]["nonce_key"]))
         claims = json.loads(token.payload)
     except Exception as e:
-        raise InvalidProofError("c_nonce is not valid") from e
+        raise InvalidNonceError("c_nonce is not valid") from e
 
     service_url = CONFIGURATION["service_url"]
     if claims.get("iss") != service_url or f"{service_url}/credential" not in (claims.get("aud") or []):
-        raise InvalidProofError("c_nonce was not issued for this credential endpoint")
+        raise InvalidNonceError("c_nonce was not issued for this credential endpoint")
     if not isinstance(claims.get("exp"), (int, float)) or claims["exp"] < time.time():
-        raise InvalidProofError("c_nonce has expired")
+        raise InvalidNonceError("c_nonce has expired")
+    if not isinstance(claims.get("jti"), str) or not claims["jti"]:
+        raise InvalidNonceError("c_nonce has no identifier")
+    if nonces is not None:
+        nonces[claims["jti"]] = claims["exp"]
     return claims
+
+
+def _consume_nonces(nonces: Dict[str, float], session_id: str) -> None:
+    """Marks the nonces of a verified request as used.
+
+    Does nothing when ``proof_validation.single_use_nonce`` is ``false``: the
+    store is then not consulted and a nonce stays usable until it expires.
+
+    Args:
+        nonces: ``jti -> exp`` of every nonce the request's proofs carry.
+        session_id: Issuance session (for logging).
+
+    Raises:
+        InvalidNonceError: If one of them was already used by an earlier
+            request (nothing is recorded then).
+    """
+    if not _nonce_single_use():
+        return
+    if nonces and not used_nonces.consume_all(nonces):
+        logger.warning(f", Session ID: {session_id}, Proof rejected: c_nonce already used")
+        raise InvalidNonceError("c_nonce has already been used")
 
 
 def _public_key_from_jwk(jwk_dict: Any) -> Any:
@@ -193,7 +286,10 @@ def _public_key_from_jwk(jwk_dict: Any) -> Any:
 
 
 def verify_proof_jwt(
-    proof_jwt: str, session_id: str, signing_jwks: Optional[List[Dict[str, Any]]] = None
+    proof_jwt: str,
+    session_id: str,
+    signing_jwks: Optional[List[Dict[str, Any]]] = None,
+    nonces: Optional[Dict[str, float]] = None,
 ) -> Dict[str, Any]:
     """Verifies an OpenID4VCI JWT proof of possession.
 
@@ -207,6 +303,7 @@ def verify_proof_jwt(
         session_id: Issuance session (selects the expected ``aud``).
         signing_jwks: Keys allowed to sign the proof instead of the ``jwk``
             header (the attested keys of a key attestation).
+        nonces: When given, receives ``jti -> exp`` of the proof's ``c_nonce``.
 
     Returns:
         The verified proof claims.
@@ -251,7 +348,7 @@ def verify_proof_jwt(
     if claims["iat"] < time.time() - PROOF_MAX_AGE_SECONDS:
         raise InvalidProofError("Proof JWT is too old")
     if _nonce_required():
-        verify_c_nonce(claims.get("nonce"))
+        verify_c_nonce(claims.get("nonce"), nonces)
 
     logger.debug(f", Session ID: {session_id}, Proof JWT verified (aud={safe(claims.get('aud'), 100)})")
     return claims
@@ -280,6 +377,16 @@ def _holder_key(jwk_dict: Dict[str, Any]) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _key_attestation_max_age() -> int:
+    """Returns the maximum key attestation age in seconds.
+
+    Returns:
+        ``proof_validation.key_attestation_max_age_seconds`` (default 24 h).
+    """
+    configured = (CONFIGURATION.get("proof_validation") or {}).get("key_attestation_max_age_seconds")
+    return int(configured) if configured else KEY_ATTESTATION_MAX_AGE_SECONDS
+
+
 def decode_verify_attestation(jwt_raw: str) -> Dict[str, Any]:
     """Verifies a key attestation JWT and checks its revocation status.
 
@@ -291,6 +398,9 @@ def decode_verify_attestation(jwt_raw: str) -> Dict[str, Any]:
 
     The signing chain is trusted via the trust validator (when enabled) or
     the local trusted CAs; see :func:`app.services.trust.verify_x5c_chain`.
+    ``iat`` and ``exp`` are required, ``iat`` may be at most
+    :func:`_key_attestation_max_age` old, and ``typ`` must be
+    :data:`KEY_ATTESTATION_TYP` when present.
 
     Raises:
         KARevokedError: If the attestation's status list entry is revoked.
@@ -302,6 +412,10 @@ def decode_verify_attestation(jwt_raw: str) -> Dict[str, Any]:
         jwt_raw=jwt_raw,
         verification_context=trust_context("key_attestation", KEY_ATTESTATION_CONTEXT),
         use_case=trust_use_case("key_attestation"),
+        purpose=PURPOSE_KEY_ATTESTATION,
+        required_claims=("iat", "exp"),
+        max_age_seconds=_key_attestation_max_age(),
+        expected_typ=KEY_ATTESTATION_TYP,
     )
 
     key_storage_status = claims.get("key_storage_status")
@@ -354,7 +468,13 @@ def _register_attested_keys(
             )
 
 
-def _verified_attestation(attestation: str, session_id: str, origin: str, require_nonce: bool) -> Dict[str, Any]:
+def _verified_attestation(
+    attestation: str,
+    session_id: str,
+    origin: str,
+    require_nonce: bool,
+    nonces: Optional[Dict[str, float]] = None,
+) -> Dict[str, Any]:
     """Verifies a key attestation (signature, trust, revocation, optionally nonce).
 
     Args:
@@ -363,23 +483,27 @@ def _verified_attestation(attestation: str, session_id: str, origin: str, requir
         origin: Where the attestation came from (for logging).
         require_nonce: Whether the attestation must carry a valid ``c_nonce``
             (when used directly as the proof).
+        nonces: When given, receives ``jti -> exp`` of the attestation's ``c_nonce``.
 
     Returns:
         The attestation claims.
 
     Raises:
-        InvalidProofError: If the attestation is revoked, unverifiable or
-            lacks a valid nonce.
+        InvalidProofError: If the attestation is revoked, untrusted, invalid
+            or lacks a valid nonce.
     """
     try:
         claims = decode_verify_attestation(attestation)
     except KeyAttestationStatusError as e:
         logger.warning(f", Session ID: {session_id}, Key attestation rejected ({origin}): {safe(e)}")
         raise InvalidProofError(str(e)) from e
+    except (CertificateVerificationError, ValueError, jwt.InvalidTokenError) as e:
+        logger.warning(f", Session ID: {session_id}, Key attestation rejected ({origin}): {safe(e)}")
+        raise InvalidProofError("Key attestation is not valid") from e
     if not isinstance(claims.get("attested_keys"), list) or not claims["attested_keys"]:
         raise InvalidProofError("Key attestation has no attested_keys")
     if require_nonce and _nonce_required():
-        verify_c_nonce(claims.get("nonce"))
+        verify_c_nonce(claims.get("nonce"), nonces)
     return claims
 
 
@@ -416,6 +540,39 @@ def get_batch_size(credential_configuration_id: str) -> Optional[int]:
         .get("options", [])
     )
     return next((o.get("batch_size") for o in options if "once_only" in o.get("details", [])), None)
+
+
+def max_proofs(credential_configuration_id: str) -> int:
+    """Returns how many proofs one credential request may carry.
+
+    Args:
+        credential_configuration_id: Configuration id.
+
+    Returns:
+        The configuration's :func:`get_batch_size`, else the issuer's
+        ``batch_credential_issuance.batch_size``, else 1.
+    """
+    batch_size = get_batch_size(credential_configuration_id)
+    if not batch_size:
+        batch_size = (issuer_metadata_template().get("batch_credential_issuance") or {}).get("batch_size")
+    return int(batch_size) if batch_size else 1
+
+
+def _proof_count(credential_request: Dict[str, Any]) -> int:
+    """Counts the proofs of a credential request without decoding them.
+
+    Args:
+        credential_request: Validated credential request.
+
+    Returns:
+        1 for a single ``proof``, else the number of ``proofs`` entries.
+    """
+    if credential_request.get("proof") is not None and "proofs" not in credential_request:
+        return 1
+    proofs = credential_request.get("proofs")
+    if not isinstance(proofs, dict):
+        return 0
+    return sum(len(values) if isinstance(values, list) else 1 for values in proofs.values())
 
 
 def get_custom_validity_seconds(credential_configuration_id: str) -> Optional[int]:
@@ -477,7 +634,11 @@ def compute_max_credential_exp(
 
 
 def _collect_jwt_proof(
-    proof_jwt: str, session_id: str, pub_keys: List[Dict[str, Any]], ka_exps: List[int]
+    proof_jwt: str,
+    session_id: str,
+    pub_keys: List[Dict[str, Any]],
+    ka_exps: List[int],
+    nonces: Optional[Dict[str, float]] = None,
 ) -> None:
     """Verifies one JWT proof and records the holder key(s) it proves.
 
@@ -490,6 +651,7 @@ def _collect_jwt_proof(
         session_id: Issuance session.
         pub_keys: Holder keys (mutated).
         ka_exps: KA expiry values (mutated).
+        nonces: Receives the proof's ``c_nonce`` (see :func:`verify_c_nonce`).
 
     Raises:
         InvalidProofError: If the proof or its key attestation is invalid.
@@ -503,11 +665,11 @@ def _collect_jwt_proof(
 
     if "key_attestation" in header:
         claims = _verified_attestation(header["key_attestation"], session_id, "jwt proof header", require_nonce=False)
-        verify_proof_jwt(proof_jwt, session_id, signing_jwks=claims["attested_keys"])
+        verify_proof_jwt(proof_jwt, session_id, signing_jwks=claims["attested_keys"], nonces=nonces)
         _register_attested_keys(claims, session_id, pub_keys, ka_exps)
         return
 
-    verify_proof_jwt(proof_jwt, session_id)
+    verify_proof_jwt(proof_jwt, session_id, nonces=nonces)
     pub_keys.append({"jwt": _holder_key(header["jwk"])})
 
 
@@ -516,26 +678,39 @@ def _collect_proof_keys(
     session_id: str,
     pub_keys: List[Dict[str, Any]],
     ka_exps: List[int],
+    nonces: Optional[Dict[str, float]] = None,
 ) -> None:
     """Verifies the request's proof(s) and collects the proven holder keys.
+
+    The number of proofs is checked against :func:`max_proofs` first, before
+    any proof is decoded, any signature checked or any trust / status
+    service called.
 
     Args:
         credential_request: Validated credential request.
         session_id: Issuance session.
         pub_keys: Holder keys (mutated).
         ka_exps: KA expiry values (mutated).
+        nonces: Receives the ``c_nonce`` of every proof.
 
     Raises:
+        TooManyProofsError: If the request has more proofs than allowed.
         InvalidProofError: If any proof is invalid or of an unsupported type.
     """
+    allowed = max_proofs(credential_request["credential_configuration_id"])
+    if _proof_count(credential_request) > allowed:
+        raise TooManyProofsError(f"At most {allowed} proof(s) per request")
+
     proof = credential_request.get("proof")
 
     if proof is not None and "proofs" not in credential_request:
         match proof.get("proof_type"):
             case "jwt":
-                _collect_jwt_proof(proof["jwt"], session_id, pub_keys, ka_exps)
+                _collect_jwt_proof(proof["jwt"], session_id, pub_keys, ka_exps, nonces)
             case "attestation":
-                claims = _verified_attestation(proof["attestation"], session_id, "single attestation proof", True)
+                claims = _verified_attestation(
+                    proof["attestation"], session_id, "single attestation proof", True, nonces
+                )
                 _register_attested_keys(claims, session_id, pub_keys, ka_exps)
             case _:
                 raise InvalidProofError("Unsupported proof type")
@@ -547,15 +722,15 @@ def _collect_proof_keys(
         match proof_type:
             case "jwt":
                 for proof_jwt in proof_values:
-                    _collect_jwt_proof(proof_jwt, session_id, pub_keys, ka_exps)
+                    _collect_jwt_proof(proof_jwt, session_id, pub_keys, ka_exps, nonces)
             case "attestation":
                 for attestation in proof_values:
-                    claims = _verified_attestation(attestation, session_id, "attestation proof", True)
+                    claims = _verified_attestation(attestation, session_id, "attestation proof", True, nonces)
                     _register_attested_keys(claims, session_id, pub_keys, ka_exps)
             case _:
                 raise InvalidProofError("Unsupported proof type")
 
-    # TS3 2.2.2.1: cap keys used against the issuer's configured batch_size.
+    # TS3 2.2.2.1: a key attestation may attest more keys than the batch size.
     batch_size = get_batch_size(credential_request["credential_configuration_id"])
     if batch_size and len(pub_keys) > batch_size:
         logger.info(
@@ -564,40 +739,85 @@ def _collect_proof_keys(
         del pub_keys[batch_size:]
 
 
+def _prove_holder_keys(
+    credential_request: Dict[str, Any], session_id: str, holder_keys: Optional[ProvenKeys]
+) -> ProvenKeys:
+    """Returns the holder keys of a request, verifying its proofs if needed.
+
+    Args:
+        credential_request: Validated credential request.
+        session_id: Issuance session.
+        holder_keys: Keys proven by an earlier request (deferred issuance),
+            reused as they are when ``verified``; otherwise filled in.
+
+    Returns:
+        The proven keys.
+
+    Raises:
+        TooManyProofsError: If the request has more proofs than allowed.
+        InvalidProofError: If a proof is invalid or no key is proven.
+    """
+    if holder_keys is not None and holder_keys.verified:
+        logger.debug(f", Session ID: {session_id}, Reusing {len(holder_keys.keys)} holder key(s) proven earlier")
+        return holder_keys
+
+    proven = holder_keys if holder_keys is not None else ProvenKeys()
+    nonces: Dict[str, float] = {}
+    pub_keys: List[Dict[str, Any]] = []
+    ka_exps: List[int] = []
+    _collect_proof_keys(credential_request, session_id, pub_keys, ka_exps, nonces)
+    if not pub_keys:
+        raise InvalidProofError("No valid proof")
+    _consume_nonces(nonces, session_id)
+    proven.keys, proven.ka_exps, proven.verified = pub_keys, ka_exps, True
+    return proven
+
+
 def generate_credentials(
-    credential_request: Dict[str, Any], session_id: str, wia_client_status: Optional[Dict[str, Any]] = None
+    credential_request: Dict[str, Any],
+    session_id: str,
+    wia_client_status: Optional[Dict[str, Any]] = None,
+    holder_keys: Optional[ProvenKeys] = None,
 ) -> Any:
     """Issues the credential(s) for a validated credential request.
 
-    Every proof is verified (:func:`verify_proof_jwt` / key attestations)
-    and the proven holder keys are collected; the expiry ceiling is stored
-    in the session, and the credentials are formatted and signed with the
-    session's user data
+    Every proof is verified (:func:`verify_proof_jwt` / key attestations),
+    its ``c_nonce`` is consumed (unless nonces are reusable), and the proven
+    holder keys are collected;
+    the expiry ceiling is stored in the session, and the credentials are
+    formatted and signed with the session's user data
     (:func:`app.services.dynamic_formatter.issue_credentials_for_session`).
 
     Args:
         credential_request: Validated credential request.
         session_id: Issuance session.
         wia_client_status: ``client_status`` claim of the access token.
+        holder_keys: Filled in with the proven keys, so that a deferred
+            request can reuse them; when already ``verified`` (the deferred
+            request itself) the proofs are not verified again.
 
     Returns:
         ``{"credentials": [...]}`` or an error dict: ``invalid_proof`` when a
-        proof is missing / invalid (signature, ``typ``, ``aud``, ``iat``,
-        ``c_nonce``, key attestation), ``credential_request_denied`` when
-        signing fails.
+        proof is missing / invalid (signature, ``typ``, ``aud``, ``iat``, key
+        attestation) or has no ``c_nonce``, ``invalid_nonce`` for an unknown,
+        undecryptable, expired or (when single use) already used ``c_nonce``,
+        ``invalid_credential_request`` for too many proofs,
+        ``credential_request_denied`` when signing fails.
     """
     configuration_id = credential_request["credential_configuration_id"]
-    pub_keys: List[Dict[str, Any]] = []
-    ka_exps: List[int] = []
 
     try:
-        _collect_proof_keys(credential_request, session_id, pub_keys, ka_exps)
+        proven = _prove_holder_keys(credential_request, session_id, holder_keys)
+    except TooManyProofsError as e:
+        logger.warning(f", Session ID: {session_id}, Credential request rejected: {safe(e)}")
+        return {"error": "invalid_credential_request", "error_description": str(e)}
+    except InvalidNonceError as e:
+        logger.warning(f", Session ID: {session_id}, Invalid nonce: {safe(e)}")
+        return {"error": "invalid_nonce", "error_description": str(e)}
     except InvalidProofError as e:
         logger.warning(f", Session ID: {session_id}, Invalid proof: {safe(e)}")
         return {"error": "invalid_proof", "error_description": str(e)}
-    if not pub_keys:
-        logger.warning(f", Session ID: {session_id}, Invalid proof: no holder key proven")
-        return {"error": "invalid_proof", "error_description": "No valid proof"}
+    pub_keys, ka_exps = proven.keys, proven.ka_exps
 
     formatter_request: Dict[str, Any] = {"credential_configuration_id": configuration_id, "proofs": pub_keys}
 
@@ -670,6 +890,41 @@ def decrypt_jwe_credential_request(jwt_token: str) -> Dict[str, Any]:
         raise ValueError(f"Failed to decrypt JWE: {str(e)}") from e
 
 
+def check_response_encryption(encryption: Any) -> None:
+    """Validates ``credential_response_encryption`` before anything is signed.
+
+    The values must be those the issuer metadata advertises
+    (``credential_response_encryption.alg_values_supported`` /
+    ``enc_values_supported``), so a request is refused before credentials
+    are created, not after.
+
+    Args:
+        encryption: The request's ``credential_response_encryption`` value.
+
+    Raises:
+        InvalidEncryptionParametersError: If it is not an object with a public
+            ``jwk`` object, a supported ``enc`` and a supported ``alg`` (from
+            the object or the ``jwk``).
+    """
+    advertised = issuer_metadata_template().get("credential_response_encryption") or {}
+    if not isinstance(encryption, dict):
+        raise InvalidEncryptionParametersError("credential_response_encryption must be an object")
+    key = encryption.get("jwk")
+    if not isinstance(key, dict) or "d" in key:
+        raise InvalidEncryptionParametersError("jwk must be a public JWK object")
+    enc = encryption.get("enc")
+    if not isinstance(enc, str) or enc not in advertised.get("enc_values_supported", []):
+        raise InvalidEncryptionParametersError("enc is not supported")
+    alg = encryption.get("alg") or key.get("alg")
+    if not isinstance(alg, str) or alg not in advertised.get("alg_values_supported", []):
+        raise InvalidEncryptionParametersError("alg is not supported")
+    try:
+        # Loading the key into cryptography checks it (EC point on the curve, RSA parameters).
+        jwk.JWK(**key).export_to_pem()
+    except Exception as e:
+        raise InvalidEncryptionParametersError("jwk is not a valid key") from e
+
+
 def encrypt_jwe(payload: Dict[str, Any], key: jwk.JWK, alg: str, enc: str, **header: Any) -> str:
     """Encrypts a JSON payload as a compact JWE.
 
@@ -696,7 +951,8 @@ def create_c_nonce() -> str:
     """Creates an encrypted ``c_nonce`` JWT bound to the credential endpoint.
 
     The payload is encrypted to the issuer's own ``nonce_key`` (RSA-OAEP,
-    A256GCM), so only the issuer can read it back.
+    A256GCM), so only the issuer can read it back. Its random ``jti`` lets
+    the issuer make the nonce single-use (:func:`_consume_nonces`).
 
     Returns:
         The compact JWE.
@@ -705,6 +961,7 @@ def create_c_nonce() -> str:
     now = int(time.time())
     payload = {
         "iss": service_url,
+        "jti": secrets.token_urlsafe(16),
         "iat": now,
         "exp": now + NONCE_LIFETIME_SECONDS,
         "source_endpoint": f"{service_url}/nonce",

@@ -43,7 +43,8 @@ from pycose.headers import X5chain
 from pycose.keys import EC2Key
 from pycose.messages import Sign1Message
 
-from app.core.state import trusted_CAs
+from app.core.errors import CertificateVerificationError
+from app.services.trust import PURPOSE_PID_SIGNER, check_leaf_certificate, trust_store
 from app.utils.crypto import certificate_validity, ec_coordinates
 
 logger = logging.getLogger(__name__)
@@ -103,6 +104,11 @@ def validate_vp_token(response_json: Dict[str, Any], credentials_requested: Iter
 def validate_certificate(mdoc: Dict[str, Any]) -> Tuple[bool, str]:
     """Validates the MSO certificate, signature, digests and validity of a document.
 
+    The document signer must be issued by a ``pid_signer`` trust anchor
+    (:func:`app.services.trust.trust_store`) and be a signing certificate
+    with the mdoc DS extended key usage when it has one
+    (:func:`app.services.trust.check_leaf_certificate`).
+
     Args:
         mdoc: Decoded ``documents[0]`` entry of a ``DeviceResponse``.
 
@@ -112,9 +118,13 @@ def validate_certificate(mdoc: Dict[str, Any]) -> Tuple[bool, str]:
     message = Sign1Message.decode(cbor2.dumps(cbor2.CBORTag(18, mdoc["issuerSigned"]["issuerAuth"])))
     certificate = x509.load_der_x509_certificate(message.uhdr[X5chain], default_backend())
 
-    ca_info = trusted_CAs.get(certificate.issuer)
+    ca_info = trust_store(PURPOSE_PID_SIGNER).get(certificate.issuer)
     if ca_info is None:
         return False, _UNTRUSTED_CA
+    try:
+        check_leaf_certificate(certificate, PURPOSE_PID_SIGNER)
+    except CertificateVerificationError as e:
+        return False, str(e)
 
     try:
         # Checks issuer name and signature for EC and RSA CAs alike.

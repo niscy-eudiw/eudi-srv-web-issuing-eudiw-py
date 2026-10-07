@@ -145,7 +145,7 @@ class TestLocalTrustedCAs:
 
 
 class TestTrustValidatorFirst:
-    """Validator enabled: it is asked first; local CAs are the fallback."""
+    """Validator enabled: it is asked first; local CAs are the fallback when it fails."""
 
     @pytest.fixture(autouse=True)
     def _validator_enabled(self):
@@ -163,10 +163,14 @@ class TestTrustValidatorFirst:
         )
         assert cert.subject == pki["untrusted_leaf"].subject
 
-    def test_validator_rejects_falls_back_to_local_success(self, pki, trusted_root):
-        with patch("app.services.trust.call_trust_validator", return_value=False):
-            cert = trust.verify_x5c_chain(_x5c(pki["direct_leaf"]), "ctx")
-        assert cert.subject == pki["direct_leaf"].subject
+    def test_validator_rejection_is_final(self, pki, trusted_root):
+        """trusted: false is an answer, not an outage: the local CAs are not asked."""
+        with patch("app.services.trust.call_trust_validator", return_value=False), patch(
+            "app.services.trust.verify_chain_against_trusted_CAs"
+        ) as local:
+            with pytest.raises(CertificateVerificationError, match="rejected by the trust validator"):
+                trust.verify_x5c_chain(_x5c(pki["direct_leaf"]), "ctx")
+        local.assert_not_called()
 
     def test_validator_rejects_and_local_rejects(self, pki, trusted_root):
         with patch("app.services.trust.call_trust_validator", return_value=False):
@@ -288,7 +292,15 @@ class TestKeyAttestationTrust:
         ) as verify:
             assert decode_verify_attestation("ka.jwt") == {"attested_keys": []}
 
-        verify.assert_called_once_with(jwt_raw="ka.jwt", verification_context=expected, use_case=None)
+        verify.assert_called_once_with(
+            jwt_raw="ka.jwt",
+            verification_context=expected,
+            use_case=None,
+            purpose="key_attestation",
+            required_claims=("iat", "exp"),
+            max_age_seconds=24 * 3600,
+            expected_typ="key-attestation+jwt",
+        )
 
     def test_untrusted_attestation_propagates(self, pki, trusted_root):
         from app.services.credential_issuance import decode_verify_attestation

@@ -136,6 +136,7 @@ def mock_cfgservice():
         },
         "status_validator": {"enabled": False, "url": "https://status.test"},
         "backend_api_key": "test-api-key",
+        "admin_api_key": "test-api-key",
     }) as mock:
         yield mock
 
@@ -531,7 +532,8 @@ class TestDeferredCredential:
         """Fixed behaviour: response encryption uses the deferred request's
         credential_response_encryption"""
         transaction_id = str(uuid.uuid4())
-        encryption = {"jwk": {"kty": "RSA"}, "alg": "RSA-OAEP", "enc": "A256GCM"}
+        public_jwk = json.loads(jwk.JWK.generate(kty="RSA", size=2048).export_public())
+        encryption = {"jwk": public_jwk, "alg": "RSA-OAEP", "enc": "A256GCM"}
         mock_introspect.return_value = ("test-session-id", None)
         mock_generate.return_value = {"credential": "test-credential"}
         with app.app_context():
@@ -576,11 +578,13 @@ class TestNotification:
         """Test successful notification"""
         mock_introspect.return_value = ("test-session-id", None)
 
-        response = client.post(
+        with patch("app.routes.oidc.session_manager.get_session_by_notification_id") as owner:
+            owner.return_value.session_id = "test-session-id"
+            response = client.post(
             "/notification",
-            headers={"Authorization": "Bearer token"},
-            json={"notification_id": "test-notification"},
-        )
+                headers={"Authorization": "Bearer token"},
+                json={"notification_id": "test-notification"},
+            )
 
         assert response.status_code == 204
 
@@ -732,7 +736,7 @@ class TestLogs:
 
 
 class TestInternalApiKey:
-    """/logs and /admin/sessions/client_status require the backend API key."""
+    """/logs and /admin/sessions/client_status require the admin API key."""
 
     @pytest.mark.parametrize("path", ["/logs?session_id=s1", "/admin/sessions/client_status"])
     def test_missing_key_rejected(self, client, mock_cfgservice, path):
@@ -749,7 +753,7 @@ class TestInternalApiKey:
 
     @pytest.mark.parametrize("path", ["/logs?session_id=s1", "/admin/sessions/client_status"])
     def test_unconfigured_key_fails_closed(self, client, path):
-        """Without backend_api_key in the configuration the endpoints are unavailable."""
+        """Without admin_api_key in the configuration the endpoints are unavailable."""
         response = client.get(path, headers={"X-Api-Key": "anything"})
 
         assert response.status_code == 503

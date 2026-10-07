@@ -104,3 +104,25 @@ def is_frontend_url(url: str) -> bool:
         ``True`` when its scheme and host match a frontend URL.
     """
     return bool(url) and _origin(url) in frontend_origins()
+
+
+def frontend_id_for_url(url: str) -> Optional[str]:
+    """Finds the frontend whose base URL ``url`` lies under.
+
+    Args:
+        url: Absolute URL, e.g. ``<frontend url>/display_form``.
+
+    Returns:
+        The id of the frontend with the longest matching base URL (ties go to
+        the smallest id), or ``None`` when no frontend URL is a prefix of ``url``.
+    """
+    frontends = (CONFIGURATION.get("frontend") or {}).get("frontends_config") or {}
+    matches = [
+        (len(base), frontend_id)
+        for frontend_id, cfg in frontends.items()
+        if (base := str(cfg.get("url") or "").rstrip("/")) and (url == base or url.startswith(base + "/"))
+    ]
+    if not matches:
+        return None
+    longest = max(length for length, _ in matches)
+    return min(frontend_id for length, frontend_id in matches if length == longest)

@@ -218,8 +218,13 @@ class TestGenerateCredentials:
         result = ci.generate_credentials(_single("garbage"), "s1")
         assert result["error"] == "invalid_proof" and not issue.called
 
-    def test_batch_truncated_to_batch_size(self, metadata, sessions, issue, config):
-        ci.generate_credentials(_request(proof_jwt()[0] for _ in range(3)), "s1")
+    def test_batch_over_batch_size_rejected(self, metadata, sessions, issue, config):
+        result = ci.generate_credentials(_request([proof_jwt()[0] for _ in range(3)]), "s1")
+
+        assert result["error"] == "invalid_credential_request" and not issue.called
+
+    def test_batch_within_batch_size(self, metadata, sessions, issue, config):
+        ci.generate_credentials(_request([proof_jwt()[0] for _ in range(2)]), "s1")
 
         assert len(issue.call_args.args[1]["proofs"]) == 2
         sessions.update_is_batch_credential.assert_called_once_with(session_id="s1", is_batch_credential=True)

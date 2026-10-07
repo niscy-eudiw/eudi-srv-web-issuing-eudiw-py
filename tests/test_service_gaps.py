@@ -10,6 +10,7 @@ import requests
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 
+from app.core import state
 from app.services import countries, revocation_status, vp_validation
 from app.services.countries import CountryConnectorError
 from app.services.formatters import mdocFormatter
@@ -148,7 +149,7 @@ class TestValidateCertificate:
             "app.core.state.trusted_CAs",
             {
                 k: {**v, "not_valid_after": future + datetime.timedelta(days=1)}
-                for k, v in vp_validation.trusted_CAs.items()
+                for k, v in state.trusted_CAs.items()
             },
         ):
             assert vp_validation.validate_certificate(issued_document) == (False, "Period defined in ValidityInfo is invalid")

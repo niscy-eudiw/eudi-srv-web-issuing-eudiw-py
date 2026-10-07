@@ -310,3 +310,29 @@ _06 Oct 2026_
 - The WIA `client_status` claim is read from the access token only after its signature is verified with the authorization server keys.
 - Log lines escape line breaks in every request-supplied or externally received value (log injection).
 - A browser request without an active issuance session (expired, or already handed back to the wallet) gets 400 instead of a 500.
+
+## [Unreleased]
+
+### Added
+- `admin_api_key`: guards `GET /logs`, `GET /admin/sessions/client_status` and `POST /metadata/metadata_signer` (503 while unset). `backend_api_key` now only reads frontend metadata.
+- Optional per-purpose trust anchors `trusted_CAs_paths.{key_attestation, offer_request, pid_signer}`; a purpose left out uses `trusted_CAs_path`.
+- Signed display payloads: with `frontends_config.<id>.payload_key` (at least 32 characters) every page posted to a frontend `/display_*` route also carries `payload_jwt`, an HS256 JWS over `{payload, aud, iat, exp}` (5 minutes). Without the key the payload is posted unsigned and a warning is logged once.
+- `max_content_length` (default 1 MiB, 413 above), `session_file_threshold` (default 10000) and `proof_validation.key_attestation_max_age_seconds` (default 24 h).
+- `proof_validation.single_use_nonce` (default `true`): `false` lets a wallet reuse a valid `c_nonce` until it expires (OpenID4VCI 1.0 §13.8), and the used-nonce store is not consulted.
+
+### Changed
+- By default each `c_nonce` is accepted by one credential request only (see `proof_validation.single_use_nonce`). An unknown, undecryptable, expired or reused `c_nonce` is answered with `invalid_nonce` (was `invalid_proof`); a proof without a `c_nonce`, when one is required, stays `invalid_proof` (OpenID4VCI 1.0 §8.3.1.2). Deferred retrieval reuses the holder keys proven by the first request instead of verifying the proofs again.
+- A request with more proofs than the batch size is rejected with `invalid_credential_request` before any proof is verified (it was truncated after verification).
+- A trust validator `trusted: false` answer is final; the local CA store is only used when the validator fails or is disabled.
+- Signer certificates must not be CAs and, with `keyUsage`, allow `digitalSignature`; PID document signers with `extendedKeyUsage` need `1.0.18013.5.1.2`; `x5c` intermediates need `cA=TRUE` and `keyCertSign`.
+- `/preauth` and `/preauth_form` are POST-only; `/credential_offer` reaches `/preauth` with a 307 redirect.
+- The test-environment defaults need `EUDIW_TEST_ENV=true`; `CI` and `SONARCLOUD` no longer enable them.
+
+### Fixed
+- Key attestations without `iat` / `exp`, older than the maximum age or with another `typ` were accepted; untrusted ones caused a server error instead of `invalid_proof`.
+- `credential_response_encryption` with unsupported or malformed values was only rejected after the credentials were signed; it now gets 400 `invalid_encryption_parameters` first.
+- `/preauth` without a valid `credentials_id` returned 500; it returns 400.
+- Every log message has CR / LF escaped by a handler filter; the 404 handler escapes the path.
+- `/logs` reported `successful` from log text a request could forge; it now comes from the session state.
+- `/notification` accepted and logged any `notification_id`; it must belong to the access token's session (400 `invalid_notification_id`).
+- `GET /credential_offer_choice` created a server-side session for any `frontend_id`; an unknown one gets 404.

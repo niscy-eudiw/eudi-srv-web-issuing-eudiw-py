@@ -10,6 +10,30 @@ from concurrent_log_handler import ConcurrentTimedRotatingFileHandler
 from flask import Flask
 
 
+class LineBreakEscapeFilter(logging.Filter):
+    """Escapes CR / LF in every log message (log injection).
+
+    :func:`app.core.log_utils.safe` escapes request values where they are
+    logged; this filter, installed on the handlers, also covers any message
+    that misses it, so no record can start a forged log line.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        """Rewrites ``record`` with its final message escaped.
+
+        Args:
+            record: The log record.
+
+        Returns:
+            Always ``True`` (records are never dropped).
+        """
+        message = record.getMessage()
+        if "\r" in message or "\n" in message:
+            record.msg = message.replace("\r", "\\r").replace("\n", "\\n")
+            record.args = None
+        return True
+
+
 class WerkzeugFilter(logging.Filter):
     """Drops Werkzeug per-request access log lines (``... HTTP/1.1 ...``)."""
 
@@ -59,6 +83,10 @@ def configure_logging(app: Flask, config: Mapping[str, Any]) -> None:
     console_handler = logging.StreamHandler()
     console_handler.setFormatter(log_formatter)
     console_handler.setLevel(log_level)
+
+    line_break_filter = LineBreakEscapeFilter()
+    file_handler.addFilter(line_break_filter)
+    console_handler.addFilter(line_break_filter)
 
     # Sync with Gunicorn's level if it's more specific than what config says
     gunicorn_logger = logging.getLogger('gunicorn.error')

@@ -1,3 +1,6 @@
+# Software composition analysis (SCA): OWASP Dependency-Check scans the dependencies
+# for known vulnerabilities and uploads an HTML report as a build artifact.
+# Runs on every push and on manual dispatch. Needs secrets: none.
 name: SCA - Dependency-Check
 on:
   push:

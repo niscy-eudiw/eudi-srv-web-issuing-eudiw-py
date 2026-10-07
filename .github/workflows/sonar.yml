@@ -1,3 +1,6 @@
+# SonarCloud static analysis (SAST) with test coverage for app/.
+# Runs on every push, pull request and manual dispatch.
+# Needs secrets: SONAR_TOKEN (GITHUB_TOKEN is provided by GitHub).
 name: SAST - SonarCloud
 on:
   push:
@@ -14,9 +17,16 @@ jobs:
     name: Check secret presence
     runs-on: ubuntu-latest
     steps:
-    - run: if [[ -z "$SONAR_TOKEN" ]]; then exit 1; else echo "Secret exists. The workflow will be continued"; fi
-    env:
-       SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+      - name: Fail if SONAR_TOKEN is missing
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          PROJECT_KEY: ${{ github.repository_owner }}_${{ github.event.repository.name }}
+        run: |
+          if [[ -z "$SONAR_TOKEN" ]]; then
+            echo "::error::SONAR_TOKEN secret is not set: create the SonarCloud project ${PROJECT_KEY} and add the secret"
+            exit 1
+          fi
+          echo "Secret exists. The workflow will be continued"
   
   P_WD_analysis:
     name: SAST - SonarCloud - Push/WD analysis
@@ -43,7 +53,7 @@ jobs:
           env $(grep -v '^#' .env.test | xargs) pytest --cov=app --cov-config=pyproject.toml --cov-report=xml:coverage.xml
           coverage report
       - name: setup projectkey
-        run: echo "PROJECTKEY=${{ github.repository_owner}}_$(echo ${{ github.repository }} | sed 's/.*\///')" >> $GITHUB_ENV
+        run: echo "PROJECTKEY=${{ github.repository_owner}}_$(echo ${{ github.repository }} | sed 's/.*\///')" >> "$GITHUB_ENV"
       - name: SonarCloud Scan - Action
         uses: SonarSource/sonarcloud-github-action@ffc3010689be73b8e5ae0c57ce35968afd7909e8 # v5.0.0
         with:
@@ -53,7 +63,7 @@ jobs:
                 -Dsonar.sources=app
                 -Dsonar.python.coverage.reportPaths=coverage.xml
         env:
-          GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}  # Needed to get PR information, if any
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}  # Needed to get PR information, if any
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
       
   PR_analysis:
@@ -67,7 +77,7 @@ jobs:
         with:
           fetch-depth: 0  # Shallow clones should be disabled for a better relevancy of analysis
       - name: setup projectkey
-        run: echo "PROJECTKEY=${{ github.repository_owner}}_$(echo ${{ github.repository }} | sed 's/.*\///')" >> $GITHUB_ENV
+        run: echo "PROJECTKEY=${{ github.repository_owner}}_$(echo ${{ github.repository }} | sed 's/.*\///')" >> "$GITHUB_ENV"
       - name: SonarCloud Scan - Action
         uses: SonarSource/sonarcloud-github-action@ffc3010689be73b8e5ae0c57ce35968afd7909e8 # v5.0.0
         with:
@@ -78,5 +88,5 @@ jobs:
                 -Dsonar.pullrequest.base=${{ github.event.pull_request.base.ref }}
                 -Dsonar.pullrequest.branch=${{ github.event.pull_request.head.ref }}
         env:
-          GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}  # Needed to get PR information, if any
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}  # Needed to get PR information, if any
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
