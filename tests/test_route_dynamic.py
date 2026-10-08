@@ -2368,3 +2368,55 @@ class TestGenerateConnectorAuthorizationUrl:
             self.generate_connector_authorization_url(
                 data_missing_redirect, "IT", ["scope"], self.state
             )
+
+
+# -----------------------
+# Test: issuing_country claim of the FormEU form (#187)
+# -----------------------
+class TestIssuingCountryCode:
+    """The issuing_country claim matches the DS certificate, not the FC key."""
+
+    CONFIG = {
+        "countries": {
+            "FC": {"connection_type": "form", "issuing_country": "UT"},
+            "PT": {"connection_type": "openid"},
+        }
+    }
+
+    @pytest.fixture(autouse=True)
+    def config(self, monkeypatch):
+        set_configuration(monkeypatch, self.CONFIG)
+
+    def test_configured_code_is_used(self):
+        from app.services.countries import issuing_country_code
+
+        assert issuing_country_code("FC") == "UT"
+
+    def test_falls_back_to_country_key(self):
+        from app.services.countries import issuing_country_code
+
+        assert issuing_country_code("PT") == "PT"
+        assert issuing_country_code("sample") == "sample"
+
+    def test_form_formatter_writes_code(self):
+        from app.services.presentation import form_formatter
+
+        assert form_formatter({"family_name": "Doe"}, issuing_country="FC")["issuing_country"] == "UT"
+
+    def test_credential_creation_writes_code(self):
+        metadata = {
+            "credential_configurations_supported": {
+                "eu.europa.ec.eudi.pid_mdoc": {"scope": "eu.europa.ec.eudi.pid.1", "format": "mso_mdoc"}
+            }
+        }
+        with patch("app.services.dynamic_formatter.oidc_metadata", metadata), patch(
+            "app.services.dynamic_formatter.dynamic_formatter", return_value="cred"
+        ) as formatter:
+            credentialCreation(
+                {"credential_identifier": "eu.europa.ec.eudi.pid_mdoc", "proofs": [{"jwt": "key"}]},
+                {"family_name": "Doe"},
+                "FC",
+                "session_123",
+            )
+
+        assert formatter.call_args[0][2]["issuing_country"] == "UT"

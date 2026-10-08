@@ -60,6 +60,7 @@ from app.services.trust import (
     trust_use_case,
     verify_jwt_with_x5c,
 )
+from app.utils.did import jwk_from_did_url
 from app.utils.encoding import b64url_decode
 
 logger = logging.getLogger(__name__)
@@ -643,8 +644,11 @@ def _collect_jwt_proof(
     """Verifies one JWT proof and records the holder key(s) it proves.
 
     A proof with a ``key_attestation`` header must be signed by one of the
-    attested keys; all attested keys are then issued to. Otherwise the proof
-    is signed by its ``jwk`` header key, which becomes the holder key.
+    attested keys; all attested keys are then issued to (its ``kid``, if any,
+    names one of them). Otherwise the proof is signed by its ``jwk`` header
+    key, or by the key of its ``kid`` DID URL (``did:jwk`` / ``did:key``),
+    which becomes the holder key. ``jwk``, ``kid`` and ``x5c`` are mutually
+    exclusive (OpenID4VCI 1.0 appendix F.1).
 
     Args:
         proof_jwt: Compact proof JWT.
@@ -657,16 +661,29 @@ def _collect_jwt_proof(
         InvalidProofError: If the proof or its key attestation is invalid.
     """
     try:
-        # Only selects the key source (key_attestation or jwk); verify_proof_jwt
+        # Only selects the key source (key_attestation, kid or jwk); verify_proof_jwt
         # verifies the signature before any key is used.
         header = jwt.get_unverified_header(proof_jwt)  # NOSONAR
     except jwt.DecodeError as e:
         raise InvalidProofError("Proof JWT is malformed") from e
 
+    if sum(name in header for name in ("jwk", "kid", "x5c")) > 1:
+        raise InvalidProofError("Proof JWT must not combine jwk, kid and x5c headers")
+
     if "key_attestation" in header:
         claims = _verified_attestation(header["key_attestation"], session_id, "jwt proof header", require_nonce=False)
         verify_proof_jwt(proof_jwt, session_id, signing_jwks=claims["attested_keys"], nonces=nonces)
         _register_attested_keys(claims, session_id, pub_keys, ka_exps)
+        return
+
+    if "kid" in header:
+        try:
+            holder_jwk = jwk_from_did_url(header["kid"])
+        except ValueError as e:
+            raise InvalidProofError(str(e)) from e
+        # The proof must be signed by the DID key, which is then bound.
+        verify_proof_jwt(proof_jwt, session_id, signing_jwks=[holder_jwk], nonces=nonces)
+        pub_keys.append({"jwt": _holder_key(holder_jwk)})
         return
 
     verify_proof_jwt(proof_jwt, session_id, nonces=nonces)

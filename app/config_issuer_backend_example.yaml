@@ -423,7 +423,10 @@ countries:
         private_key_password: null
         certificate_path: "/etc/eudiw/pid-issuer-dev/cert/PID-DS-0002_UT_cert.der"
 
-    un_distinguishing_sign: "FC"
+    # ISO 3166-1 alpha-2 code written as issuing_country: it must match the
+    # countryName of the document signer certificate above (C=UT, Utopia).
+    issuing_country: "UT"
+    un_distinguishing_sign: "UT"
 
     supported_credential_ids:
       - "eu.europa.ec.eudi.pid_mdoc"

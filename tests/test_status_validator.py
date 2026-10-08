@@ -105,14 +105,25 @@ class TestIssuanceFailsClosed:
         response.json.return_value = {"active": True, "username": "session-1"}
         return response
 
-    def _verify(self, app, revoked=None, error=None):
+    def _verify(self, app, revoked=None, error=None, client_status=CLIENT_STATUS, check=None):
         from app.routes import oidc
 
-        check = MagicMock(return_value=revoked, side_effect=error)
+        check = check or MagicMock(return_value=revoked, side_effect=error)
         with app.app_context(), patch.object(oidc, "introspect", return_value=self._introspection()), patch.object(
-            oidc, "decode_authorization_server_jwt", return_value={"client_status": self.CLIENT_STATUS}
+            oidc, "decode_authorization_server_jwt", return_value={"client_status": client_status}
         ), patch.object(oidc, "check_status_list_revocation", check):
             return oidc.verify_introspection("header.payload.signature")
+
+    @pytest.mark.parametrize(
+        "client_status",
+        [{"exp": 1}, {"status": None}, {"status": {"status_list": {"idx": 3}}}, "not-a-dict"],
+    )
+    def test_malformed_client_status_fails_closed(self, app, status_config, client_status):
+        check = MagicMock()
+        response, status = self._verify(app, client_status=client_status, check=check)
+        assert status == 401
+        assert response.get_json()["error_description"] == "Malformed client_status"
+        check.assert_not_called()
 
     def test_wia_valid(self, app, status_config):
         assert self._verify(app, revoked=False) == ("session-1", self.CLIENT_STATUS)

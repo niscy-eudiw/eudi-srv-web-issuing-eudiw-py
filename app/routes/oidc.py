@@ -29,7 +29,7 @@ import json
 import logging
 import re
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 import jwt
@@ -73,7 +73,7 @@ from app.services.credential_issuance import (
     decrypt_jwe_credential_request,
     generate_credentials,
 )
-from app.services.credential_offer import authorization_code_offer, credential_offer_uri, is_valid_offer_prefix
+from app.services.credential_offer import authorization_code_offer, credential_offer_uri, is_valid_offer_prefix, offer_link
 from app.services.oid4vp import fetch_presentation_result, presentation_result_url, validate_presentation_id
 from app.utils.frontend import frontend_url
 from app.utils.http import post_redirect_with_payload
@@ -156,6 +156,22 @@ def _read_credential_request(invalid_jwt_error: str) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
+def _client_status_list(client_status: Any) -> Optional[Dict[str, Any]]:
+    """Returns the ``status.status_list`` pointer of a ``client_status`` claim.
+
+    Args:
+        client_status: ``client_status`` claim of the access token.
+
+    Returns:
+        ``{"idx", "uri"}``, or ``None`` when the claim does not have that shape.
+    """
+    status = client_status.get("status") if isinstance(client_status, dict) else None
+    status_list = status.get("status_list") if isinstance(status, dict) else None
+    if isinstance(status_list, dict) and "idx" in status_list and "uri" in status_list:
+        return status_list
+    return None
+
+
 def verify_introspection(bearer_token: str) -> Any:
     """Validates an access token with the authorization server.
 
@@ -224,7 +240,11 @@ def verify_introspection(bearer_token: str) -> Any:
         logger.debug("Access token is not a JWT; no client_status claim available.")
 
     if client_status and CONFIGURATION["status_validator"]["enabled"]:
-        status_list = client_status["status"]["status_list"]
+        status_list = _client_status_list(client_status)
+        if status_list is None:
+            # Fail closed (as for an unverifiable status) instead of a 500.
+            logger.error(f"Malformed WIA client_status for session tied to {safe(username, 64)}")
+            return jsonify({"error": "invalid_token", "error_description": "Malformed client_status"}), 401
         try:
             revoked = check_status_list_revocation(
                 url=CONFIGURATION["status_validator"]["url"],
@@ -937,7 +957,8 @@ def credentialOffer() -> HandlerResult:
 
     auth_choice = request.form.get("Authorization Code Grant")
     credential_offer_URI = request.form.get("credential_offer_URI")
-    excluded = {"proceed", "credential_offer_URI", "Authorization Code Grant"}
+    offer_mode = request.form.get("credential_offer_mode")
+    excluded = {"proceed", "credential_offer_URI", "Authorization Code Grant", "credential_offer_mode"}
     credentials_id = [k for k in form_keys if k not in excluded]
 
     if not all(credential in credentials_supported for credential in credentials_id):
@@ -950,18 +971,14 @@ def credentialOffer() -> HandlerResult:
 
     if auth_choice == "pre_auth_code":
         session["credential_offer_URI"] = credential_offer_URI
+        session["credential_offer_mode"] = offer_mode
         # 307 keeps the POST: /preauth is POST-only (it creates a pre-authorized code).
         return redirect(url_for("preauth.preauthRed", credentials_id=json.dumps(credentials_id)), code=307)
 
     frontend_id = session.get("frontend_id")
     offer = authorization_code_offer(frontend_url(frontend_id), credentials_id, generate_unique_id())
 
-    credential_offer_references[str(uuid.uuid4())] = {
-        "credential_offer": offer,
-        "expires": datetime.now() + timedelta(minutes=CONFIGURATION["expiry"]["form"]),
-    }
-
-    uri = credential_offer_uri(credential_offer_URI, offer)
+    uri = offer_link(credential_offer_URI, offer, offer_mode)
 
     return post_redirect_with_payload(
         target_url=f"{frontend_url(frontend_id)}/display_credential_offer_qr_code",
@@ -978,16 +995,22 @@ def credentialOffer() -> HandlerResult:
 def offer_reference(reference_id: str) -> HandlerResult:
     """Serves a credential offer by reference (``credential_offer_uri``).
 
+    A reference is single use: a pre-authorized offer carries the
+    ``pre-authorized_code``, so it is removed once served.
+
     Args:
         reference_id: Offer reference id.
 
     Returns:
-        The offer, or ``404`` when unknown or expired.
+        The offer (``Cache-Control: no-store``), or ``404`` when unknown,
+        already fetched or expired.
     """
-    entry = credential_offer_references.get(reference_id)
-    if entry is None:
+    entry = credential_offer_references.pop(reference_id, None)
+    if entry is None or entry["expires"] < datetime.now():
         return jsonify({"error": "not_found"}), 404
-    return entry["credential_offer"]
+    response = jsonify(entry["credential_offer"])
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 oidc.register_error_handler(OAuthEndpointError, oauth_error_response)

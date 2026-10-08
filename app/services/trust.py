@@ -114,6 +114,11 @@ PURPOSE_OFFER_REQUEST = "offer_request"
 PURPOSE_PID_SIGNER = "pid_signer"
 TRUST_PURPOSES = (PURPOSE_KEY_ATTESTATION, PURPOSE_OFFER_REQUEST, PURPOSE_PID_SIGNER)
 
+#: Accepted clock skew (seconds) for ``iat`` / ``nbf`` / ``exp`` of x5c-signed
+#: JWTs: wallets mint key attestations just before the credential request,
+#: so a wallet-provider clock slightly ahead must not fail issuance (#166).
+JWT_CLOCK_LEEWAY_SECONDS = 60
+
 #: ISO/IEC 18013-5 extended key usage of an mdoc document signer.
 MDOC_DS_EKU = x509.ObjectIdentifier("1.0.18013.5.1.2")
 
@@ -625,6 +630,7 @@ def verify_jwt_with_x5c(
         audience=audience,
         issuer=issuer,
         options={"verify_exp": verify_exp, "require": required},
+        leeway=JWT_CLOCK_LEEWAY_SECONDS,
     )
     claims = decoded["payload"]
     if expected_typ is not None:

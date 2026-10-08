@@ -60,6 +60,7 @@ def device_key():
 def issuer_config(country_pki):
     config = {
         "service_url": "https://backend.test",
+        "frontend": {"default": "fe", "frontends_config": {"fe": {"url": "https://issuer.test"}}},
         "revocation": {"enabled": False},
         "countries": {
             "FC": {
@@ -127,7 +128,8 @@ def test_sdjwt_issued_and_verified(issuer_config, device_key):
     # Our own SD-JWT passes the "issued by this issuer" check used by revocation.
     payload = verify_and_decode_sdjwt(issuance, is_issuer_certificate)
     assert payload["vct"] == VCT
-    assert payload["iss"] == "https://backend.test"
+    # #161: iss is the frontend (Credential Issuer Identifier), not the backend
+    assert payload["iss"] == "https://issuer.test"
     assert payload["exp"] > datetime.datetime.now().timestamp()
     assert "cnf" in payload and payload["cnf"]["jwk"]["kty"] == "EC"
     assert payload["_sd"]  # claims are selectively disclosable

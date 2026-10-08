@@ -237,8 +237,22 @@ class TestVerifyJwtWithX5c:
             trust.verify_jwt_with_x5c(token)
 
     def test_expired_token(self, pki, trusted_root):
-        token = self._token(pki, {"exp": int(NOW.timestamp()) - 60}, [pki["direct_leaf"]])
+        token = self._token(pki, {"exp": int(NOW.timestamp()) - 10 * trust.JWT_CLOCK_LEEWAY_SECONDS}, [pki["direct_leaf"]])
         with pytest.raises(jwt.ExpiredSignatureError):
+            trust.verify_jwt_with_x5c(token)
+
+    def test_small_clock_skew_tolerated(self, pki, trusted_root):
+        """A key attestation minted by a wallet provider whose clock is a bit ahead (#166)."""
+        import time
+
+        token = self._token(pki, {"sub": "x", "iat": int(time.time()) + 30}, [pki["direct_leaf"]])
+        assert trust.verify_jwt_with_x5c(token)["sub"] == "x"
+
+    def test_large_clock_skew_rejected(self, pki, trusted_root):
+        import time
+
+        token = self._token(pki, {"iat": int(time.time()) + 10 * trust.JWT_CLOCK_LEEWAY_SECONDS}, [pki["direct_leaf"]])
+        with pytest.raises(jwt.ImmatureSignatureError):
             trust.verify_jwt_with_x5c(token)
 
     def test_expected_typ_from_the_verified_header(self, pki, trusted_root):

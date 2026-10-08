@@ -28,7 +28,7 @@ import hmac
 import logging
 import uuid
 from datetime import datetime, timedelta
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 
 import jwt
 from flask import Blueprint, abort, jsonify, request, session
@@ -39,6 +39,7 @@ from app.core.log_utils import safe
 from app.core.security import require_frontend_origin
 from app.core.state import oidc_metadata
 from app.repositories.offer_store import revocation_requests
+from app.repositories.status_store import batch_status_entries
 from app.services.attributes import credential_display_names
 from app.services.oid4vp import (
     build_dcql_query,
@@ -213,6 +214,26 @@ def oid4vp_get() -> Any:
     )
 
 
+def _status_pointers(status: Dict[str, Any]) -> List[Tuple[str, Any, str]]:
+    """Lists the status entries of a credential ``status`` claim.
+
+    Args:
+        status: ``status`` claim (identifier ids as bytes from an MSO, or text).
+
+    Returns:
+        ``[(field, value, uri)]`` for :func:`set_token_status`.
+    """
+    pointers = []
+    if "identifier_list" in status:
+        identifier = status["identifier_list"]
+        value = identifier["id"]
+        pointers.append(("id", value.decode("utf-8") if isinstance(value, bytes) else value, identifier["uri"]))
+    if "status_list" in status:
+        pointer = status["status_list"]
+        pointers.append(("idx", pointer["idx"], pointer["uri"]))
+    return pointers
+
+
 @revocation.route("revoke", methods=["GET", "POST"])
 @require_frontend_origin
 def revoke() -> str:
@@ -239,15 +260,18 @@ def revoke() -> str:
         abort(404, description="Invalid or expired revocation identifier")
     session.pop("revocation_id", None)
 
-    revoked = 0
+    pointers = set()
     for statuses in revocation_requests[revocation_identifier]["status_lists"].values():
         for status in statuses:
-            if "identifier_list" in status:
-                identifier = status["identifier_list"]
-                revoked += set_token_status("id", identifier["id"].decode("utf-8"), identifier["uri"], respect_enabled_flag=False)
-            if "status_list" in status:
-                pointer = status["status_list"]
-                revoked += set_token_status("idx", pointer["idx"], pointer["uri"], respect_enabled_flag=False)
+            pointers.update(_status_pointers(status))
+            # Every instance issued with the presented one (#167): the
+            # presented instance alone was already used when presenting it.
+            for sibling in batch_status_entries(status):
+                pointers.update(_status_pointers(sibling))
+
+    revoked = sum(
+        set_token_status(field, value, uri, respect_enabled_flag=False) for field, value, uri in sorted(pointers, key=str)
+    )
 
     revocation_requests.pop(revocation_identifier)
     logger.info(f"Revocation request {safe(revocation_identifier, 64)} processed: {revoked} status entr(y/ies) revoked")

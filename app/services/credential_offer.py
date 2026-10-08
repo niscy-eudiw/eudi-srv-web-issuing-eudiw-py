@@ -20,6 +20,9 @@
 Attributes:
     PRE_AUTHORIZED_GRANT: Grant type URN of the pre-authorized code flow.
     TX_CODE_DESCRIPTION: ``tx_code`` description shown by wallets.
+    OFFER_BY_VALUE: Offer form mode: the offer is inside the URI (default).
+    OFFER_BY_REFERENCE: Offer form mode: the URI carries a
+        ``credential_offer_uri`` the wallet fetches (OpenID4VCI 1.0 section 4.1.3).
 """
 
 from __future__ import annotations
@@ -27,10 +30,18 @@ from __future__ import annotations
 import json
 import re
 import urllib.parse
+import uuid
+from datetime import datetime, timedelta
 from typing import Any, Dict, Iterable, Optional
+
+from app.core.config import CONFIGURATION
+from app.repositories.offer_store import credential_offer_references
 
 PRE_AUTHORIZED_GRANT = "urn:ietf:params:oauth:grant-type:pre-authorized_code"
 TX_CODE_DESCRIPTION = "Please provide the one-time code."
+
+OFFER_BY_VALUE = "by_value"
+OFFER_BY_REFERENCE = "by_reference"
 
 CredentialOffer = Dict[str, Any]
 
@@ -124,4 +135,44 @@ def credential_offer_uri(scheme: str, credential_offer: CredentialOffer) -> str:
     """
     return f"{scheme}credential_offer?credential_offer=" + urllib.parse.quote(
         json.dumps(credential_offer), safe=":/"
+    )
+
+
+def credential_offer_reference_uri(scheme: str, reference_url: str) -> str:
+    """Builds a by-reference credential offer URI.
+
+    Args:
+        scheme: URI prefix, e.g. ``openid-credential-offer://``.
+        reference_url: HTTPS URL serving the offer.
+
+    Returns:
+        ``<scheme>credential_offer?credential_offer_uri=<urlencoded URL>``.
+    """
+    return f"{scheme}credential_offer?credential_offer_uri=" + urllib.parse.quote(reference_url, safe="")
+
+
+def offer_link(scheme: str, credential_offer: CredentialOffer, mode: Optional[str]) -> str:
+    """Builds the URI a wallet scans for an offer, by value or by reference.
+
+    By reference, the offer is stored in
+    :data:`~app.repositories.offer_store.credential_offer_references` until it
+    is fetched once or ``expiry.form`` minutes have passed.
+
+    Args:
+        scheme: URI prefix, e.g. ``openid-credential-offer://``.
+        credential_offer: The offer.
+        mode: :data:`OFFER_BY_REFERENCE`; anything else means by value.
+
+    Returns:
+        The credential offer URI.
+    """
+    if mode != OFFER_BY_REFERENCE:
+        return credential_offer_uri(scheme, credential_offer)
+    reference_id = str(uuid.uuid4())
+    credential_offer_references[reference_id] = {
+        "credential_offer": credential_offer,
+        "expires": datetime.now() + timedelta(minutes=CONFIGURATION["expiry"]["form"]),
+    }
+    return credential_offer_reference_uri(
+        scheme, f"{CONFIGURATION['service_url']}/credential-offer-reference/{reference_id}"
     )

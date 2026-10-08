@@ -1,4 +1,4 @@
-"""In-memory stand-in for the three status tables used by the persistence code.
+"""In-memory stand-in for the status tables used by the persistence code.
 
 It understands exactly the statements issued by
 ``app.repositories.status_store`` and ``app.services.nightly_sweep`` and keeps
@@ -14,12 +14,13 @@ def _value(param):
 
 
 class FakeStatusDB:
-    """Tables: wia_client_status, ka_key_storage_status, issued_key_status."""
+    """Tables: wia_client_status, ka_key_storage_status, issued_key_status, issued_status_entry."""
 
     def __init__(self):
         self.wia = {}  # session_id -> {"status", "exp"}
         self.ka = {}  # id -> {"session_id", "ka_index", "status"}
         self.keys = {}  # (ka_status_id, device_key) -> {"session_id", "identifier_list", "status_list"}
+        self.entries = []  # issued_status_entry rows (dicts named like the columns)
         self.ddl = []
         self.commits = 0
         self.closed = False
@@ -107,6 +108,29 @@ class FakeCursor:
                 "identifier_list": _value(identifier_list),
                 "status_list": _value(status_list),
             }
+        elif statement.startswith("INSERT INTO issued_status_entry"):
+            columns = (
+                "session_id", "credential_type", "status_list", "identifier_list",
+                "status_list_uri", "status_list_idx", "identifier_list_uri", "identifier_list_id",
+            )
+            db.entries.append({c: _value(p) for c, p in zip(columns, params)})
+        elif statement.startswith("SELECT status_list, identifier_list FROM issued_status_entry"):
+            sl_uri, sl_idx, il_uri, il_id = params
+
+            def sql_eq(column, value):  # SQL: NULL never equals anything
+                return column is not None and value is not None and column == value
+
+            batches = {
+                (e["session_id"], e["credential_type"])
+                for e in db.entries
+                if (sql_eq(e["status_list_uri"], sl_uri) and sql_eq(e["status_list_idx"], sl_idx))
+                or (sql_eq(e["identifier_list_uri"], il_uri) and sql_eq(e["identifier_list_id"], il_id))
+            }
+            self._rows = [
+                (e["status_list"], e["identifier_list"])
+                for e in db.entries
+                if (e["session_id"], e["credential_type"]) in batches
+            ]
         elif statement.startswith("SELECT session_id FROM wia_client_status"):
             self._rows = [(sid,) for sid in sorted(db.wia)]
         elif statement.startswith("SELECT status, exp FROM wia_client_status"):

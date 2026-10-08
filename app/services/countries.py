@@ -93,6 +93,23 @@ def country_config(country: str) -> Dict[str, Any]:
     return CONFIGURATION["countries"][country]
 
 
+def issuing_country_code(country: str) -> str:
+    """Returns the ISO 3166-1 alpha-2 code written in credentials of ``country``.
+
+    The session country is a configuration key (``FC`` for the FormEU form);
+    the ``issuing_country`` claim must instead match the ``countryName`` of
+    the document signer certificate (ISO/IEC 18013-5), set per country with
+    ``issuing_country`` in the configuration.
+
+    Args:
+        country: Country configuration key.
+
+    Returns:
+        The configured ``issuing_country``, else ``country`` itself.
+    """
+    return ((CONFIGURATION.get("countries") or {}).get(country) or {}).get("issuing_country", country)
+
+
 def fetch_well_known(base_url: str, document: str) -> Dict[str, Any]:
     """GETs ``<base_url>/.well-known/<document>``.
 

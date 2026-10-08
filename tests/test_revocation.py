@@ -1257,3 +1257,58 @@ class TestOid4vpGet:
             display_list = mock_redirect.call_args[1]["data_payload"]["display_list"]
             assert display_list["dc+sd-jwt"] == [{"doctype": "sdjwt", "status_list_identifier": "id"}]
             assert [d["status_list_identifier"] for d in display_list["mso_mdoc"]] == ["id", "id2"]
+
+
+class TestRevokeBatch:
+    """Revoking one presented instance revokes its whole batch (#167)."""
+
+    def test_siblings_are_revoked_once(self, client, mock_config):
+        revocation_id = "batch_revoc_id"
+        presented = {"status_list": {"uri": "http://test.com/status", "idx": 1}}
+        siblings = [
+            {"status_list": {"uri": "http://test.com/status", "idx": idx}, "identifier_list": {"uri": "http://test.com/ids", "id": f"id{idx}"}}
+            for idx in range(3)
+        ]
+
+        with patch(
+            "app.routes.revocation.revocation_requests",
+            {
+                revocation_id: {
+                    "status_lists": {"dc+sd-jwt": [], "mso_mdoc": [presented]},
+                    "expires": datetime.now() + timedelta(minutes=10),
+                }
+            },
+        ), patch("app.routes.revocation.batch_status_entries", return_value=siblings) as lookup, patch(
+            "app.services.revocation_status.requests.post"
+        ) as mock_post, patch("app.routes.revocation.post_redirect_with_payload", return_value="ok"):
+            mock_post.return_value.status_code = 200
+            _set_session(client, revocation_id=revocation_id)
+
+            client.post("/revocation/revoke", data={"revocation_identifier": revocation_id})
+
+        lookup.assert_called_once_with(presented)
+        sent = [c.kwargs["data"] for c in mock_post.call_args_list]
+        # 3 status_list idx + 3 identifier_list ids; the presented idx 1 only once
+        assert mock_post.call_count == 6
+        assert sorted(d["idx"] for d in sent if "idx" in d) == [0, 1, 2]
+        assert sorted(d["id"] for d in sent if "id" in d) == ["id0", "id1", "id2"]
+
+    def test_unknown_batch_revokes_presented_entry(self, client, mock_config):
+        revocation_id = "single_revoc_id"
+        with patch(
+            "app.routes.revocation.revocation_requests",
+            {
+                revocation_id: {
+                    "status_lists": {"dc+sd-jwt": [{"status_list": {"uri": "http://test.com/status", "idx": 5}}], "mso_mdoc": []},
+                    "expires": datetime.now() + timedelta(minutes=10),
+                }
+            },
+        ), patch("app.routes.revocation.batch_status_entries", return_value=[]), patch(
+            "app.services.revocation_status.requests.post"
+        ) as mock_post, patch("app.routes.revocation.post_redirect_with_payload", return_value="ok"):
+            mock_post.return_value.status_code = 200
+            _set_session(client, revocation_id=revocation_id)
+
+            client.post("/revocation/revoke", data={"revocation_identifier": revocation_id})
+
+        assert [c.kwargs["data"]["idx"] for c in mock_post.call_args_list] == [5]

@@ -34,6 +34,7 @@ from typing import Any, Collection, Dict, FrozenSet, Iterable, List, Mapping, Se
 from app.core.constants import ConfService as cfgserv
 from app.core.state import oidc_metadata
 from app.services.attributes import getAttributesForm, getAttributesForm2
+from app.services.countries import issuing_country_code
 from app.utils.dates import calculate_age, format_date, to_rfc3339
 
 _KEY_PARTS = re.compile(r"([^\[\]]+)")
@@ -211,7 +212,7 @@ def form_formatter(form_data: Dict[str, Any], issuing_country: str) -> Dict[str,
         item: _SAMPLE_IMAGES.get(value, value) if item in _IMAGE_FIELDS and isinstance(value, str) else value
         for item, value in cleaned_data.items()
     }
-    final_data["issuing_country"] = issuing_country
+    final_data["issuing_country"] = issuing_country_code(issuing_country)
     return final_data
 
 
@@ -292,7 +293,7 @@ def verified_form_formatter(
     # issuing_authority must not reach the new credential.
     form_attributes = with_aliases(allowed)
     cleaned_data.update({name: value for name, value in bound.items() if name in form_attributes})
-    cleaned_data["issuing_country"] = issuing_country
+    cleaned_data["issuing_country"] = issuing_country_code(issuing_country)
     return cleaned_data
 
 
@@ -341,7 +342,7 @@ def presentation_formatter(
         today = datetime.date.today()
         data["estimated_issuance_date"] = format_date(today)
         data["estimated_expiry_date"] = format_date(today + datetime.timedelta(days=doctype_config["validity"]))
-        data["issuing_country"] = country
+        data["issuing_country"] = issuing_country_code(country)
 
         if credential_requested == SEAFARER_CONFIGURATION:
             data["issuing_authority_logo"] = _to_display_base64(cfgserv.issuing_authority_logo)

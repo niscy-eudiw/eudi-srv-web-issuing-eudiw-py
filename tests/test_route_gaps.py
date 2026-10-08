@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 
 import jwt
 import pytest
+from urllib.parse import parse_qs, urlsplit
 import requests
 from flask import Flask
 
@@ -339,19 +340,37 @@ class TestCredentialOffers:
             response = client.post("/credential_offer", data=self._form(**{"Authorization Code Grant": "pre_auth_code"}))
         assert response.status_code == 307 and "/preauth?credentials_id=" in response.headers["Location"]
 
-    def test_authorization_code_offer_stored_and_served(self, client, config):
+    def test_authorization_code_offer_by_value(self, client, config):
         with patch.dict("app.core.state.oidc_metadata", {"credential_configurations_supported": {"pid": {}}}, clear=True), patch.dict(
             offer_store.credential_offer_references, {}, clear=True
         ), patch.object(oidc_routes, "post_redirect_with_payload", return_value="page") as page:
             client.post("/credential_offer", data=self._form())
-            (reference_id, entry), = offer_store.credential_offer_references.items()
-            served = client.get(f"/credential-offer-reference/{reference_id}").get_json()
+            assert offer_store.credential_offer_references == {}
 
         payload = page.call_args.kwargs["data_payload"]
-        assert payload["credential_offer"] == entry["credential_offer"] == served
         assert payload["url_data"].startswith("openid-credential-offer://credential_offer?credential_offer=")
         assert payload["qrcode"].startswith("data:image/png;base64,")
         assert payload["wallet_dev"] == "https://tester.test/credential_offer"
+
+    def test_authorization_code_offer_by_reference(self, client, config):
+        with patch.dict("app.core.state.oidc_metadata", {"credential_configurations_supported": {"pid": {}}}, clear=True), patch.dict(
+            offer_store.credential_offer_references, {}, clear=True
+        ), patch.object(oidc_routes, "post_redirect_with_payload", return_value="page") as page:
+            client.post("/credential_offer", data=self._form(credential_offer_mode="by_reference"))
+            payload = page.call_args.kwargs["data_payload"]
+            query = parse_qs(urlsplit(payload["url_data"]).query)
+            reference_url = query["credential_offer_uri"][0]
+            assert "credential_offer" not in query
+            assert reference_url.startswith("https://backend.test/credential-offer-reference/")
+
+            served = client.get(urlsplit(reference_url).path)
+            again = client.get(urlsplit(reference_url).path)
+
+        assert served.status_code == 200 and served.get_json() == payload["credential_offer"]
+        assert served.headers["Cache-Control"] == "no-store"
+        assert again.status_code == 404  # single use
+        # credential_offer_mode is a form control, not a credential id
+        assert payload["credential_offer"]["credential_configuration_ids"] == ["pid"]
 
 
 class TestMetadataSignerValidation:

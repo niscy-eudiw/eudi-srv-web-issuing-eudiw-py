@@ -38,7 +38,7 @@ from app.core.security import require_frontend_origin
 from app.core.state import oidc_metadata, session_manager
 from app.services.attributes import getAttributesForm, getAttributesForm2, optional_only, requested_credential_ids
 from app.services.auth_server import generate_preauth_code
-from app.services.credential_offer import credential_offer_uri, pre_authorized_offer
+from app.services.credential_offer import offer_link, pre_authorized_offer
 from app.services.presentation import InvalidFormError, form_formatter, presentation_formatter
 from app.core.errors import CertificateVerificationError
 from app.services.trust import (
@@ -252,7 +252,7 @@ def generate_offer(data: Dict[str, Any]) -> str:
         issuer_state=session_id,
         pre_authorized_code=current_session.pre_authorized_code,
     )
-    uri = credential_offer_uri(session["credential_offer_URI"], offer)
+    uri = offer_link(session["credential_offer_URI"], offer, session.get("credential_offer_mode"))
 
     return post_redirect_with_payload(
         target_url=f"{frontend_url(frontend_id)}/display_credential_offer_qr_code",

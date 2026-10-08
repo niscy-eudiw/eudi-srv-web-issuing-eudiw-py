@@ -4,6 +4,8 @@
      "scope":"eu.europa.ec.eudi.por_sd_jwt_vc",
      "cryptographic_binding_methods_supported":[
         "jwk",
+        "did:jwk",
+        "did:key",
         "cose_key"
      ],
      "credential_signing_alg_values_supported":[

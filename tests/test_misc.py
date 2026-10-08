@@ -413,6 +413,7 @@ class TestAdditionalCoverage:
             audience="aud",
             issuer="iss",
             options={"verify_exp": False, "require": []},
+            leeway=trust.JWT_CLOCK_LEEWAY_SECONDS,
         )
 
     # ---------------------------

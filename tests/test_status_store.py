@@ -118,3 +118,54 @@ def test_database_error_is_logged_and_raised(pool, caplog):
         with pytest.raises(ConnectionError):
             status_store.persist_client_status("s1", CLIENT_STATUS)
     assert "Failed to persist client_status for session_id s1" in caplog.text
+
+
+class TestIssuedStatusEntries:
+    """Batch siblings of a presented status entry (#167)."""
+
+    @staticmethod
+    def _entry(idx, identifier=None):
+        status = {"status_list": {"idx": idx, "uri": "https://status.test/pid"}}
+        if identifier:
+            status["identifier_list"] = {"id": identifier, "uri": "https://status.test/ids"}
+        return status
+
+    def test_table_created(self, pool):
+        assert "CREATE TABLE IF NOT EXISTS issued_status_entry" in " ".join(pool.db.ddl)
+
+    def test_siblings_of_presented_entry(self, pool):
+        for idx in range(3):
+            status_store.record_issued_status("s1", "pid", self._entry(idx, f"id{idx}"))
+        status_store.record_issued_status("s1", "mdl", self._entry(50))  # other credential type
+        status_store.record_issued_status("s2", "pid", self._entry(99))  # other session
+
+        siblings = status_store.batch_status_entries(self._entry(1))
+
+        assert sorted(s["status_list"]["idx"] for s in siblings) == [0, 1, 2]
+        assert {s["identifier_list"]["id"] for s in siblings} == {"id0", "id1", "id2"}
+
+    def test_lookup_by_identifier_bytes_from_mso(self, pool):
+        status_store.record_issued_status("s1", "pid", {"identifier_list": {"id": "abc", "uri": "https://status.test/ids"}})
+        status_store.record_issued_status("s1", "pid", {"identifier_list": {"id": "def", "uri": "https://status.test/ids"}})
+
+        siblings = status_store.batch_status_entries({"identifier_list": {"id": b"abc", "uri": "https://status.test/ids"}})
+
+        assert sorted(s["identifier_list"]["id"] for s in siblings) == ["abc", "def"]
+        assert all("status_list" not in s for s in siblings)
+
+    def test_unknown_entry(self, pool):
+        assert status_store.batch_status_entries(self._entry(7)) == []
+        assert status_store.batch_status_entries({}) == []
+
+    def test_no_session_is_not_recorded(self, pool):
+        status_store.record_issued_status(None, "pid", self._entry(1))
+        assert pool.db.entries == []
+
+    def test_database_unavailable_is_best_effort(self):
+        saved = status_store._pool
+        status_store._pool = None
+        try:
+            status_store.record_issued_status("s1", "pid", self._entry(1))  # does not raise
+            assert status_store.batch_status_entries(self._entry(1)) == []
+        finally:
+            status_store._pool = saved

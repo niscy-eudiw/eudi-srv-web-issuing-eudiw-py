@@ -1028,3 +1028,38 @@ class TestCredentialOfferReq2Trust:
             self._post(client, token)
 
         assert verify.call_args.kwargs["verification_context"] == "WalletRelyingPartyAccessCertificate"
+
+
+class TestGenerateOfferMode:
+    """Pre-authorized offers honour the offer form's credential_offer_mode (#70)."""
+
+    @pytest.mark.parametrize("mode", [None, "by_value", "unknown"])
+    def test_by_value(self, app, mock_session_manager, mock_configuration, mode):
+        from app.repositories import offer_store
+
+        with app.test_request_context(), patch.dict(offer_store.credential_offer_references, {}, clear=True), patch(
+            "app.routes.preauth.post_redirect_with_payload", return_value="page"
+        ) as page:
+            session.update(session_id="s1", credential_offer_URI="openid-credential-offer://", credential_offer_mode=mode)
+            generate_offer({})
+            assert offer_store.credential_offer_references == {}
+
+        assert "credential_offer=" in page.call_args.kwargs["data_payload"]["url_data"]
+
+    def test_by_reference(self, app, mock_session_manager, mock_configuration):
+        from urllib.parse import parse_qs, urlsplit
+
+        from app.repositories import offer_store
+
+        with app.test_request_context(), patch.dict(offer_store.credential_offer_references, {}, clear=True), patch(
+            "app.routes.preauth.post_redirect_with_payload", return_value="page"
+        ) as page:
+            session.update(session_id="s1", credential_offer_URI="openid-credential-offer://", credential_offer_mode="by_reference")
+            generate_offer({})
+            (reference_id, entry), = offer_store.credential_offer_references.items()
+
+        payload = page.call_args.kwargs["data_payload"]
+        [reference_url] = parse_qs(urlsplit(payload["url_data"]).query)["credential_offer_uri"]
+        assert reference_url.endswith(f"/credential-offer-reference/{reference_id}")
+        assert entry["credential_offer"] == payload["credential_offer"]
+        assert entry["credential_offer"]["grants"]

@@ -1084,6 +1084,21 @@ class TestOfferReference:
 
         assert response.status_code == 200
         assert response.json == test_offer
+        assert response.headers["Cache-Control"] == "no-store"
+
+    def test_offer_reference_expired(self, client):
+        from app.routes.oidc import credential_offer_references
+
+        credential_offer_references["expired-ref"] = {
+            "credential_offer": {"credential_issuer": "test"},
+            "expires": datetime.now() - timedelta(seconds=1),
+        }
+
+        assert client.get("/credential-offer-reference/expired-ref").status_code == 404
+        assert "expired-ref" not in credential_offer_references
+
+    def test_offer_reference_unknown(self, client):
+        assert client.get("/credential-offer-reference/unknown").status_code == 404
 
 
 class TestBranchCoverage:

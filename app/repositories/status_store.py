@@ -20,12 +20,17 @@
 The status tree recorded in :attr:`Session.client_status` is persisted so the
 nightly sweep (:mod:`app.services.nightly_sweep`) can revoke credentials whose
 wallet instance or key storage attestation has been revoked.
+
+Every status entry reserved at issuance is also recorded in
+``issued_status_entry`` with its session and credential type, so revoking
+one presented instance of a batch revokes all of them (see
+:func:`batch_status_entries`).
 """
 
 from __future__ import annotations
 
 import logging
-from typing import Any, Mapping
+from typing import Any, Dict, List, Mapping
 
 import psycopg
 from psycopg_pool import ConnectionPool
@@ -136,7 +141,34 @@ def _create_tables() -> None:
                 """
             )
             cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS issued_status_entry (
+                    id SERIAL PRIMARY KEY,
+                    session_id TEXT NOT NULL,
+                    credential_type TEXT NOT NULL,
+                    status_list JSONB,
+                    identifier_list JSONB,
+                    status_list_uri TEXT,
+                    status_list_idx BIGINT,
+                    identifier_list_uri TEXT,
+                    identifier_list_id TEXT,
+                    created_at TIMESTAMPTZ DEFAULT now()
+                );
+                """
+            )
+            cur.execute(
                 "CREATE INDEX IF NOT EXISTS idx_ka_session ON ka_key_storage_status(session_id);"
+            )
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_status_entry_batch ON issued_status_entry(session_id, credential_type);"
+            )
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_status_entry_status_list "
+                "ON issued_status_entry(status_list_uri, status_list_idx);"
+            )
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_status_entry_identifier_list "
+                "ON issued_status_entry(identifier_list_uri, identifier_list_id);"
             )
             cur.execute(
                 "CREATE INDEX IF NOT EXISTS idx_issued_key_session ON issued_key_status(session_id);"
@@ -232,3 +264,115 @@ def persist_client_status(session_id: str, client_status: dict[str, Any] | None)
     except Exception:
         logger.exception(f"Failed to persist client_status for session_id {session_id}")
         raise
+
+
+def _pointer(status: Mapping[str, Any], name: str, key: str) -> tuple[Any, Any]:
+    """Returns the ``(uri, value)`` of a ``status_list`` / ``identifier_list`` pointer.
+
+    Args:
+        status: Credential ``status`` claim.
+        name: ``"status_list"`` or ``"identifier_list"``.
+        key: ``"idx"`` or ``"id"``.
+
+    Returns:
+        ``(uri, value)``, or ``(None, None)`` when absent. Identifier bytes
+        (as decoded from an MSO) are returned as text.
+    """
+    pointer = status.get(name)
+    if not isinstance(pointer, Mapping):
+        return None, None
+    value = pointer.get(key)
+    if isinstance(value, bytes):
+        value = value.decode("utf-8")
+    return pointer.get("uri"), value
+
+
+def record_issued_status(session_id: str | None, credential_type: str, status: Mapping[str, Any]) -> None:
+    """Records a status entry reserved for one issued credential instance.
+
+    Best effort: issuance goes on when the database is unavailable, and only
+    the presented instance can then be revoked.
+
+    Args:
+        session_id: Issuance session (nothing is recorded without one).
+        credential_type: Doctype (mdoc) or ``vct`` (SD-JWT).
+        status: The reserved ``status_list`` / ``identifier_list`` pointers.
+    """
+    if not session_id:
+        return
+    status_list_uri, status_list_idx = _pointer(status, "status_list", "idx")
+    identifier_list_uri, identifier_list_id = _pointer(status, "identifier_list", "id")
+    identifier_list = status.get("identifier_list")
+    if identifier_list is not None:
+        identifier_list = {"uri": identifier_list_uri, "id": identifier_list_id}
+    try:
+        with _require_pool().connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO issued_status_entry
+                        (session_id, credential_type, status_list, identifier_list,
+                         status_list_uri, status_list_idx, identifier_list_uri, identifier_list_id)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        session_id,
+                        credential_type,
+                        to_jsonb(status.get("status_list")),
+                        to_jsonb(identifier_list),
+                        status_list_uri,
+                        status_list_idx,
+                        identifier_list_uri,
+                        identifier_list_id,
+                    ),
+                )
+            conn.commit()
+    except Exception:
+        logger.exception(f"Failed to record issued status entry for session_id {session_id}")
+
+
+def batch_status_entries(status: Mapping[str, Any]) -> List[Dict[str, Any]]:
+    """Returns the status entries of every instance issued with a presented one.
+
+    Instances are siblings when they were issued in the same session for the
+    same credential type (one batch credential request, or its re-issuances).
+
+    Args:
+        status: ``status`` claim of a presented credential.
+
+    Returns:
+        ``[{"status_list": ..., "identifier_list": ...}, ...]`` (keys present
+        when recorded), or ``[]`` when the entry is unknown or the database
+        is unavailable.
+    """
+    status_list_uri, status_list_idx = _pointer(status, "status_list", "idx")
+    identifier_list_uri, identifier_list_id = _pointer(status, "identifier_list", "id")
+    if status_list_uri is None and identifier_list_uri is None:
+        return []
+    try:
+        with _require_pool().connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT status_list, identifier_list FROM issued_status_entry
+                    WHERE (session_id, credential_type) IN (
+                        SELECT session_id, credential_type FROM issued_status_entry
+                        WHERE (status_list_uri = %s AND status_list_idx = %s)
+                           OR (identifier_list_uri = %s AND identifier_list_id = %s)
+                    )
+                    """,
+                    (status_list_uri, status_list_idx, identifier_list_uri, identifier_list_id),
+                )
+                rows = cur.fetchall()
+    except Exception:
+        logger.exception("Failed to look up the batch of a presented status entry")
+        return []
+    entries = []
+    for status_list, identifier_list in rows:
+        entry = {}
+        if status_list is not None:
+            entry["status_list"] = status_list
+        if identifier_list is not None:
+            entry["identifier_list"] = identifier_list
+        entries.append(entry)
+    return entries

@@ -47,10 +47,12 @@ from sd_jwt.issuer import SDJWTIssuer
 
 from app.core.config import CONFIGURATION
 from app.core.state import session_manager
+from app.repositories.status_store import record_issued_status
 from app.services.revocation_status import reserve_status_entry
 from app.utils.crypto import ec_coordinates, jwk_curve, private_value_bytes
 from app.utils.dates import date_to_timestamp, format_date
 from app.utils.encoding import urlsafe_b64encode_nopad
+from app.utils.frontend import frontend_url
 
 logger = logging.getLogger(__name__)
 
@@ -182,6 +184,7 @@ def mdocFormatter(
                 key=device_publickey,
                 key_status=copy.deepcopy(revocation_json),
             )
+            record_issued_status(session_id, credential_metadata["doctype"], revocation_json)
             revocation_json["identifier_list"]["id"] = revocation_json["identifier_list"]["id"].encode("utf-8")
 
     mdoci.new(
@@ -294,6 +297,29 @@ def sdjwtNestedClaims(claims: Dict[str, Any], credential_metadata: Dict[str, Any
     return nested
 
 
+def credential_issuer_url(current_session: Any) -> str:
+    """Returns the Credential Issuer Identifier used as the SD-JWT VC ``iss``.
+
+    Wallets know the issuer by its frontend URL (the ``credential_issuer`` of
+    the metadata they fetch), and the x5c certificate SAN names that host,
+    not the backend ``service_url``. The frontend of the session is used when
+    it is configured, else the default frontend.
+
+    The signing certificate is chosen per country, not per frontend, so the
+    SAN only matches for frontends whose host the certificate names.
+
+    Args:
+        current_session: Issuance session, or ``None``.
+
+    Returns:
+        The frontend base URL.
+    """
+    frontend_id = getattr(current_session, "frontend_id", None)
+    if frontend_id not in (CONFIGURATION["frontend"].get("frontends_config") or {}):
+        frontend_id = None
+    return frontend_url(frontend_id)
+
+
 def sdjwtFormatter(PID: Dict[str, Any], country: str, scope: Optional[str], session_id: Optional[str]) -> str:
     """Constructs an SD-JWT VC signed with the country private key.
 
@@ -336,9 +362,10 @@ def sdjwtFormatter(PID: Dict[str, Any], country: str, scope: Optional[str], sess
             session_manager.update_key_status_by_key(
                 session_id=session_id, key=device_key, key_status=revocation_json
             )
+            record_issued_status(session_id, vct, revocation_json)
 
     claims: Dict[Any, Any] = {
-        "iss": CONFIGURATION["service_url"],
+        "iss": credential_issuer_url(current_session),
         "iat": iat,
         "exp": exp,
         "vct": vct,

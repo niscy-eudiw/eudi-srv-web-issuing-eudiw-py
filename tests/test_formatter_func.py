@@ -21,7 +21,7 @@ import pytest
 import datetime
 from unittest.mock import patch, MagicMock, mock_open
 from cryptography.hazmat.primitives.asymmetric import ec
-from config_helpers import patch_configuration
+from config_helpers import patch_configuration, set_configuration
 from app.services.formatters import DatestringFormatter, KeyData, cbor2elems, mdocFormatter, sdjwtFormatter, sdjwtNestedClaims, SDObj
 
 
@@ -280,13 +280,14 @@ class TestMdocFormatter:
         mock_mdoci_instance = MagicMock()
         mock_MdocCborIssuer.return_value = mock_mdoci_instance
 
-        result = mdocFormatter(
-            data=sample_data,
-            credential_metadata=credential_metadata,
-            country=country,
-            device_publickey=device_publickey,
-            session_id=session_id,
-        )
+        with patch("app.services.formatters.record_issued_status") as record:
+            result = mdocFormatter(
+                data=sample_data,
+                credential_metadata=credential_metadata,
+                country=country,
+                device_publickey=device_publickey,
+                session_id=session_id,
+            )
 
         mock_requests_post.assert_called_once()
         assert mock_requests_post.call_args.args[0] == "Fake Take URL"
@@ -294,6 +295,9 @@ class TestMdocFormatter:
         mock_session_manager.update_key_status_by_key.assert_called_once()
         called_revocation = mock_mdoci_instance.new.call_args.kwargs["revocation"]
         assert called_revocation == { "revoked": False, "identifier_list": {"id": b'abc123' } }
+        # #167: recorded for batch revocation
+        record.assert_called_once()
+        assert record.call_args.args[:2] == (session_id, credential_metadata["doctype"])
 
         assert result == b"signed_mdoc_revocation"
 
@@ -529,6 +533,7 @@ class TestSDJWTFormatter:
     @patch("app.services.revocation_status.requests.post")
     @patch_configuration({ # Mock country config
         "service_url": "Fake_URL",
+        "frontend": {"default": "fe", "frontends_config": {"fe": {"url": "Fake_Frontend_URL"}}},
         "countries": {
             "FC": {
                 "name": "FormEU",
@@ -594,7 +599,7 @@ class TestSDJWTFormatter:
         mock_sdjwt_session_manager.get_session.assert_not_called()
         mock_requests_post.assert_not_called()
         claims = mock_SDJWTIssuer.call_args.args[0]
-        assert claims["iss"] == "Fake_URL"
+        assert claims["iss"] == "Fake_Frontend_URL"
         assert claims["vct"] == "vct_value"
         assert "jti" in claims  # learning credential scope
         assert "status" not in claims
@@ -627,6 +632,7 @@ class TestSDJWTFormatter:
     @patch("app.services.revocation_status.requests.post")
     @patch_configuration({ # Mock country config
         "service_url": "Fake_URL",
+        "frontend": {"default": "fe", "frontends_config": {"fe": {"url": "Fake_Frontend_URL"}}},
         "countries": {
             "FC": {
                 "name": "FormEU",
@@ -696,12 +702,13 @@ class TestSDJWTFormatter:
         mock_session.max_credential_exp = None
         mock_sdjwt_session_manager.get_session.return_value = mock_session
 
-        result = sdjwtFormatter(
-            PID,
-            country,
-            "eu.europa.ec.eudi.learning_credential_vc_sd_jwt",
-            session_id="test-session-id",
-        )
+        with patch("app.services.formatters.record_issued_status") as record:
+            result = sdjwtFormatter(
+                PID,
+                country,
+                "eu.europa.ec.eudi.learning_credential_vc_sd_jwt",
+                session_id="test-session-id",
+            )
 
         mock_requests_post.assert_called_once()
         assert mock_requests_post.call_args.args[0] == "Fake Take URL"
@@ -715,6 +722,7 @@ class TestSDJWTFormatter:
         )
         claims = mock_SDJWTIssuer.call_args.args[0]
         assert claims["status"] == {"revoked": False}
+        record.assert_called_once_with("test-session-id", "vct_value", {"revoked": False})
         mock_sdjwtNestedClaims.assert_called_once()
         mock_SDJWTIssuer.assert_called_once()
         assert result == "sdjwt_token_revocation"
@@ -796,3 +804,38 @@ class TestKeyData:
         assert isinstance(y_bytes, bytes)
         assert len(x_bytes) == 32
         assert len(y_bytes) == 32
+
+
+class TestCredentialIssuerUrl:
+    """SD-JWT VC iss is the session's frontend URL (#161)."""
+
+    CONFIG = {
+        "service_url": "https://backend.issuer.test",
+        "frontend": {
+            "default": "fe-default",
+            "frontends_config": {
+                "fe-default": {"url": "https://issuer.test"},
+                "fe-other": {"url": "https://other.issuer.test"},
+            },
+        },
+    }
+
+    @pytest.fixture(autouse=True)
+    def config(self, monkeypatch):
+        set_configuration(monkeypatch, self.CONFIG)
+
+    def test_session_frontend(self):
+        from app.services.formatters import credential_issuer_url
+
+        assert credential_issuer_url(MagicMock(frontend_id="fe-other")) == "https://other.issuer.test"
+
+    @pytest.mark.parametrize("frontend_id", [None, "", "unknown"])
+    def test_default_frontend(self, frontend_id):
+        from app.services.formatters import credential_issuer_url
+
+        assert credential_issuer_url(MagicMock(frontend_id=frontend_id)) == "https://issuer.test"
+
+    def test_no_session(self):
+        from app.services.formatters import credential_issuer_url
+
+        assert credential_issuer_url(None) == "https://issuer.test"

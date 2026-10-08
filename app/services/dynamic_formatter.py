@@ -40,6 +40,7 @@ from app.services.attributes import (
     getOptionalAttributes,
     getOptionalAttributesSDJWT,
 )
+from app.services.countries import issuing_country_code
 from app.services.formatters import mdocFormatter, sdjwtFormatter
 from app.utils.dates import calculate_age, format_date
 
@@ -402,7 +403,7 @@ def credentialCreation(
     credential_response: Dict[str, Any] = {"credentials": []}
     for proof in credential_request["proofs"]:
         device_publickey = proof.get("attestation", proof.get("jwt"))
-        form_data = {**data, "issuing_country": country}
+        form_data = {**data, "issuing_country": issuing_country_code(country)}
         credential_response["credentials"].append(
             {"credential": dynamic_formatter(format, scope, form_data, device_publickey, session_id)}
         )
