@@ -193,10 +193,10 @@ def verify_introspection(bearer_token: str) -> Any:
         response.raise_for_status()
         introspection_data = response.json()
     except requests.exceptions.RequestException as e:
-        logger.error(f"Token introspection request failed: {safe(e)}")
+        logger.exception(f"Token introspection request failed: {safe(e)}")
         return jsonify({"error": "Failed to validate token with the issuer."}), 502
     except json.JSONDecodeError:
-        logger.error("Failed to decode JSON from introspection response.")
+        logger.exception("Failed to decode JSON from introspection response.")
         return jsonify({"error": "Invalid response from the introspection endpoint."}), 502
 
     if not introspection_data.get("active", False):
@@ -208,58 +208,101 @@ def verify_introspection(bearer_token: str) -> Any:
         return jsonify({"error": "invalid_token"}), 401
 
     jkt = (introspection_data.get("cnf") or {}).get("jkt")
-    if jkt:
-        try:
-            verify_dpop_request(
-                authorization=request.headers.get("Authorization", ""),
-                proof=request.headers.get("DPoP"),
-                access_token=bearer_token,
-                jkt=jkt,
-                method=request.method,
-                htu=expected_htu(request.path, request.base_url),
-            )
-        except DPoPError as e:
-            logger.warning(f"DPoP check failed for session tied to {safe(username)}: {safe(e)}")
-            response = jsonify({"error": "invalid_dpop_proof", "error_description": "Invalid DPoP proof"})
-            response.headers["WWW-Authenticate"] = 'DPoP error="invalid_dpop_proof"'
-            return response, 401
+    if jkt and (error := _dpop_error(bearer_token, jkt, username)):
+        return error
 
-    # client_status is read from the access token itself: only after its
-    # signature is verified with the authorization server keys.
-    client_status = None
-    if bearer_token.count(".") == 2:
-        try:
-            at_claims = decode_authorization_server_jwt(
-                bearer_token, ACCESS_TOKEN_ALGORITHMS, options={"verify_aud": False}
-            )
-        except (jwt.PyJWTError, OSError, ValueError) as e:
-            logger.warning(f"Access token signature not verified for session tied to {safe(username, 64)}: {safe(e)}")
-            return jsonify({"error": "invalid_token"}), 401
-        client_status = at_claims.get("client_status")
-    else:
-        logger.debug("Access token is not a JWT; no client_status claim available.")
+    try:
+        client_status = _access_token_client_status(bearer_token)
+    except (jwt.PyJWTError, OSError, ValueError) as e:
+        logger.warning(f"Access token signature not verified for session tied to {safe(username, 64)}: {safe(e)}")
+        return jsonify({"error": "invalid_token"}), 401
 
     if client_status and CONFIGURATION["status_validator"]["enabled"]:
-        status_list = _client_status_list(client_status)
-        if status_list is None:
-            # Fail closed (as for an unverifiable status) instead of a 500.
-            logger.error(f"Malformed WIA client_status for session tied to {safe(username, 64)}")
-            return jsonify({"error": "invalid_token", "error_description": "Malformed client_status"}), 401
-        try:
-            revoked = check_status_list_revocation(
-                url=CONFIGURATION["status_validator"]["url"],
-                status_idx=status_list["idx"],
-                status_uri=status_list["uri"],
-            )
-        except StatusCheckError as e:
-            # Fail closed: a WIA whose status cannot be checked is not accepted.
-            logger.error(f"WIA client_status could not be checked for session tied to {safe(username)}: {safe(e)}")
-            return jsonify({"error": "invalid_token", "error_description": "Wallet status could not be verified"}), 401
-        if revoked:
-            logger.error(f"WIA client_status revoked for session tied to {safe(username)}")
-            return jsonify({"error": "invalid_token"}), 401
+        if error := _wia_status_error(client_status, username):
+            return error
 
     return username, client_status
+
+
+def _access_token_client_status(bearer_token: str) -> Any:
+    """Reads the ``client_status`` claim of a JWT access token.
+
+    The claim is read from the access token itself: only after its signature
+    is verified with the authorization server keys.
+
+    Args:
+        bearer_token: Access token.
+
+    Returns:
+        The claim, or ``None`` (opaque token or no claim).
+
+    Raises:
+        jwt.PyJWTError, OSError, ValueError: If the signature cannot be verified.
+    """
+    if bearer_token.count(".") != 2:
+        logger.debug("Access token is not a JWT; no client_status claim available.")
+        return None
+    at_claims = decode_authorization_server_jwt(bearer_token, ACCESS_TOKEN_ALGORITHMS, options={"verify_aud": False})
+    return at_claims.get("client_status")
+
+
+def _dpop_error(bearer_token: str, jkt: str, username: str) -> Optional[HandlerResult]:
+    """Checks the DPoP proof of a request made with a DPoP-bound access token.
+
+    Args:
+        bearer_token: Access token.
+        jkt: ``cnf.jkt`` thumbprint the token is bound to.
+        username: Session the token belongs to (for logging).
+
+    Returns:
+        ``None`` when the proof is valid, otherwise the ``401`` error.
+    """
+    try:
+        verify_dpop_request(
+            authorization=request.headers.get("Authorization", ""),
+            proof=request.headers.get("DPoP"),
+            access_token=bearer_token,
+            jkt=jkt,
+            method=request.method,
+            htu=expected_htu(request.path, request.base_url),
+        )
+    except DPoPError as e:
+        logger.warning(f"DPoP check failed for session tied to {safe(username)}: {safe(e)}")
+        response = jsonify({"error": "invalid_dpop_proof", "error_description": "Invalid DPoP proof"})
+        response.headers["WWW-Authenticate"] = 'DPoP error="invalid_dpop_proof"'
+        return response, 401
+    return None
+
+
+def _wia_status_error(client_status: Any, username: str) -> Optional[HandlerResult]:
+    """Checks the revocation status of the WIA of an access token.
+
+    Fails closed: a malformed, unverifiable or revoked status is rejected.
+
+    Args:
+        client_status: ``client_status`` claim of the access token.
+        username: Session the token belongs to (for logging).
+
+    Returns:
+        ``None`` when the WIA is valid, otherwise the ``401`` error.
+    """
+    status_list = _client_status_list(client_status)
+    if status_list is None:
+        logger.error(f"Malformed WIA client_status for session tied to {safe(username, 64)}")
+        return jsonify({"error": "invalid_token", "error_description": "Malformed client_status"}), 401
+    try:
+        revoked = check_status_list_revocation(
+            url=CONFIGURATION["status_validator"]["url"],
+            status_idx=status_list["idx"],
+            status_uri=status_list["uri"],
+        )
+    except StatusCheckError as e:
+        logger.exception(f"WIA client_status could not be checked for session tied to {safe(username)}: {safe(e)}")
+        return jsonify({"error": "invalid_token", "error_description": "Wallet status could not be verified"}), 401
+    if revoked:
+        logger.error(f"WIA client_status revoked for session tied to {safe(username)}")
+        return jsonify({"error": "invalid_token"}), 401
+    return None
 
 
 def verify_credential_request(credential_request: Dict[str, Any]) -> Dict[str, Any]:

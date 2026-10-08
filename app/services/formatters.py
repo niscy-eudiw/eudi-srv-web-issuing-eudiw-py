@@ -106,6 +106,40 @@ def load_country_signing_key(country: str) -> ec.EllipticCurvePrivateKey:
     )
 
 
+def _mdoc_validity(validity_days: int, current_session: Any, session_id: Optional[str]) -> Dict[str, datetime.datetime]:
+    """Computes the issuance and expiry dates of an mdoc.
+
+    Batch credentials are issued at midnight, and the expiry is clamped to
+    the WIA / key attestation ceiling.
+
+    Args:
+        validity_days: Configured validity.
+        current_session: Issuance session, or ``None``.
+        session_id: Issuance session id (for logging).
+
+    Returns:
+        ``{"issuance_date", "expiry_date"}``.
+    """
+    issuance_date = datetime.datetime.now(datetime.timezone.utc)
+    if current_session and current_session.is_batch_credential:
+        issuance_date = issuance_date.replace(hour=0, minute=0, second=0)
+
+    expiry_date = issuance_date + datetime.timedelta(days=validity_days)
+
+    if current_session and current_session.max_credential_exp is not None:
+        max_expiry_date = datetime.datetime.fromtimestamp(
+            current_session.max_credential_exp, tz=datetime.timezone.utc
+        )
+        if expiry_date >= max_expiry_date:
+            logger.debug(
+                f", Session ID: {session_id}, clamping mdoc expiry from "
+                f"{expiry_date.isoformat()} to WIA/KA ceiling {max_expiry_date.isoformat()}"
+            )
+            expiry_date = max_expiry_date.replace(tzinfo=None)
+
+    return {"issuance_date": issuance_date, "expiry_date": expiry_date}
+
+
 def mdocFormatter(
     data: Dict[str, Any],
     credential_metadata: Dict[str, Any],
@@ -133,26 +167,7 @@ def mdocFormatter(
     current_session = session_manager.get_session(session_id=session_id) if session_id else None
     private_key = load_country_signing_key(country)
 
-    issuance_date = datetime.datetime.now(datetime.timezone.utc)
-    if current_session and current_session.is_batch_credential:
-        issuance_date = issuance_date.replace(hour=0, minute=0, second=0)
-
-    expiry_date = issuance_date + datetime.timedelta(
-        days=credential_metadata["issuer_config"]["validity"]
-    )
-
-    if current_session and current_session.max_credential_exp is not None:
-        max_expiry_date = datetime.datetime.fromtimestamp(
-            current_session.max_credential_exp, tz=datetime.timezone.utc
-        )
-        if expiry_date >= max_expiry_date:
-            logger.debug(
-                f", Session ID: {session_id}, clamping mdoc expiry from "
-                f"{expiry_date.isoformat()} to WIA/KA ceiling {max_expiry_date.isoformat()}"
-            )
-            expiry_date = max_expiry_date.replace(tzinfo=None)
-
-    validity = {"issuance_date": issuance_date, "expiry_date": expiry_date}
+    validity = _mdoc_validity(credential_metadata["issuer_config"]["validity"], current_session, session_id)
 
     namespace = credential_metadata["issuer_config"]["namespace"]
     namespace_data = data[namespace]
@@ -197,7 +212,7 @@ def mdocFormatter(
     )
     logger.debug(
         f", Session ID: {session_id}, Signed mdoc {credential_metadata['doctype']} "
-        f"(country={country}, expires={expiry_date.isoformat()}, status_list={revocation_json is not None})"
+        f"(country={country}, expires={validity['expiry_date'].isoformat()}, status_list={revocation_json is not None})"
     )
     return urlsafe_b64encode_nopad(mdoci.dump())
 

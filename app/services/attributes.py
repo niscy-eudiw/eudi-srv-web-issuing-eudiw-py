@@ -183,6 +183,56 @@ def credential_display_names(
 # ---------------------------------------------------------------------------
 
 
+def _nested_attributes_source(conditions: Dict[str, Any], parent_value_type: Optional[str]) -> Any:
+    """Finds the sub-attribute definitions inside ``issuer_conditions``.
+
+    Args:
+        conditions: ``issuer_conditions`` of a claim.
+        parent_value_type: ``value_type`` of the parent claim.
+
+    Returns:
+        The definitions (dict or list), or ``None`` when there are none.
+    """
+    attr_key = (
+        parent_value_type
+        if parent_value_type in conditions
+        else next((k for k in conditions if k.endswith("_attributes")), None)
+    )
+    if attr_key:
+        return conditions.get(attr_key, {})
+    # e.g. 'driving_privileges', which contains the attributes directly.
+    if any(isinstance(v, dict) and "value_type" in v for v in conditions.values()):
+        return conditions
+    return None
+
+
+def _nested_attribute_entry(value: Dict[str, Any]) -> Dict[str, Any]:
+    """Builds the form entry of one nested attribute definition.
+
+    Args:
+        value: Attribute definition (with ``value_type``).
+
+    Returns:
+        The form entry (a list entry when it has ``issuer_conditions``).
+    """
+    entry: Dict[str, Any] = {
+        "type": value["value_type"],
+        "mandatory": value.get("mandatory", False),
+        "source": value.get("source"),
+        "filled_value": None,
+    }
+    if "options" in value:
+        entry["options"] = value["options"]
+    if "issuer_conditions" in value:
+        conditions = value["issuer_conditions"]
+        entry["type"] = "list"
+        entry["cardinality"] = conditions.get("cardinality")
+        entry["attributes"] = _process_nested_attributes(conditions, value.get("value_type"))
+        if "not_used_if" in conditions:
+            entry["not_used_if"] = conditions["not_used_if"]
+    return entry
+
+
 def _process_nested_attributes(conditions: Dict[str, Any], parent_value_type: Optional[str] = None) -> Any:
     """Recursively processes nested attribute definitions.
 
@@ -198,20 +248,9 @@ def _process_nested_attributes(conditions: Dict[str, Any], parent_value_type: Op
         A dict of processed attributes, or a list for list-shaped
         definitions (e.g. PDA1 ``places_of_work``).
     """
-    attr_key = (
-        parent_value_type
-        if parent_value_type in conditions
-        else next((k for k in conditions if k.endswith("_attributes")), None)
-    )
-
-    if not attr_key:
-        # e.g. 'driving_privileges', which contains the attributes directly.
-        if any(isinstance(v, dict) and "value_type" in v for v in conditions.values()):
-            attributes_to_process = conditions
-        else:
-            return {}
-    else:
-        attributes_to_process = conditions.get(attr_key, {})
+    attributes_to_process = _nested_attributes_source(conditions, parent_value_type)
+    if attributes_to_process is None:
+        return {}
 
     if isinstance(attributes_to_process, list):
         return [
@@ -225,28 +264,11 @@ def _process_nested_attributes(conditions: Dict[str, Any], parent_value_type: Op
             if "attribute" in item
         ]
 
-    processed_attrs: Dict[str, Any] = {}
-    for key, value in attributes_to_process.items():
-        if not (isinstance(value, dict) and "value_type" in value):
-            continue
-        entry: Dict[str, Any] = {
-            "type": value["value_type"],
-            "mandatory": value.get("mandatory", False),
-            "source": value.get("source"),
-            "filled_value": None,
-        }
-        if "options" in value:
-            entry["options"] = value["options"]
-        if "issuer_conditions" in value:
-            entry["type"] = "list"
-            entry["cardinality"] = value["issuer_conditions"].get("cardinality")
-            entry["attributes"] = _process_nested_attributes(
-                value["issuer_conditions"], value.get("value_type")
-            )
-            if "not_used_if" in value["issuer_conditions"]:
-                entry["not_used_if"] = value["issuer_conditions"]["not_used_if"]
-        processed_attrs[key] = entry
-    return processed_attrs
+    return {
+        key: _nested_attribute_entry(value)
+        for key, value in attributes_to_process.items()
+        if isinstance(value, dict) and "value_type" in value
+    }
 
 
 def getNamespaces(claims: Iterable[Claim]) -> List[str]:
@@ -283,21 +305,32 @@ def _mdoc_attributes(claims: Iterable[Claim], namespace: str, mandatory: bool) -
         if bool(claim.get("mandatory")) != mandatory or claim.get("path", [None])[0] != namespace:
             continue
 
-        attribute_name = claim["path"][1]
-        entry: Dict[str, Any] = {"type": claim.get("value_type", "string"), "filled_value": None}
-        if mandatory:
-            entry["mandatory"] = True
-
-        if "issuer_conditions" in claim:
-            conditions = claim["issuer_conditions"]
-            entry["type"] = "list"
-            entry["cardinality"] = conditions.get("cardinality")
-            if "at_least_one_of" in conditions:
-                entry["at_least_one_of"] = conditions["at_least_one_of"]
-            entry["attributes"] = _process_nested_attributes(conditions, claim.get("value_type"))
-
-        attributes_form[attribute_name] = entry
+        attributes_form[claim["path"][1]] = _mdoc_attribute_entry(claim, mandatory)
     return attributes_form
+
+
+def _mdoc_attribute_entry(claim: Claim, mandatory: bool) -> Dict[str, Any]:
+    """Builds the form entry of one mdoc claim.
+
+    Args:
+        claim: Claim definition.
+        mandatory: Whether the entry is marked mandatory.
+
+    Returns:
+        The form entry (a list entry when it has ``issuer_conditions``).
+    """
+    entry: Dict[str, Any] = {"type": claim.get("value_type", "string"), "filled_value": None}
+    if mandatory:
+        entry["mandatory"] = True
+
+    if "issuer_conditions" in claim:
+        conditions = claim["issuer_conditions"]
+        entry["type"] = "list"
+        entry["cardinality"] = conditions.get("cardinality")
+        if "at_least_one_of" in conditions:
+            entry["at_least_one_of"] = conditions["at_least_one_of"]
+        entry["attributes"] = _process_nested_attributes(conditions, claim.get("value_type"))
+    return entry
 
 
 def getMandatoryAttributes(claims: Iterable[Claim], namespace: str) -> AttributesForm:
@@ -380,6 +413,69 @@ def _copy_conditions(target: Dict[str, Any], claim: Claim, keys: Iterable[str]) 
     target.update({k: conditions[k] for k in keys if k in conditions})
 
 
+def _mandatory_sdjwt_entry(claim: Claim, attributes_form: AttributesForm) -> None:
+    """Adds the form entry of a mandatory top-level SD-JWT claim.
+
+    Args:
+        claim: Top-level claim definition.
+        attributes_form: Form being built (mutated).
+    """
+    attribute_name = claim["path"][0]
+    if attribute_name == "nationalities":
+        attributes_form[attribute_name] = {
+            "type": claim["value_type"],
+            "filled_value": None,
+            "mandatory": True,
+            "cardinality": {"min": 0, "max": "n"},
+            "attributes": copy.deepcopy(_NATIONALITIES_ATTRIBUTES),
+        }
+        return
+    if attribute_name == "place_of_birth":
+        attributes_form[attribute_name] = {
+            "type": "list",
+            "filled_value": None,
+            "mandatory": True,
+            "cardinality": {"min": 0, "max": 1},
+            "attributes": copy.deepcopy(_PLACE_OF_BIRTH_ATTRIBUTES),
+        }
+        return
+    if "value_type" in claim:
+        attributes_form[attribute_name] = {"type": claim["value_type"], "filled_value": None, "mandatory": True}
+    if "issuer_conditions" in claim:
+        _copy_conditions(attributes_form[attribute_name], claim, ["cardinality"])
+        if (claim.get("value_type") or "").endswith("_attributes"):
+            attributes_form[attribute_name]["type"] = "list"
+            attributes_form[attribute_name]["attributes"] = []
+
+
+def _as_list_entry(entry: Dict[str, Any]) -> List[Any]:
+    """Turns a form entry into a list entry and returns its sub-attributes.
+
+    Args:
+        entry: Form entry (mutated when it has no ``attributes`` yet).
+
+    Returns:
+        The entry's ``attributes`` list.
+    """
+    if "attributes" not in entry:
+        entry["type"] = "list"
+        entry["attributes"] = []
+    return entry["attributes"]
+
+
+def _add_mandatory_level3(claim: Claim, attributes_form: AttributesForm) -> None:
+    """Adds a depth-3 SD-JWT claim under its depth-2 parent entries.
+
+    Args:
+        claim: Claim definition (``path`` of length 3).
+        attributes_form: Form being built (mutated).
+    """
+    attribute_name, level2_name, level3_name = claim["path"]
+    for l2_item in attributes_form[attribute_name].get("attributes", []):
+        if level2_name in l2_item:
+            _as_list_entry(l2_item[level2_name]).append({level3_name: _nested_attribute_details(claim)})
+
+
 def getMandatoryAttributesSDJWT(claims: Iterable[Claim]) -> AttributesForm:
     """Returns the mandatory user-filled attributes of an SD-JWT VC credential.
 
@@ -393,63 +489,61 @@ def getMandatoryAttributesSDJWT(claims: Iterable[Claim]) -> AttributesForm:
     level1_claims, level2_claims, level3_claims = _split_sdjwt_claims(claims, attributes_form, True)
 
     for claim in level1_claims:
-        attribute_name = claim["path"][0]
-        if attribute_name == "nationalities":
-            attributes_form[attribute_name] = {
-                "type": claim["value_type"],
-                "filled_value": None,
-                "mandatory": True,
-                "cardinality": {"min": 0, "max": "n"},
-                "attributes": copy.deepcopy(_NATIONALITIES_ATTRIBUTES),
-            }
-        elif attribute_name == "place_of_birth":
-            attributes_form[attribute_name] = {
-                "type": "list",
-                "filled_value": None,
-                "mandatory": True,
-                "cardinality": {"min": 0, "max": 1},
-                "attributes": copy.deepcopy(_PLACE_OF_BIRTH_ATTRIBUTES),
-            }
-        else:
-            if "value_type" in claim:
-                attributes_form[attribute_name] = {
-                    "type": claim["value_type"],
-                    "filled_value": None,
-                    "mandatory": True,
-                }
-            if "issuer_conditions" in claim:
-                _copy_conditions(attributes_form[attribute_name], claim, ["cardinality"])
-                if (claim.get("value_type") or "").endswith("_attributes"):
-                    attributes_form[attribute_name]["type"] = "list"
-                    attributes_form[attribute_name]["attributes"] = []
+        _mandatory_sdjwt_entry(claim, attributes_form)
 
     for claim in level2_claims:
-        attribute_name = claim["path"][0]
-        if attribute_name not in attributes_form:
+        if claim["path"][0] not in attributes_form:
             continue
-        parent = attributes_form[attribute_name]
-        if "attributes" not in parent:
-            parent["type"] = "list"
-            parent["attributes"] = []
         details = _nested_attribute_details(claim)
         _copy_conditions(details, claim, ["cardinality", "not_used_if"])
-        parent["attributes"].append({claim["path"][1]: details})
+        _as_list_entry(attributes_form[claim["path"][0]]).append({claim["path"][1]: details})
 
     for claim in level3_claims:
-        attribute_name = claim["path"][0]
-        if attribute_name not in attributes_form:
-            continue
-        level2_name, level3_name = claim["path"][1], claim["path"][2]
-        for l2_item in attributes_form[attribute_name].get("attributes", []):
-            if level2_name not in l2_item:
-                continue
-            l2_attribute = l2_item[level2_name]
-            if "attributes" not in l2_attribute:
-                l2_attribute["type"] = "list"
-                l2_attribute["attributes"] = []
-            l2_attribute["attributes"].append({level3_name: _nested_attribute_details(claim)})
+        if claim["path"][0] in attributes_form:
+            _add_mandatory_level3(claim, attributes_form)
 
     return attributes_form
+
+
+def _optional_sdjwt_entry(claim: Claim, attributes_form: AttributesForm) -> None:
+    """Adds the form entry of an optional top-level SD-JWT claim.
+
+    Args:
+        claim: Top-level claim definition.
+        attributes_form: Form being built (mutated).
+    """
+    attribute_name = claim["path"][0]
+    if attribute_name == "nationalities":
+        attributes_form[attribute_name] = {
+            "type": claim["value_type"],
+            "filled_value": None,
+            "cardinality": {"min": 0, "max": "n"},
+            "attributes": copy.deepcopy(_NATIONALITIES_ATTRIBUTES),
+        }
+        return
+    if "value_type" in claim:
+        attributes_form[attribute_name] = {"type": claim["value_type"], "filled_value": None}
+    if "issuer_conditions" in claim:
+        _copy_conditions(attributes_form[attribute_name], claim, ["cardinality"])
+
+
+def _add_optional_level2(claim: Claim, parent: Dict[str, Any]) -> None:
+    """Adds a depth-2 optional SD-JWT claim to its parent entry.
+
+    Args:
+        claim: Claim definition (``path`` of length 2).
+        parent: The parent's form entry (mutated).
+    """
+    parent["type"] = "list"
+    attributes: Dict[str, Any] = {claim["path"][1]: _nested_attribute_details(claim)}
+    _copy_conditions(attributes, claim, ["cardinality", "not_used_if"])
+
+    if "attributes" not in parent:
+        parent["attributes"] = [attributes]
+    elif "cardinality" in parent["attributes"][0]:
+        parent["attributes"].append(attributes)
+    else:
+        parent["attributes"][0].update(attributes)
 
 
 def getOptionalAttributesSDJWT(claims: Iterable[Claim]) -> AttributesForm:
@@ -465,42 +559,16 @@ def getOptionalAttributesSDJWT(claims: Iterable[Claim]) -> AttributesForm:
     level1_claims, level2_claims, level3_claims = _split_sdjwt_claims(claims, attributes_form, False)
 
     for claim in level1_claims:
-        attribute_name = claim["path"][0]
-        if attribute_name == "nationalities":
-            attributes_form[attribute_name] = {
-                "type": claim["value_type"],
-                "filled_value": None,
-                "cardinality": {"min": 0, "max": "n"},
-                "attributes": copy.deepcopy(_NATIONALITIES_ATTRIBUTES),
-            }
-            continue
-        if "value_type" in claim:
-            attributes_form[attribute_name] = {"type": claim["value_type"], "filled_value": None}
-        if "issuer_conditions" in claim:
-            _copy_conditions(attributes_form[attribute_name], claim, ["cardinality"])
+        _optional_sdjwt_entry(claim, attributes_form)
 
     for claim in level2_claims:
-        attribute_name = claim["path"][0]
-        if attribute_name not in attributes_form:
-            continue
-        parent = attributes_form[attribute_name]
-        parent["type"] = "list"
-
-        attributes: Dict[str, Any] = {claim["path"][1]: _nested_attribute_details(claim)}
-        _copy_conditions(attributes, claim, ["cardinality", "not_used_if"])
-
-        if "attributes" not in parent:
-            parent["attributes"] = [attributes]
-        elif "cardinality" in parent["attributes"][0]:
-            parent["attributes"].append(attributes)
-        else:
-            parent["attributes"][0].update(attributes)
+        if claim["path"][0] in attributes_form:
+            _add_optional_level2(claim, attributes_form[claim["path"][0]])
 
     for claim in level3_claims:
-        attribute_name = claim["path"][0]
+        attribute_name, level2_name, level3_name = claim["path"]
         if attribute_name not in attributes_form:
             continue
-        level2_name, level3_name = claim["path"][1], claim["path"][2]
         for attribute in attributes_form[attribute_name]["attributes"]:
             if level2_name in attribute:
                 attribute[level2_name].setdefault("attributes", []).append(

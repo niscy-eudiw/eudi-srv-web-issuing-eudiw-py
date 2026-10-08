@@ -14,6 +14,7 @@ from jwcrypto import jwe, jwk
 from app.services import credential_issuance as ci
 from config_helpers import patch_configuration
 from proof_helpers import FRONTEND_URL, c_nonce, p256_jwk, proof_config, proof_jwt
+from test_did_proofs import did_jwk, did_key
 
 CONFIG_ID = "eu.europa.ec.eudi.pid_mdoc"
 
@@ -365,3 +366,68 @@ class TestJwe:
         assert {k: header[k] for k in ("alg", "enc", "typ")} == {"alg": "ECDH-ES", "enc": "A128GCM", "typ": "x"}
         assert "kid" not in header and "epk" in header  # ECDH-ES ephemeral key
         assert json.loads(parsed.payload) == {"a": 1}
+
+
+def _holder_numbers(issue_mock):
+    [holder] = issue_mock.call_args.args[1]["proofs"]
+    return serialization.load_pem_public_key(base64.urlsafe_b64decode(holder["jwt"])).public_numbers()
+
+
+@pytest.mark.usefixtures("sessions", "config")
+class TestKidProofs:
+    """JWT proofs whose holder key is a kid DID URL (OpenID4VCI 1.0 appendix F.1, #86)."""
+
+    @pytest.mark.parametrize("shape", ["proofs", "single"])
+    @pytest.mark.parametrize("method", ["did:key", "did:jwk"])
+    def test_kid_proof_binds_did_key(self, metadata, sessions, issue, config, shape, method):
+        key, public_jwk = p256_jwk()
+        kid = did_key(key) if method == "did:key" else did_jwk(public_jwk) + "#0"
+        token, _ = proof_jwt(key, include_jwk=False, header_extra={"kid": kid})
+
+        ci.generate_credentials(_request([token]) if shape == "proofs" else _single(token), "s1")
+
+        assert _holder_numbers(issue) == key.public_key().public_numbers()
+
+    def test_kid_proof_signed_by_another_key_is_rejected(self, metadata, sessions, issue, config):
+        holder = ec.generate_private_key(ec.SECP256R1())
+        token, _ = proof_jwt(include_jwk=False, header_extra={"kid": did_key(holder)})  # signed by a fresh key
+
+        result = ci.generate_credentials(_request([token]), "s1")
+
+        assert result == {"error": "invalid_proof", "error_description": "Proof JWT signature is not valid"}
+        assert not issue.called
+
+    @pytest.mark.parametrize("extra", [{"x5c": ["MIIB"]}, {}])
+    def test_kid_is_exclusive_with_jwk_and_x5c(self, metadata, sessions, issue, config, extra):
+        key = ec.generate_private_key(ec.SECP256R1())
+        include_jwk = not extra
+        token, _ = proof_jwt(key, include_jwk=include_jwk, header_extra={"kid": did_key(key), **extra})
+
+        result = ci.generate_credentials(_request([token]), "s1")
+
+        assert result["error"] == "invalid_proof" and "must not combine" in result["error_description"]
+        assert not issue.called
+
+    def test_unsupported_did_method_is_invalid_proof(self, metadata, sessions, issue, config):
+        token, _ = proof_jwt(include_jwk=False, header_extra={"kid": "did:web:example.com#key-1"})
+
+        result = ci.generate_credentials(_request([token]), "s1")
+
+        assert result["error"] == "invalid_proof" and not issue.called
+
+    def test_kid_with_key_attestation_references_attested_key(self, metadata, sessions, issue, config):
+        # The OpenID4VCI 1.0 appendix F.1 example: {"kid": "0", "key_attestation": ...}
+        attested_key, attested_jwk = p256_jwk()
+        _, other_jwk = p256_jwk()
+        claims = {
+            "attested_keys": [attested_jwk, other_jwk],
+            "key_storage_status": {"exp": int(time.time()) + 3600, "status": {"status_list": {"idx": 1, "uri": "u"}}},
+            "nonce": c_nonce(),
+        }
+        token, _ = proof_jwt(attested_key, include_jwk=False, header_extra={"kid": "0", "key_attestation": "ka.jwt"})
+
+        with patch.object(ci, "decode_verify_attestation", return_value=claims):
+            result = ci.generate_credentials(_request([token]), "s1")
+
+        assert "error" not in result
+        assert len(issue.call_args.args[1]["proofs"]) == 2

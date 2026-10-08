@@ -110,24 +110,37 @@ def _set_nested(target: Dict[str, Any], key: str, value: Any) -> None:
     if not parts:
         raise InvalidFormError("Form key without an attribute name")
     current: Any = target
-    for i, part in enumerate(parts[:-1]):
+    for part, next_part in zip(parts[:-1], parts[1:]):
         if part.isdigit():
-            idx = _form_index(part)
-            while len(current) <= idx:
-                current.append({})
-            current = current[idx]
+            current = current[_list_slot(current, part, dict)]
         else:
-            next_is_index = i + 1 < len(parts) and parts[i + 1].isdigit()
-            current = current.setdefault(part, [] if next_is_index else {})
+            current = current.setdefault(part, [] if next_part.isdigit() else {})
 
     final_key = parts[-1]
     if final_key.isdigit() and isinstance(current, list):
-        idx = _form_index(final_key)
-        while len(current) <= idx:
-            current.append(None)
-        current[idx] = value
+        current[_list_slot(current, final_key, lambda: None)] = value
     else:
         current[final_key] = value
+
+
+def _list_slot(items: List[Any], part: str, filler: Any) -> int:
+    """Grows ``items`` up to a bracketed form key index and returns the index.
+
+    Args:
+        items: List being built (mutated).
+        part: Digits from the key.
+        filler: Factory of the values added to reach the index.
+
+    Returns:
+        The index.
+
+    Raises:
+        InvalidFormError: If the index is too large.
+    """
+    idx = _form_index(part)
+    while len(items) <= idx:
+        items.append(filler())
+    return idx
 
 
 def _merge_places_of_work(cleaned_data: Dict[str, Any]) -> None:
@@ -151,6 +164,51 @@ def _merge_places_of_work(cleaned_data: Dict[str, Any]) -> None:
                     aggregated[key].extend(value_list)
     if aggregated:
         cleaned_data["places_of_work"] = [aggregated]
+
+
+def _fill_aliases(cleaned_data: Dict[str, Any]) -> None:
+    """Fills the :data:`ATTRIBUTE_ALIASES` of the parsed form data.
+
+    Nationalities become a list of country codes and places of birth a
+    single object, under both names.
+
+    Args:
+        cleaned_data: Parsed form data (mutated).
+    """
+    for key in ("nationality", "nationalities"):
+        values = cleaned_data.get(key)
+        if isinstance(values, list) and values and isinstance(values[0], dict):
+            country_codes = [item.get("country_code") for item in values if "country_code" in item]
+            cleaned_data["nationality"] = country_codes
+            cleaned_data["nationalities"] = country_codes
+            break
+
+    if isinstance(cleaned_data.get("birth_place"), list):
+        cleaned_data["birth_place"] = cleaned_data["birth_place"][0]
+        cleaned_data["place_of_birth"] = cleaned_data["birth_place"]
+    if isinstance(cleaned_data.get("place_of_birth"), list):
+        cleaned_data["place_of_birth"] = cleaned_data["place_of_birth"][0]
+        cleaned_data["birth_place"] = cleaned_data["place_of_birth"]
+
+    if "birth_date" in cleaned_data:
+        cleaned_data["birthdate"] = cleaned_data["birth_date"]
+
+
+def _resolve_form_choices(cleaned_data: Dict[str, Any]) -> None:
+    """Replaces form choices (sample signature, ``age_over_18`` text) by values.
+
+    Args:
+        cleaned_data: Parsed form data (mutated).
+    """
+    for field in ("signature_usual_mark", "signature_usual_mark_issuing_officer"):
+        if cleaned_data.get(field) == "Sig1":
+            cleaned_data[field] = cfgserv.signature_usual_mark_issuing_officer
+
+    match cleaned_data.get("age_over_18"):
+        case "true":
+            cleaned_data["age_over_18"] = True
+        case "false":
+            cleaned_data["age_over_18"] = False
 
 
 def form_formatter(form_data: Dict[str, Any], issuing_country: str) -> Dict[str, Any]:
@@ -178,34 +236,8 @@ def form_formatter(form_data: Dict[str, Any], issuing_country: str) -> Dict[str,
         _set_nested(cleaned_data, key, value)
 
     _merge_places_of_work(cleaned_data)
-
-    for key in ("nationality", "nationalities"):
-        values = cleaned_data.get(key)
-        if isinstance(values, list) and values and isinstance(values[0], dict):
-            country_codes = [item.get("country_code") for item in values if "country_code" in item]
-            cleaned_data["nationality"] = country_codes
-            cleaned_data["nationalities"] = country_codes
-            break
-
-    if isinstance(cleaned_data.get("birth_place"), list):
-        cleaned_data["birth_place"] = cleaned_data["birth_place"][0]
-        cleaned_data["place_of_birth"] = cleaned_data["birth_place"]
-    if isinstance(cleaned_data.get("place_of_birth"), list):
-        cleaned_data["place_of_birth"] = cleaned_data["place_of_birth"][0]
-        cleaned_data["birth_place"] = cleaned_data["place_of_birth"]
-
-    if "birth_date" in cleaned_data:
-        cleaned_data["birthdate"] = cleaned_data["birth_date"]
-
-    for field in ("signature_usual_mark", "signature_usual_mark_issuing_officer"):
-        if cleaned_data.get(field) == "Sig1":
-            cleaned_data[field] = cfgserv.signature_usual_mark_issuing_officer
-
-    match cleaned_data.get("age_over_18"):
-        case "true":
-            cleaned_data["age_over_18"] = True
-        case "false":
-            cleaned_data["age_over_18"] = False
+    _fill_aliases(cleaned_data)
+    _resolve_form_choices(cleaned_data)
 
     # Sample image choices; anything else is the uploaded base64url image.
     final_data = {
@@ -309,6 +341,64 @@ def _to_display_base64(value: str) -> str:
     return base64.b64encode(base64.urlsafe_b64decode(value)).decode("utf-8")
 
 
+def _add_issuer_fields(
+    data: Dict[str, Any], credential_requested: str, doctype_config: Dict[str, Any], country: str
+) -> None:
+    """Adds the issuer-filled attributes shown on the consent page.
+
+    Args:
+        data: Attributes shown for the credential (mutated).
+        credential_requested: Credential configuration id.
+        doctype_config: ``issuer_config`` of the credential.
+        country: Issuing country.
+    """
+    today = datetime.date.today()
+    data["estimated_issuance_date"] = format_date(today)
+    data["estimated_expiry_date"] = format_date(today + datetime.timedelta(days=doctype_config["validity"]))
+    data["issuing_country"] = issuing_country_code(country)
+
+    if credential_requested == SEAFARER_CONFIGURATION:
+        data["issuing_authority_logo"] = _to_display_base64(cfgserv.issuing_authority_logo)
+
+    if credential_requested == EHIC_CONFIGURATION:
+        data["issuing_authority"] = {
+            "id": doctype_config["issuing_authority_id"],
+            "name": doctype_config["issuing_authority"],
+        }
+    else:
+        data["issuing_authority"] = doctype_config["issuing_authority"]
+
+    if "credential_type" in doctype_config:
+        data["credential_type"] = doctype_config["credential_type"]
+
+
+def _to_display_values(data: Dict[str, Any], scope: str) -> None:
+    """Converts attribute values to their consent page form.
+
+    Computes ``age_over_18``, decodes ``driving_privileges``, shows images as
+    standard base64 and drops the mDL category helper fields.
+
+    Args:
+        data: Attributes shown for the credential (mutated).
+        scope: Credential scope.
+    """
+    if "birth_date" in data and ("age_over_18" in data or scope == MDL_SCOPE):
+        data["age_over_18"] = calculate_age(data["birth_date"]) >= 18
+
+    if isinstance(data.get("driving_privileges"), str):
+        data["driving_privileges"] = json.loads(data["driving_privileges"])
+
+    for field in _DISPLAY_DECODED_FIELDS:
+        if field in data:
+            data[field] = _to_display_base64(data[field])
+
+    if "NumberCategories" in data:
+        for i in range(1, int(data["NumberCategories"]) + 1):
+            data.pop(f"IssueDate{i}")
+            data.pop(f"ExpiryDate{i}")
+        data.pop("NumberCategories")
+
+
 def presentation_formatter(
     cleaned_data: Dict[str, Any],
     credentials_requested: Iterable[str],
@@ -338,42 +428,8 @@ def presentation_formatter(
             shown_attributes |= set(getAttributesForm2([credential_requested]))
         data = {k: v for k, v in cleaned_data.items() if k in shown_attributes}
 
-        doctype_config = credential_config["issuer_config"]
-        today = datetime.date.today()
-        data["estimated_issuance_date"] = format_date(today)
-        data["estimated_expiry_date"] = format_date(today + datetime.timedelta(days=doctype_config["validity"]))
-        data["issuing_country"] = issuing_country_code(country)
-
-        if credential_requested == SEAFARER_CONFIGURATION:
-            data["issuing_authority_logo"] = _to_display_base64(cfgserv.issuing_authority_logo)
-
-        if credential_requested == EHIC_CONFIGURATION:
-            data["issuing_authority"] = {
-                "id": doctype_config["issuing_authority_id"],
-                "name": doctype_config["issuing_authority"],
-            }
-        else:
-            data["issuing_authority"] = doctype_config["issuing_authority"]
-
-        if "credential_type" in doctype_config:
-            data["credential_type"] = doctype_config["credential_type"]
-
-        if "birth_date" in data and ("age_over_18" in data or credential_config["scope"] == MDL_SCOPE):
-            data["age_over_18"] = calculate_age(data["birth_date"]) >= 18
-
-        if isinstance(data.get("driving_privileges"), str):
-            data["driving_privileges"] = json.loads(data["driving_privileges"])
-
-        for field in _DISPLAY_DECODED_FIELDS:
-            if field in data:
-                data[field] = _to_display_base64(data[field])
-
-        if "NumberCategories" in data:
-            for i in range(1, int(data["NumberCategories"]) + 1):
-                data.pop(f"IssueDate{i}")
-                data.pop(f"ExpiryDate{i}")
-            data.pop("NumberCategories")
-
+        _add_issuer_fields(data, credential_requested, credential_config["issuer_config"], country)
+        _to_display_values(data, credential_config["scope"])
         presentation_data[name] = data
 
     return presentation_data

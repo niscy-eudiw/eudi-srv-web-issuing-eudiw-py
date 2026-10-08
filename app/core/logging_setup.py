@@ -34,6 +34,50 @@ class LineBreakEscapeFilter(logging.Filter):
         return True
 
 
+class SafeTracebackFormatter(logging.Formatter):
+    """Indents every traceback line (log injection).
+
+    :class:`LineBreakEscapeFilter` escapes the message only; the traceback of
+    ``logger.exception`` is appended by the formatter and ends with the
+    exception text, which may come from a request. Indented, no traceback
+    line can pass for a new log record (records start with a timestamp).
+    """
+
+    def formatException(self, ei: Any) -> str:
+        """Formats an exception traceback with every line indented.
+
+        Args:
+            ei: ``sys.exc_info()`` tuple.
+
+        Returns:
+            The indented traceback.
+        """
+        return _indent(super().formatException(ei))
+
+    def formatStack(self, stack_info: str) -> str:
+        """Formats ``stack_info`` with every line indented.
+
+        Args:
+            stack_info: Stack text.
+
+        Returns:
+            The indented stack.
+        """
+        return _indent(super().formatStack(stack_info))
+
+
+def _indent(text: str) -> str:
+    """Prefixes every line of ``text`` (split on CR or LF) with ``    | ``.
+
+    Args:
+        text: Multi-line text.
+
+    Returns:
+        The indented text.
+    """
+    return "\n".join(f"    | {line}" for line in text.replace("\r", "\n").split("\n"))
+
+
 class WerkzeugFilter(logging.Filter):
     """Drops Werkzeug per-request access log lines (``... HTTP/1.1 ...``)."""
 
@@ -66,7 +110,7 @@ def configure_logging(app: Flask, config: Mapping[str, Any]) -> None:
     if log_dir:
         os.makedirs(log_dir, exist_ok=True)
 
-    log_formatter = logging.Formatter(
+    log_formatter = SafeTracebackFormatter(
         '%(asctime)s | %(name)-20s | %(levelname)-8s | %(message)s'
     )
 

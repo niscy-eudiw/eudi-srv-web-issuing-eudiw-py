@@ -158,42 +158,54 @@ def check_statuses_batch(entries: list[dict[str, Any]]) -> list[Optional[dict[st
     context = status_validation_context()
     results: list[Optional[dict[str, Any]]] = []
     for start in range(0, len(entries), _BATCH_SIZE):
-        chunk = entries[start : start + _BATCH_SIZE]
-        chunk_results: list[Optional[dict[str, Any]]] = [None] * len(chunk)
-
-        # Malformed entries are not sent (the validator would reject them).
-        positions, checks = [], []
-        for position, entry in enumerate(chunk):
-            pointer = _extract_status_list_pointer(entry)
-            if pointer is None:
-                logger.warning("Skipping malformed/missing status_list entry in batch.")
-                chunk_results[position] = {"error": "malformed_status_entry"}
-                continue
-            positions.append(position)
-            checks.append({"idx": pointer["idx"], "uri": pointer["uri"], "validation_context": context})
-
-        if checks:
-            try:
-                response = requests.post(
-                    CONFIGURATION["status_validator"]["url"],
-                    json={"checks": checks},
-                    headers={"Content-Type": "application/json"},
-                    timeout=_HTTP_TIMEOUT,
-                )
-                response.raise_for_status()
-                # Correlate by 'index' (position in 'checks') rather than order.
-                for item in response.json().get("results", []):
-                    if item.get("error"):
-                        logger.warning(f"Status check failed for {checks[item['index']]['uri']}: {item['error']}")
-                    chunk_results[positions[item["index"]]] = item
-            except requests.RequestException:
-                logger.exception(f"Batch status check failed for chunk starting at {start}")
-                for position in positions:
-                    chunk_results[position] = {"error": "request_failed"}
-
-        results.extend(chunk_results)
-
+        results.extend(_check_chunk(entries[start : start + _BATCH_SIZE], context, start))
     return results
+
+
+def _check_chunk(chunk: list[dict[str, Any]], context: Any, start: int) -> list[Optional[dict[str, Any]]]:
+    """Checks one chunk of at most :data:`_BATCH_SIZE` status entries.
+
+    Args:
+        chunk: Raw ``status`` values.
+        context: Validation context sent with every check.
+        start: Position of the chunk in the whole batch (for logging).
+
+    Returns:
+        Results in chunk order (see :func:`check_statuses_batch`).
+    """
+    chunk_results: list[Optional[dict[str, Any]]] = [None] * len(chunk)
+
+    # Malformed entries are not sent (the validator would reject them).
+    positions, checks = [], []
+    for position, entry in enumerate(chunk):
+        pointer = _extract_status_list_pointer(entry)
+        if pointer is None:
+            logger.warning("Skipping malformed/missing status_list entry in batch.")
+            chunk_results[position] = {"error": "malformed_status_entry"}
+            continue
+        positions.append(position)
+        checks.append({"idx": pointer["idx"], "uri": pointer["uri"], "validation_context": context})
+
+    if not checks:
+        return chunk_results
+    try:
+        response = requests.post(
+            CONFIGURATION["status_validator"]["url"],
+            json={"checks": checks},
+            headers={"Content-Type": "application/json"},
+            timeout=_HTTP_TIMEOUT,
+        )
+        response.raise_for_status()
+        # Correlate by 'index' (position in 'checks') rather than order.
+        for item in response.json().get("results", []):
+            if item.get("error"):
+                logger.warning(f"Status check failed for {checks[item['index']]['uri']}: {item['error']}")
+            chunk_results[positions[item["index"]]] = item
+    except requests.RequestException:
+        logger.exception(f"Batch status check failed for chunk starting at {start}")
+        for position in positions:
+            chunk_results[position] = {"error": "request_failed"}
+    return chunk_results
 
 
 def is_revoked(result: Optional[dict[str, Any]]) -> bool:
@@ -266,6 +278,41 @@ def revoke_ka_keys(session_id: Any, ka_entry: dict[str, Any]) -> None:
         _revoke_key(key)
 
 
+def _sweep_session(conn: Any, session_id: Any) -> tuple[int, int]:
+    """Checks one session's WIA and key attestations and revokes accordingly.
+
+    Args:
+        conn: Database connection.
+        session_id: Session to check.
+
+    Returns:
+        ``(wia_revoked, ka_revoked)`` counts (``wia_revoked`` is 0 or 1).
+    """
+    tree = load_session_status_tree(conn, session_id)
+    logger.debug(
+        f"Sweep session {session_id}: WIA status={'yes' if tree['wia']['status'] else 'no'}, "
+        f"{len(tree['key_storage_statuses'])} key attestation(s)"
+    )
+
+    wia_status = tree["wia"]["status"]
+    ka_statuses = [ka["status"] for ka in tree["key_storage_statuses"]]
+
+    entries = ([wia_status] if wia_status else []) + [s for s in ka_statuses if s]
+    result_iter = iter(check_statuses_batch(entries))
+    wia_result = next(result_iter) if wia_status else None
+
+    if wia_result and is_revoked(wia_result):
+        revoke_wia_session(session_id, tree)
+        return 1, 0  # WIA revoked -> every credential under this session is gone
+
+    ka_revoked = 0
+    for ka_entry in (ka for ka in tree["key_storage_statuses"] if ka["status"]):
+        if is_revoked(next(result_iter, None)):
+            ka_revoked += 1
+            revoke_ka_keys(session_id, ka_entry)
+    return 0, ka_revoked
+
+
 def run_sweep() -> None:
     """Runs the full nightly sweep over all persisted sessions.
 
@@ -281,33 +328,9 @@ def run_sweep() -> None:
     try:
         for session_id in iter_session_ids(conn):
             sessions_checked += 1
-            tree = load_session_status_tree(conn, session_id)
-            logger.debug(
-                f"Sweep session {session_id}: WIA status={'yes' if tree['wia']['status'] else 'no'}, "
-                f"{len(tree['key_storage_statuses'])} key attestation(s)"
-            )
-
-            wia_status = tree["wia"]["status"]
-            ka_statuses = [ka["status"] for ka in tree["key_storage_statuses"]]
-
-            entries = ([wia_status] if wia_status else []) + [s for s in ka_statuses if s]
-            results = check_statuses_batch(entries)
-
-            result_iter = iter(results)
-            wia_result = next(result_iter) if wia_status else None
-
-            if wia_result and is_revoked(wia_result):
-                wia_revoked_count += 1
-                revoke_wia_session(session_id, tree)
-                continue  # WIA revoked -> every credential under this session is gone
-
-            for ka_entry in tree["key_storage_statuses"]:
-                if not ka_entry["status"]:
-                    continue
-                ka_result = next(result_iter, None)
-                if ka_result and is_revoked(ka_result):
-                    ka_revoked_count += 1
-                    revoke_ka_keys(session_id, ka_entry)
+            wia_revoked, ka_revoked = _sweep_session(conn, session_id)
+            wia_revoked_count += wia_revoked
+            ka_revoked_count += ka_revoked
 
     except Exception:
         logger.exception("Nightly status sweep failed with an unhandled exception.")

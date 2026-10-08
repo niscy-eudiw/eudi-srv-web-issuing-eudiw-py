@@ -150,7 +150,7 @@ def get_metadata(base_url: str) -> Dict[str, Any]:
                     logger.debug(f"Discovered IdP metadata at {url}")
                     return data
         except Exception as e:
-            logger.error(f"Metadata fetch failed for {safe(url)}: {safe(e)}")
+            logger.exception(f"Metadata fetch failed for {safe(url)}: {safe(e)}")
     raise ValueError("No valid OAuth/OIDC metadata found")
 
 
@@ -251,7 +251,7 @@ def exchange_authorization_code(country: str, code: str) -> str:
         response.raise_for_status()
         access_token = response.json().get("access_token")
     except requests.exceptions.RequestException as e:
-        logger.error(f"An error occurred: {safe(e)}")
+        logger.exception(f"An error occurred: {safe(e)}")
         raise CountryConnectorError("Token request to the country identity provider failed") from e
 
     if not access_token:
@@ -315,7 +315,7 @@ def _collect_oauth(country: str, access_token: str) -> Dict[str, Any]:
         response.raise_for_status()
         user_data = response.json()
     except requests.exceptions.RequestException as e:
-        logger.error(f"An error occurred while fetching user data: {safe(e)}")
+        logger.exception(f"An error occurred while fetching user data: {safe(e)}")
         raise CountryConnectorError("Failed to fetch user data from the country identity provider") from e
 
     if country != "PT":

@@ -57,6 +57,9 @@ from app.utils.qr import qr_data_uri
 preauth = Blueprint("preauth", __name__, url_prefix="/")
 logger = logging.getLogger(__name__)
 
+#: Answer of the form routes when the ``form_countries`` feature is off.
+FORM_ISSUANCE_DISABLED = "Pre-authorized form issuance is disabled"
+
 #: Longest accepted ``exp - iat`` of a credentialOfferReq2 request JWT (seconds).
 OFFER_REQUEST_MAX_LIFETIME = 3600
 
@@ -142,7 +145,7 @@ def preauthRed() -> Union[str, Tuple[str, int]]:
         ``credentials_id``, or ``403`` when the feature is off.
     """
     if not feature_enabled("form_countries"):
-        return "Pre-authorized form issuance is disabled", HTTPStatus.FORBIDDEN
+        return FORM_ISSUANCE_DISABLED, HTTPStatus.FORBIDDEN
 
     credential_list = _requested_credentials(request.values.get("credentials_id"))
     if credential_list is None:
@@ -184,7 +187,7 @@ def preauth_form() -> str:
         The consent page.
     """
     if not feature_enabled("form_countries"):
-        return "Pre-authorized form issuance is disabled", HTTPStatus.FORBIDDEN
+        return FORM_ISSUANCE_DISABLED, HTTPStatus.FORBIDDEN
 
     form_data = parse_form(request.form)
 
@@ -225,7 +228,7 @@ def form_authorize_generate() -> str:
         The credential offer QR code page.
     """
     if not feature_enabled("form_countries"):
-        return "Pre-authorized form issuance is disabled", HTTPStatus.FORBIDDEN
+        return FORM_ISSUANCE_DISABLED, HTTPStatus.FORBIDDEN
 
     current_session = session_manager.get_session(session.get("session_id", ""))
     if current_session is None or not current_session.user_data:

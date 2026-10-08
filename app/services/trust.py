@@ -119,6 +119,9 @@ TRUST_PURPOSES = (PURPOSE_KEY_ATTESTATION, PURPOSE_OFFER_REQUEST, PURPOSE_PID_SI
 #: so a wallet-provider clock slightly ahead must not fail issuance (#166).
 JWT_CLOCK_LEEWAY_SECONDS = 60
 
+#: Error message for a JWT without an ``x5c`` header.
+X5C_HEADER_MISSING = "x5c header not found in JWT"
+
 #: ISO/IEC 18013-5 extended key usage of an mdoc document signer.
 MDOC_DS_EKU = x509.ObjectIdentifier("1.0.18013.5.1.2")
 
@@ -494,7 +497,7 @@ def verify_x5c_chain(
         logger.debug(f"x5c chain trusted by local CA store: {certificate.subject.rfc4514_string()}")
         return certificate
     except CertificateVerificationError as e:
-        logger.error(f"Certificate chain verification failed: {safe(e)}")
+        logger.exception(f"Certificate chain verification failed: {safe(e)}")
         raise
 
 
@@ -541,8 +544,8 @@ def _x5c_header(jwt_raw: str, allowed_algorithms: Optional[List[str]]) -> Tuple[
 
     x5c_chain = unverified_header.get("x5c")
     if not x5c_chain:
-        logger.error("x5c header not found in JWT")
-        raise ValueError("x5c header not found in JWT")
+        logger.error(X5C_HEADER_MISSING)
+        raise ValueError(X5C_HEADER_MISSING)
     if not isinstance(x5c_chain, list):
         logger.error(f"x5c header must be a non-empty array, got: {type(x5c_chain)}")
         raise ValueError("x5c header must be a non-empty array")
@@ -662,7 +665,7 @@ def x5c_leaf_certificate(jwt_raw: str) -> Tuple[x509.Certificate, str]:
     unverified_header = jwt.get_unverified_header(jwt_raw)  # NOSONAR
     x5c_chain = unverified_header.get("x5c")
     if not x5c_chain:
-        raise ValueError("x5c header not found in JWT")
+        raise ValueError(X5C_HEADER_MISSING)
     certificate = x509.load_der_x509_certificate(b64_decode_x5c(x5c_chain[0]), default_backend())
     return certificate, unverified_header["alg"]
 

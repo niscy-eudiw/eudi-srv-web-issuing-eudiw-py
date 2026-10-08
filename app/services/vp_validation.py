@@ -34,7 +34,7 @@ import base64
 import datetime
 import hashlib
 import logging
-from typing import Any, Dict, Iterable, Tuple
+from typing import Any, Dict, Iterable, Optional, Tuple
 
 import cbor2
 from cryptography import x509
@@ -121,28 +121,11 @@ def validate_certificate(mdoc: Dict[str, Any]) -> Tuple[bool, str]:
     ca_info = trust_store(PURPOSE_PID_SIGNER).get(certificate.issuer)
     if ca_info is None:
         return False, _UNTRUSTED_CA
-    try:
-        check_leaf_certificate(certificate, PURPOSE_PID_SIGNER)
-    except CertificateVerificationError as e:
-        return False, str(e)
-
-    try:
-        # Checks issuer name and signature for EC and RSA CAs alike.
-        certificate.verify_directly_issued_by(ca_info["certificate"])
-    except Exception:
-        return False, _UNTRUSTED_CA
+    if error := _signer_error(certificate, ca_info):
+        return False, error
 
     x, y = ec_coordinates(certificate.public_key(), min_length=0)
     message.key = EC2Key(x=x, y=y, crv=1)
-
-    ca_not_after = ca_info["not_valid_after"].replace(tzinfo=datetime.timezone.utc)
-    ca_not_before = ca_info["not_valid_before"].replace(tzinfo=datetime.timezone.utc)
-    not_valid_before, not_valid_after = certificate_validity(certificate)
-    now = datetime.datetime.now(datetime.timezone.utc)
-    if now < ca_not_before or ca_not_after < now:
-        return False, "Certificate not valid"
-    if now < not_valid_before or not_valid_after < now:
-        return False, "Document signer certificate not valid"
 
     # pycose returns False for a bad signature (it only raises on malformed input),
     # so the result must be checked explicitly.
@@ -154,33 +137,81 @@ def validate_certificate(mdoc: Dict[str, Any]) -> Tuple[bool, str]:
         return False, "Signature not valid"
 
     payload_decoded = cbor2.loads(cbor2.loads(message.payload).value)
-    namespaces = mdoc["issuerSigned"]["nameSpaces"]
+    if error := _mso_error(mdoc, payload_decoded, certificate_validity(certificate)):
+        return False, error
+    return True, ""
 
+
+def _signer_error(certificate: x509.Certificate, ca_info: Dict[str, Any]) -> Optional[str]:
+    """Checks a document signer certificate against its trust anchor.
+
+    Args:
+        certificate: Document signer certificate.
+        ca_info: Trust store entry of its issuer.
+
+    Returns:
+        ``None`` when trusted and currently valid, otherwise the reason.
+    """
+    try:
+        check_leaf_certificate(certificate, PURPOSE_PID_SIGNER)
+    except CertificateVerificationError as e:
+        return str(e)
+
+    try:
+        # Checks issuer name and signature for EC and RSA CAs alike.
+        certificate.verify_directly_issued_by(ca_info["certificate"])
+    except Exception:
+        return _UNTRUSTED_CA
+
+    ca_not_after = ca_info["not_valid_after"].replace(tzinfo=datetime.timezone.utc)
+    ca_not_before = ca_info["not_valid_before"].replace(tzinfo=datetime.timezone.utc)
+    not_valid_before, not_valid_after = certificate_validity(certificate)
+    now = datetime.datetime.now(datetime.timezone.utc)
+    if now < ca_not_before or ca_not_after < now:
+        return "Certificate not valid"
+    if now < not_valid_before or not_valid_after < now:
+        return "Document signer certificate not valid"
+    return None
+
+
+def _mso_error(
+    mdoc: Dict[str, Any],
+    payload_decoded: Dict[str, Any],
+    signer_validity: Tuple[datetime.datetime, datetime.datetime],
+) -> Optional[str]:
+    """Checks the signed MSO against the document it protects.
+
+    Args:
+        mdoc: Decoded ``documents[0]`` entry.
+        payload_decoded: Decoded MSO.
+        signer_validity: ``(not_valid_before, not_valid_after)`` of the signer.
+
+    Returns:
+        ``None`` when the doctype, digests and validity are consistent,
+        otherwise the reason.
+    """
     if payload_decoded["docType"] != mdoc["docType"]:
-        return False, "Doctype from MSO not equal to doctype in document"
+        return "Doctype from MSO not equal to doctype in document"
 
     digest = DIGEST_ALGORITHMS.get(payload_decoded["digestAlgorithm"])
     if digest is None:
-        return False, f"Unsupported digest algorithm: {payload_decoded['digestAlgorithm']}"
+        return f"Unsupported digest algorithm: {payload_decoded['digestAlgorithm']}"
 
-    for namespace, elements in namespaces.items():
+    for namespace, elements in mdoc["issuerSigned"]["nameSpaces"].items():
         expected = set(payload_decoded["valueDigests"][namespace].values())
         matched = sum(
             1 for e in elements if digest(cbor2.dumps(cbor2.CBORTag(e.tag, e.value))).digest() in expected
         )
         if matched != len(elements):
-            return (
-                False,
-                "Missing digests or there aren't enough digests that correspond to the values in document",
-            )
+            return "Missing digests or there aren't enough digests that correspond to the values in document"
 
+    not_valid_before, not_valid_after = signer_validity
     validity_info = payload_decoded["validityInfo"]
     signed = validity_info["signed"]
     if signed < not_valid_before or not_valid_after < signed:
-        return False, "Signed date isn't within validity period of the certificate"
+        return "Signed date isn't within validity period of the certificate"
 
     now = datetime.datetime.now(datetime.timezone.utc)
     if now < validity_info["validFrom"] or validity_info["validUntil"] < now:
-        return False, "Period defined in ValidityInfo is invalid"
-
-    return True, ""
+        return "Period defined in ValidityInfo is invalid"
+    return None

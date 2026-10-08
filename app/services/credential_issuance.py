@@ -690,6 +690,42 @@ def _collect_jwt_proof(
     pub_keys.append({"jwt": _holder_key(header["jwk"])})
 
 
+def _collect_typed_proofs(
+    proof_type: Any,
+    proof_values: List[Any],
+    shape: Optional[str],
+    session_id: str,
+    pub_keys: List[Dict[str, Any]],
+    ka_exps: List[int],
+    nonces: Optional[Dict[str, float]],
+) -> None:
+    """Verifies the proofs of one proof type and collects their holder keys.
+
+    Args:
+        proof_type: ``jwt`` or ``attestation``.
+        proof_values: The proofs of that type.
+        shape: ``"single"`` for the legacy ``proof`` parameter (for logging).
+        session_id: Issuance session.
+        pub_keys: Holder keys (mutated).
+        ka_exps: KA expiry values (mutated).
+        nonces: Receives the ``c_nonce`` of every proof.
+
+    Raises:
+        InvalidProofError: If a proof is invalid or of an unsupported type.
+    """
+    match proof_type:
+        case "jwt":
+            for proof_jwt in proof_values:
+                _collect_jwt_proof(proof_jwt, session_id, pub_keys, ka_exps, nonces)
+        case "attestation":
+            label = "single attestation proof" if shape == "single" else "attestation proof"
+            for attestation in proof_values:
+                claims = _verified_attestation(attestation, session_id, label, True, nonces)
+                _register_attested_keys(claims, session_id, pub_keys, ka_exps)
+        case _:
+            raise InvalidProofError("Unsupported proof type")
+
+
 def _collect_proof_keys(
     credential_request: Dict[str, Any],
     session_id: str,
@@ -721,31 +757,13 @@ def _collect_proof_keys(
     proof = credential_request.get("proof")
 
     if proof is not None and "proofs" not in credential_request:
-        match proof.get("proof_type"):
-            case "jwt":
-                _collect_jwt_proof(proof["jwt"], session_id, pub_keys, ka_exps, nonces)
-            case "attestation":
-                claims = _verified_attestation(
-                    proof["attestation"], session_id, "single attestation proof", True, nonces
-                )
-                _register_attested_keys(claims, session_id, pub_keys, ka_exps)
-            case _:
-                raise InvalidProofError("Unsupported proof type")
-        return
-
-    for proof_type, proof_values in (credential_request.get("proofs") or {}).items():
-        if not isinstance(proof_values, list) or not proof_values:
-            raise InvalidProofError(f"proofs.{safe(proof_type, 30)} must be a non-empty list")
-        match proof_type:
-            case "jwt":
-                for proof_jwt in proof_values:
-                    _collect_jwt_proof(proof_jwt, session_id, pub_keys, ka_exps, nonces)
-            case "attestation":
-                for attestation in proof_values:
-                    claims = _verified_attestation(attestation, session_id, "attestation proof", True, nonces)
-                    _register_attested_keys(claims, session_id, pub_keys, ka_exps)
-            case _:
-                raise InvalidProofError("Unsupported proof type")
+        proof_type = proof.get("proof_type")
+        _collect_typed_proofs(proof_type, [proof.get(proof_type)], "single", session_id, pub_keys, ka_exps, nonces)
+    else:
+        for proof_type, proof_values in (credential_request.get("proofs") or {}).items():
+            if not isinstance(proof_values, list) or not proof_values:
+                raise InvalidProofError(f"proofs.{safe(proof_type, 30)} must be a non-empty list")
+            _collect_typed_proofs(proof_type, proof_values, None, session_id, pub_keys, ka_exps, nonces)
 
     # TS3 2.2.2.1: a key attestation may attest more keys than the batch size.
     batch_size = get_batch_size(credential_request["credential_configuration_id"])
@@ -850,7 +868,7 @@ def generate_credentials(
             custom_validity_seconds=get_custom_validity_seconds(configuration_id),
         )
     except CredentialValidityError as e:
-        logger.error(f", Session ID: {session_id}, {safe(e)}")
+        logger.exception(f", Session ID: {session_id}, {safe(e)}")
         return {"error": "invalid_proof", "error_description": str(e)}
 
     logger.debug(
@@ -897,13 +915,13 @@ def decrypt_jwe_credential_request(jwt_token: str) -> Dict[str, Any]:
         logger.debug("Decrypted JWE credential request")
         return json.loads(payload)
     except FileNotFoundError as e:
-        logger.error("Private key file not found")
+        logger.exception("Private key file not found")
         raise ValueError("Private key file not found") from e
     except json.JSONDecodeError as e:
-        logger.error(f"Failed to parse decrypted payload as JSON: {safe(str(e))}")
+        logger.exception(f"Failed to parse decrypted payload as JSON: {safe(str(e))}")
         raise ValueError(f"Decrypted payload is not valid JSON: {str(e)}") from e
     except Exception as e:
-        logger.error(f"Failed to decrypt JWE: {safe(str(e))}")
+        logger.exception(f"Failed to decrypt JWE: {safe(str(e))}")
         raise ValueError(f"Failed to decrypt JWE: {str(e)}") from e
 
 

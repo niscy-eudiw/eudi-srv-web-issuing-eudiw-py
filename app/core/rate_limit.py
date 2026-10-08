@@ -41,28 +41,33 @@ from app.core.config import CONFIGURATION
 
 logger = logging.getLogger(__name__)
 
+#: Shared limit tiers of ENDPOINT_LIMITS (requests per client address).
+HIGH_LIMIT = "60 per minute"
+MEDIUM_LIMIT = "30 per minute"
+LOW_LIMIT = "20 per minute"
+
 #: Default limit per client address for each Flask endpoint.
 ENDPOINT_LIMITS: Dict[str, str] = {
-    "oidc.credential": "60 per minute",
-    "oidc.deferred_credential": "60 per minute",
-    "oidc.nonce": "60 per minute",
-    "oidc.notification": "60 per minute",
-    "oidc.auth_choice": "30 per minute",
-    "oidc.credentialOffer": "30 per minute",
+    "oidc.credential": HIGH_LIMIT,
+    "oidc.deferred_credential": HIGH_LIMIT,
+    "oidc.nonce": HIGH_LIMIT,
+    "oidc.notification": HIGH_LIMIT,
+    "oidc.auth_choice": MEDIUM_LIMIT,
+    "oidc.credentialOffer": MEDIUM_LIMIT,
     "oidc.pid_authorization_get": "120 per minute",
-    "oidc.get_logs_by_session": "30 per minute",
-    "preauth.credentialOfferReq2": "30 per minute",
-    "preauth.preauthRed": "20 per minute",
-    "preauth.preauth_form": "20 per minute",
-    "preauth.form_authorize_generate": "20 per minute",
-    "dynamic.Dynamic_form": "20 per minute",
-    "dynamic.red": "20 per minute",
-    "oid4vp.openid4vp": "20 per minute",
-    "oid4vp.getpidoid4vp": "30 per minute",
-    "revocation.oid4vp_call": "20 per minute",
-    "revocation.oid4vp_get": "30 per minute",
+    "oidc.get_logs_by_session": MEDIUM_LIMIT,
+    "preauth.credentialOfferReq2": MEDIUM_LIMIT,
+    "preauth.preauthRed": LOW_LIMIT,
+    "preauth.preauth_form": LOW_LIMIT,
+    "preauth.form_authorize_generate": LOW_LIMIT,
+    "dynamic.Dynamic_form": LOW_LIMIT,
+    "dynamic.red": LOW_LIMIT,
+    "oid4vp.openid4vp": LOW_LIMIT,
+    "oid4vp.getpidoid4vp": MEDIUM_LIMIT,
+    "revocation.oid4vp_call": LOW_LIMIT,
+    "revocation.oid4vp_get": MEDIUM_LIMIT,
     "revocation.revoke": "10 per minute",
-    "metadata.metadata_signer": "30 per minute",
+    "metadata.metadata_signer": MEDIUM_LIMIT,
 }
 
 

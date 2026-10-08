@@ -299,13 +299,21 @@ def normalize_list_and_type_fields(
     if scope == "eu.europa.ec.eudi.pid_vc_sd_jwt":
         list_fields.append("address")
 
-    for field in list_fields:
-        if field in data:
-            # Applied once per attribute group the field belongs to.
-            for group in (attributes_req, attributes_req2):
-                if field in group:
-                    data[field] = _unwrap_json_object(data[field])
+    groups = (attributes_req, attributes_req2)
+    for field in (f for f in list_fields if f in data):
+        # Applied once per attribute group the field belongs to.
+        for _ in range(sum(field in group for group in groups)):
+            data[field] = _unwrap_json_object(data[field])
 
+    _coerce_numeric_fields(data)
+
+
+def _coerce_numeric_fields(data: Dict[str, Any]) -> None:
+    """Converts the numeric form fields submitted as text to integers.
+
+    Args:
+        data: Form data (mutated).
+    """
     for field in ("age_in_years", "age_birth_year"):
         if isinstance(data.get(field), str):
             data[field] = int(data[field])

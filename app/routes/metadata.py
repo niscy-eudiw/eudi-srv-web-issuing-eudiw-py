@@ -102,7 +102,7 @@ def metadata_signer() -> Tuple[Response, int]:
         return jsonify({"signed_metadata": signed}), 200
 
     except MetadataSigningError as e:
-        logger.error(f"Metadata signing failed: {safe(e.message)}: {safe(e.details)}")
+        logger.exception(f"Metadata signing failed: {safe(e.message)}: {safe(e.details)}")
         return _error(e.message, 500)
     except jwt.PyJWTError:
         logger.exception("JWT encoding error")
@@ -167,6 +167,6 @@ def frontend_signed_metadata(frontend_id: str) -> Tuple[Response, int]:
     except UnknownFrontendError:
         return _unknown_frontend(frontend_id)
     except MetadataSigningError as e:
-        logger.error(f"Signed metadata for {safe(frontend_id, 64)} failed: {safe(e.message)}: {safe(e.details)}")
+        logger.exception(f"Signed metadata for {safe(frontend_id, 64)} failed: {safe(e.message)}: {safe(e.details)}")
         return _error(e.message, 500)
     return jsonify({"signed_metadata": signed}), 200
