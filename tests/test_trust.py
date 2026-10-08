@@ -241,6 +241,16 @@ class TestVerifyJwtWithX5c:
         with pytest.raises(jwt.ExpiredSignatureError):
             trust.verify_jwt_with_x5c(token)
 
+    def test_expected_typ_from_the_verified_header(self, pki, trusted_root):
+        """typ is read from the header verified with the signature (jwt.decode_complete)."""
+        def token(typ):
+            return jwt.encode({"sub": "x"}, pki["leaf_key"], algorithm="ES256",
+                              headers={"x5c": _x5c(pki["leaf"], pki["inter"]), "typ": typ})
+
+        assert trust.verify_jwt_with_x5c(token("key-attestation+jwt"), expected_typ="key-attestation+jwt") == {"sub": "x"}
+        with pytest.raises(ValueError, match="typ must be key-attestation\+jwt"):
+            trust.verify_jwt_with_x5c(token("JWT"), expected_typ="key-attestation+jwt")
+
     def test_disallowed_algorithm(self, pki, trusted_root):
         token = self._token(pki, {"sub": "x"}, [pki["direct_leaf"]])
         with pytest.raises(ValueError, match="not allowed"):

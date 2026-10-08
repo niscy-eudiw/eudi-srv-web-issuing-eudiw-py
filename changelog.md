@@ -321,6 +321,7 @@ _06 Oct 2026_
 - `proof_validation.single_use_nonce` (default `true`): `false` lets a wallet reuse a valid `c_nonce` until it expires (OpenID4VCI 1.0 §13.8), and the used-nonce store is not consulted.
 
 ### Changed
+- `verify_jwt_with_x5c` reads the `typ` header from `jwt.decode_complete` (verified together with the signature) instead of `jwt.get_unverified_header` (SonarCloud: JWT used without verifying its signature).
 - By default each `c_nonce` is accepted by one credential request only (see `proof_validation.single_use_nonce`). An unknown, undecryptable, expired or reused `c_nonce` is answered with `invalid_nonce` (was `invalid_proof`); a proof without a `c_nonce`, when one is required, stays `invalid_proof` (OpenID4VCI 1.0 §8.3.1.2). Deferred retrieval reuses the holder keys proven by the first request instead of verifying the proofs again.
 - A request with more proofs than the batch size is rejected with `invalid_credential_request` before any proof is verified (it was truncated after verification).
 - A trust validator `trusted: false` answer is final; the local CA store is only used when the validator fails or is disabled.

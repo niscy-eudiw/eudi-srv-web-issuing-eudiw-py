@@ -396,14 +396,16 @@ class TestAdditionalCoverage:
         result = attributes.scope2details(["openid", "eu.europa.ec.eudi.pid_mdoc"])
         assert any(isinstance(c, dict) for c in result)
 
-    @patch("app.services.trust.jwt.decode")
+    @patch("app.services.trust.jwt.decode_complete")
     @patch("app.services.trust.extract_public_key_from_x5c")
     def test_verify_jwt_with_x5c_calls_decode(self, mock_extract, mock_jwt_decode):
         mock_pubkey = MagicMock()
         mock_extract.return_value = (mock_pubkey, "ES256")
-        trust.verify_jwt_with_x5c(
+        mock_jwt_decode.return_value = {"header": {"alg": "ES256"}, "payload": {"sub": "x"}}
+        claims = trust.verify_jwt_with_x5c(
             "jwtstring", audience="aud", issuer="iss", verify_exp=False
         )
+        assert claims == {"sub": "x"}
         mock_jwt_decode.assert_called_once_with(
             "jwtstring",
             key=mock_pubkey,

@@ -617,7 +617,8 @@ def verify_jwt_with_x5c(
     required = list(required_claims)
     if max_age_seconds is not None and "iat" not in required:
         required.append("iat")
-    claims = jwt.decode(
+    # decode_complete verifies like decode and also returns the (signed) header.
+    decoded = jwt.decode_complete(
         jwt_raw,
         key=public_key,
         algorithms=[alg],
@@ -625,8 +626,9 @@ def verify_jwt_with_x5c(
         issuer=issuer,
         options={"verify_exp": verify_exp, "require": required},
     )
+    claims = decoded["payload"]
     if expected_typ is not None:
-        typ = jwt.get_unverified_header(jwt_raw).get("typ")  # signed header, verified above
+        typ = decoded["header"].get("typ")
         if typ is not None and typ != expected_typ:
             raise ValueError(f"JWT typ must be {expected_typ}")
     if max_age_seconds is not None:
