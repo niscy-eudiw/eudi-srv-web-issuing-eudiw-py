@@ -29,8 +29,11 @@ do at start-up:
 * template URLs on ``<template domain>/oidc`` point to the authorization
   server (``oauth_url``), all other template URLs to the backend
   (``service_url``);
-* ``credential_issuer``, the OpenID ``issuer``, the PAR endpoint and the
-  display logo point to the frontend's own URL;
+* ``credential_issuer``, the ``issuer`` of the OpenID and OAuth
+  authorization server metadata, the PAR endpoint and the display logo
+  point to the frontend's own URL (the credential issuer is its own
+  authorization server: RFC 8414 requires ``issuer`` to match the URL the
+  metadata is served under);
 * ``issuer_info`` carries the frontend's own registration certificate.
 
 Per-frontend configuration keys:
@@ -183,10 +186,15 @@ def build_frontend_metadata(frontend_id: str) -> FrontendMetadata:
     template_domain = issuer_metadata["credential_issuer"]
 
     openid_configuration = replace_domain(_template("openid-configuration.json"), f"{template_domain}/oidc", oauth_url)
-    oauth_authorization_server = replace_domain(_template("oauth-authorization-server.json"), template_domain, backend_url)
+    oauth_authorization_server = replace_domain(
+        replace_domain(_template("oauth-authorization-server.json"), f"{template_domain}/oidc", oauth_url),
+        template_domain,
+        backend_url,
+    )
     issuer_metadata = replace_domain(issuer_metadata, template_domain, backend_url)
 
     openid_configuration["issuer"] = frontend_url
+    oauth_authorization_server["issuer"] = frontend_url
     openid_configuration["pushed_authorization_request_endpoint"] = f"{frontend_url}/pushed_authorization"
     issuer_metadata["credential_issuer"] = frontend_url
     issuer_metadata["display"][0]["logo"]["uri"] = f"{frontend_url}/ic-logo.png"
