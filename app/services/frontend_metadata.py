@@ -26,6 +26,8 @@ do at start-up:
 * ``credential_configurations_supported`` and ``credential_request_encryption``
   come from the backend metadata, the former optionally filtered by the
   frontend's ``credentials_supported`` list;
+* the OAuth authorization server metadata is a copy of the OpenID
+  configuration, as the frontend has always served it;
 * template URLs on ``<template domain>/oidc`` point to the authorization
   server (``oauth_url``), all other template URLs to the backend
   (``service_url``);
@@ -186,16 +188,13 @@ def build_frontend_metadata(frontend_id: str) -> FrontendMetadata:
     template_domain = issuer_metadata["credential_issuer"]
 
     openid_configuration = replace_domain(_template("openid-configuration.json"), f"{template_domain}/oidc", oauth_url)
-    oauth_authorization_server = replace_domain(
-        replace_domain(_template("oauth-authorization-server.json"), f"{template_domain}/oidc", oauth_url),
-        template_domain,
-        backend_url,
-    )
     issuer_metadata = replace_domain(issuer_metadata, template_domain, backend_url)
 
     openid_configuration["issuer"] = frontend_url
-    oauth_authorization_server["issuer"] = frontend_url
     openid_configuration["pushed_authorization_request_endpoint"] = f"{frontend_url}/pushed_authorization"
+    # Wallets read this document first (RFC 8414), so it carries everything
+    # openid-configuration does (PAR, DPoP, wallet attestation...).
+    oauth_authorization_server = copy.deepcopy(openid_configuration)
     issuer_metadata["credential_issuer"] = frontend_url
     issuer_metadata["display"][0]["logo"]["uri"] = f"{frontend_url}/ic-logo.png"
     if frontend.get("registration_certificate"):

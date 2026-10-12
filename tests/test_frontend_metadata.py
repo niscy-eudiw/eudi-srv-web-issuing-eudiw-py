@@ -101,7 +101,6 @@ def _frontend_reference(service_url, backend_url, oauth_url, credentials_support
             return json.load(f)
 
     openid_metadata = load("openid-configuration.json")
-    oauth_metadata = load("oauth-authorization-server.json")
     oidc_metadata = load("metadata_config.json")
 
     credentials_supported = backend_data.get("credential_configurations_supported", {})
@@ -115,15 +114,14 @@ def _frontend_reference(service_url, backend_url, oauth_url, credentials_support
 
     old_domain = oidc_metadata["credential_issuer"]
     openid_metadata = replace_domain(openid_metadata, f"{old_domain}/oidc", oauth_url)
-    oauth_metadata = replace_domain(replace_domain(oauth_metadata, f"{old_domain}/oidc", oauth_url), old_domain, backend_url)
     oidc_metadata = replace_domain(oidc_metadata, old_domain, backend_url)
 
     openid_metadata["issuer"] = service_url
-    oauth_metadata["issuer"] = service_url
     openid_metadata["pushed_authorization_request_endpoint"] = f"{service_url}/pushed_authorization"
     oidc_metadata["credential_issuer"] = service_url
     oidc_metadata["display"][0]["logo"]["uri"] = f"{service_url}/ic-logo.png"
-    return oidc_metadata, openid_metadata, oauth_metadata
+    # The former frontend served openid_metadata as oauth-authorization-server.
+    return oidc_metadata, openid_metadata, copy.deepcopy(openid_metadata)
 
 
 class TestBuildFrontendMetadata:
@@ -148,6 +146,9 @@ class TestBuildFrontendMetadata:
         assert oauth["token_endpoint"] == f"{AUTH_URL}/token"
         assert oauth["jwks_uri"] == f"{AUTH_URL}/static/jwks.json"
         assert not any(isinstance(v, str) and f"{BACKEND_URL}/oidc" in v for v in oauth.values())
+        assert oauth["pushed_authorization_request_endpoint"] == f"{FRONTEND_URL}/pushed_authorization"
+        assert "dpop_signing_alg_values_supported" in oauth
+        assert "attest_jwt_client_auth" in oauth["token_endpoint_auth_methods_supported"]
 
     def test_oauth_authorization_server_follows_oauth_url(self, signing_material):
         with patch_configuration(_config(signing_material, oauth_url="https://as.test")):
