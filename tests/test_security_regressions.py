@@ -672,8 +672,18 @@ class TestCredentialTypeAuthorization:
         )
 
     def test_other_credential_rejected(self, credential_client):
+        from app.routes import oidc as oidc_routes
+
         client, generate = credential_client
-        response = self._request(client, "eu.europa.ec.eudi.mdl_mdoc")
+        # OpenID4VCI 1.0 section 8.3.1.1 / RFC 6750 section 3.1: a supported configuration
+        # the token does not cover is insufficient_scope; an unsupported one is unknown.
+        with patch.dict(oidc_routes.oidc_metadata, {"credential_configurations_supported": {"eu.europa.ec.eudi.mdl_mdoc": {}}}):
+            response = self._request(client, "eu.europa.ec.eudi.mdl_mdoc")
+        assert response.status_code == 403
+        assert response.get_json()["error"] == "insufficient_scope"
+        assert response.headers["WWW-Authenticate"].startswith('Bearer error="insufficient_scope"')
+        with patch.dict(oidc_routes.oidc_metadata, {"credential_configurations_supported": {}}):
+            response = self._request(client, "eu.europa.ec.eudi.mdl_mdoc")
         assert response.status_code == 400
         assert response.get_json()["error"] == "unknown_credential_configuration"
         generate.assert_not_called()
@@ -1102,7 +1112,9 @@ class TestDpopAtResourceEndpoints:
     def test_bearer_replay_rejected(self, credential_client):
         client, generate = credential_client
         response = self._post(client, {"Authorization": f"Bearer {self.TOKEN}"})
-        assert response.status_code == 401 and response.get_json()["error"] == "invalid_dpop_proof"
+        # RFC 9449 section 7.2: rejected per RFC 6750 (invalid_token), with a DPoP challenge.
+        assert response.status_code == 401 and response.get_json()["error"] == "invalid_token"
+        assert response.headers["WWW-Authenticate"].startswith('DPoP error="invalid_token"')
         generate.assert_not_called()
 
     def test_valid_proof_accepted(self, credential_client, wallet_key):
@@ -1833,8 +1845,17 @@ class TestLogInjection:
         manager.mark_credential_issued(self.SESSION)
         assert client.get("/logs", query_string=query, headers=headers).get_json()["successful"] is True
 
-    @pytest.mark.parametrize("notification_id", ["foreign-id", "unknown\nINFO forged", None, ["own-id"]])
-    def test_foreign_notification_id_rejected_unlogged(self, oidc_client, caplog, notification_id):
+    @pytest.mark.parametrize(
+        "notification_id, error",
+        [
+            ("foreign-id", "invalid_notification_id"),
+            ("unknown\nINFO forged", "invalid_notification_id"),
+            # OpenID4VCI 1.0 section 11.3: a missing / non-string id is a malformed request.
+            (None, "invalid_notification_request"),
+            (["own-id"], "invalid_notification_request"),
+        ],
+    )
+    def test_foreign_notification_id_rejected_unlogged(self, oidc_client, caplog, notification_id, error):
         client, _ = oidc_client
         with caplog.at_level("DEBUG"):
             response = client.post(
@@ -1842,7 +1863,7 @@ class TestLogInjection:
                 headers={"Authorization": "Bearer t"},
                 json={"notification_id": notification_id, "event": "credential_accepted"},
             )
-        assert response.status_code == 400 and response.get_json()["error"] == "invalid_notification_id"
+        assert response.status_code == 400 and response.get_json()["error"] == error
         assert not any("foreign-id" in r.getMessage() or "forged" in r.getMessage() for r in caplog.records)
 
     def test_own_notification_accepted(self, oidc_client):

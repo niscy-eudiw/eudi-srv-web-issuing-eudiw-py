@@ -36,8 +36,8 @@ BACKEND_CLEAN_METADATA = {
         "eu.europa.ec.eudi.mdl_mdoc": {"format": "mso_mdoc", "doctype": "org.iso.18013.5.1.mDL"},
     },
     "credential_request_encryption": {"jwks": {"keys": [{"kid": "backend-kid"}]}, "encryption_required": False},
-    "issuer_info": [{"format": "registration_cert", "data": "abc"}],
 }
+REGISTRATION_CERT = "eyJ0eXAiOiJyYy13cnArand0In0.eyJuYW1lIjoiSXNzdWVyIn0.c2ln"
 
 
 @pytest.fixture(scope="module")
@@ -112,8 +112,6 @@ def _frontend_reference(service_url, backend_url, oauth_url, credentials_support
     oidc_metadata["credential_configurations_supported"] = credentials_supported
     if backend_data.get("credential_request_encryption"):
         oidc_metadata["credential_request_encryption"] = backend_data["credential_request_encryption"]
-    if backend_data.get("issuer_info"):
-        oidc_metadata["issuer_info"] = backend_data["issuer_info"]
 
     old_domain = oidc_metadata["credential_issuer"]
     openid_metadata = replace_domain(openid_metadata, f"{old_domain}/oidc", oauth_url)
@@ -149,7 +147,8 @@ class TestBuildFrontendMetadata:
         assert issuer["credential_endpoint"] == f"{BACKEND_URL}/credential"
         assert issuer["display"][0]["logo"]["uri"] == f"{FRONTEND_URL}/ic-logo.png"
         assert issuer["credential_request_encryption"]["jwks"]["keys"][0]["kid"] == "backend-kid"
-        assert issuer["issuer_info"] == BACKEND_CLEAN_METADATA["issuer_info"]
+        # No registration certificate configured: no issuer_info.
+        assert "issuer_info" not in issuer
         assert set(issuer["credential_configurations_supported"]) == set(
             BACKEND_CLEAN_METADATA["credential_configurations_supported"]
         )
@@ -194,6 +193,50 @@ class TestBuildFrontendMetadata:
         assert payload["sub"] == FRONTEND_URL
         assert payload["credential_issuer"] == FRONTEND_URL
         assert payload["credential_configurations_supported"]
+
+
+class TestRegistrationCertificate:
+    ISSUER_INFO = [{"format": "registration_cert", "data": REGISTRATION_CERT}]
+
+    def test_unsigned_metadata(self, signing_material):
+        with patch_configuration(_config(signing_material, registration_certificate=REGISTRATION_CERT)):
+            documents = build_frontend_metadata(FRONTEND_ID)
+
+        assert documents.openid_credential_issuer["issuer_info"] == self.ISSUER_INFO
+        assert "issuer_info" not in documents.openid_configuration
+
+    def test_signed_metadata(self, signing_material):
+        with patch_configuration(_config(signing_material, registration_certificate=REGISTRATION_CERT)):
+            token = sign_frontend_metadata(FRONTEND_ID)
+
+        payload = jwt.decode(token, signing_material["cert"].public_key(), algorithms=["ES256"])
+        assert payload["issuer_info"] == self.ISSUER_INFO
+
+    def test_each_frontend_has_its_own(self, signing_material):
+        cfg = _config(signing_material, registration_certificate=REGISTRATION_CERT)
+        cfg["frontend"]["frontends_config"]["fe-2"] = {
+            **cfg["frontend"]["frontends_config"][FRONTEND_ID],
+            "url": "https://other-frontend.test",
+            "registration_certificate": "a.b.c",
+        }
+        cfg["frontend"]["frontends_config"]["fe-3"] = {
+            k: v for k, v in cfg["frontend"]["frontends_config"][FRONTEND_ID].items() if k != "registration_certificate"
+        }
+        with patch_configuration(cfg):
+            first = build_frontend_metadata(FRONTEND_ID).openid_credential_issuer
+            second = build_frontend_metadata("fe-2").openid_credential_issuer
+            third = build_frontend_metadata("fe-3").openid_credential_issuer
+
+        assert first["issuer_info"][0]["data"] == REGISTRATION_CERT
+        assert second["issuer_info"][0]["data"] == "a.b.c"
+        assert "issuer_info" not in third
+
+    def test_backend_issuer_info_is_not_published(self, config):
+        from unittest.mock import patch
+
+        with patch.dict("app.core.state.oidc_metadata_clean", {"issuer_info": [{"data": "global"}]}):
+            issuer = build_frontend_metadata(FRONTEND_ID).openid_credential_issuer
+        assert "issuer_info" not in issuer
 
 
 class TestEndpoints:

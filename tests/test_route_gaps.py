@@ -154,12 +154,17 @@ class TestVerifyCredentialRequest:
 
 class TestCredentialEndpointAuth:
     @pytest.mark.parametrize(
-        "headers, error",
-        [({}, "invalid_request"), ({"Authorization": "Basic abc"}, "invalid_token"), ({"Authorization": "Bearer"}, "invalid_token")],
+        "headers, body",
+        [
+            ({}, {}),
+            ({"Authorization": "Basic abc"}, {}),
+            ({"Authorization": "Bearer"}, {"error": "invalid_token", "error_description": "Missing access token"}),
+        ],
     )
-    def test_authorization_header(self, client, config, headers, error):
+    def test_authorization_header(self, client, config, headers, body):
         response = client.post("/credential", json={}, headers=headers)
-        assert response.status_code == 401 and response.get_json() == {"error": error}
+        assert response.status_code == 401 and response.get_json() == body
+        assert "WWW-Authenticate" in response.headers
 
     def test_undecryptable_jwe_body(self, client, config):
         with patch.object(oidc_routes, "decrypt_jwe_credential_request", side_effect=ValueError("bad")):
@@ -176,17 +181,18 @@ class TestCredentialEndpointAuth:
 
 class TestDeferredAndNotification:
     def test_deferred_missing_transaction(self, client, config):
-        response = client.post("/deferred_credential", json={})
-        assert response.status_code == 401 and response.get_json() == {"error": "invalid_transaction_id"}
+        response = client.post("/deferred_credential", json={}, headers={"Authorization": "Bearer t"})
+        assert response.status_code == 400 and response.get_json()["error"] == "invalid_credential_request"
 
     def test_deferred_bad_transaction_format(self, client, config):
-        response = client.post("/deferred_credential", json={"transaction_id": "not-a-uuid"})
-        assert response.get_json() == {"error": "invalid_transaction_id_format"}
+        response = client.post("/deferred_credential", json={"transaction_id": "not-a-uuid"}, headers={"Authorization": "Bearer t"})
+        assert response.status_code == 400 and response.get_json() == {"error": "invalid_transaction_id"}
 
-    @pytest.mark.parametrize("headers, error", [({}, "Authorization header is missing"), ({"Authorization": "Bearer"}, "Invalid Authorization header format")])
-    def test_deferred_auth(self, client, config, headers, error):
+    @pytest.mark.parametrize("headers, body", [({}, {}), ({"Authorization": "Bearer"}, {"error": "invalid_token", "error_description": "Missing access token"})])
+    def test_deferred_auth(self, client, config, headers, body):
         response = client.post("/deferred_credential", json={"transaction_id": str(uuid.uuid4())}, headers=headers)
-        assert response.status_code == 401 and response.get_json() == {"error": error}
+        assert response.status_code == 401 and response.get_json() == body
+        assert "WWW-Authenticate" in response.headers
 
     def test_deferred_unknown_transaction(self, client, config):
         session = MagicMock(transaction_id={})
@@ -219,19 +225,18 @@ class TestDeferredAndNotification:
         assert response.status_code == 400 and response.get_json() == {"error": "invalid_proof"}
 
     @pytest.mark.parametrize(
-        "headers, error",
+        "headers, body",
         [
-            ({}, "Authorization header is missing"),
-            ({"Authorization": "Basic t"}, "Authorization header must be a Bearer or DPoP token"),
-            ({"Authorization": "Bearer "}, None),
+            ({}, {}),
+            ({"Authorization": "Basic t"}, {}),
+            ({"Authorization": "Bearer "}, {"error": "invalid_token", "error_description": "Missing access token"}),
         ],
     )
-    def test_notification_auth(self, client, config, headers, error):
+    def test_notification_auth(self, client, config, headers, body):
         with patch.object(oidc_routes, "verify_introspection", return_value=({"error": "invalid_token"}, 401)):
             response = client.post("/notification", json={}, headers=headers)
-        assert response.status_code == 401
-        if error:
-            assert response.get_json() == {"error": error}
+        assert response.status_code == 401 and response.get_json() == body
+        assert "WWW-Authenticate" in response.headers
 
 
 class TestAuthChoice:

@@ -51,6 +51,10 @@ class DPoPError(ValueError):
     """Raised when a request does not prove possession of the bound key."""
 
 
+class DPoPSchemeError(DPoPError):
+    """Raised when a DPoP-bound token is presented with another scheme (RFC 9449 section 7.2)."""
+
+
 def _b64url(data: bytes) -> str:
     return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
 
@@ -113,10 +117,11 @@ def verify_dpop_request(
         htu: Accepted target URLs (:func:`expected_htu`).
 
     Raises:
-        DPoPError: If the scheme is not DPoP or the proof is missing or invalid.
+        DPoPSchemeError: If the scheme is not DPoP.
+        DPoPError: If the proof is missing or invalid.
     """
     if not authorization.lower().startswith("dpop "):
-        raise DPoPError("DPoP-bound token used with another authorization scheme")
+        raise DPoPSchemeError("DPoP-bound token used with another authorization scheme")
     if not proof:
         raise DPoPError("Missing DPoP proof")
     try:

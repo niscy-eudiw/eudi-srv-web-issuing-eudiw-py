@@ -592,6 +592,25 @@ class SessionManager:
             self._sessions_by_transaction_id[transaction_id] = session_obj
             logger.debug(f"Added transaction_id '{transaction_id}' to session_id '{session_id}'.")
 
+    def remove_transaction_id(self, session_id: str, transaction_id: str) -> None:
+        """Invalidates a deferred-issuance transaction once its credential is obtained.
+
+        OpenID4VCI 1.0 section 9.1: a later request with the same
+        ``transaction_id`` is then an ``invalid_transaction_id``.
+
+        Args:
+            session_id: Session the transaction belongs to.
+            transaction_id: Transaction id to remove.
+        """
+        with self._sessions_lock, self._sessions_by_transaction_id_lock:
+            session_obj = self._sessions.get(session_id)
+            if session_obj is not None:
+                session_obj.transaction_id.pop(transaction_id, None)
+                session_obj.deferred_holder_keys.pop(transaction_id, None)
+            if self._sessions_by_transaction_id.get(transaction_id) is session_obj:
+                self._sessions_by_transaction_id.pop(transaction_id, None)
+            logger.debug(f"Removed transaction_id '{transaction_id}' from session_id '{session_id}'.")
+
     def store_notification_id(self, session_id: str, notification_id: str) -> None:
         """Registers a notification id on a session.
 

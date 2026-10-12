@@ -40,7 +40,7 @@ from flask import Blueprint, Response, jsonify, redirect, request, session, url_
 from flask.helpers import make_response
 
 from app.core.config import CONFIGURATION
-from app.core.errors import OAuthEndpointError, oauth_error_response
+from app.core.errors import OAuthEndpointError, error_body, oauth_error_response, token_error_response
 from app.core.log_utils import safe, summarize_credential_request
 from app.core.security import require_admin_api_key, require_frontend_origin
 from app.core.state import oidc_metadata, session_manager
@@ -62,7 +62,7 @@ from app.services.auth_server import (
     introspect,
     verify_session_token,
 )
-from app.services.dpop import DPoPError, expected_htu, verify_dpop_request
+from app.services.dpop import DPoPError, DPoPSchemeError, expected_htu, verify_dpop_request
 from app.services.credential_issuance import (
     DEFERRED_ONLY_CONFIGURATION,
     InvalidEncryptionParametersError,
@@ -87,6 +87,8 @@ logger = logging.getLogger(__name__)
 HandlerResult = Union[Response, Tuple[Any, int]]
 
 DEFERRED_INTERVAL_SECONDS = 30
+#: OpenID4VCI 1.0 section 11.1 notification events.
+NOTIFICATION_EVENTS = ("credential_accepted", "credential_failure", "credential_deleted")
 _ANSI_ESCAPE = re.compile(r"\x1B\[[0-?]*[ -/]*[@-~]")
 #: Issuance session ids are UUIDs (authorization server / revocation flow).
 _SESSION_ID_RE = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
@@ -97,17 +99,27 @@ _SESSION_ID_RE = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a
 # ---------------------------------------------------------------------------
 
 
-def _bearer_token(auth_header: str) -> Optional[str]:
-    """Extracts the token from an ``Authorization`` header value.
+def _access_token() -> str:
+    """Reads the access token of a request to a protected endpoint.
 
-    Args:
-        auth_header: Header value, e.g. ``"Bearer abc"``.
+    The token is sent in the ``Authorization`` header with the ``Bearer``
+    (RFC 6750 section 2.1) or ``DPoP`` (RFC 9449 section 7.1) scheme.
 
     Returns:
-        The token, or ``None`` if the header has no second part.
+        The access token.
+
+    Raises:
+        OAuthEndpointError: ``401`` without an error code when the request
+            has no Bearer / DPoP credentials (RFC 6750 section 3.1), ``401
+            invalid_token`` when the scheme carries no token.
     """
-    parts = auth_header.split(" ")
-    return parts[1] if len(parts) > 1 else None
+    scheme, _, token = request.headers.get("Authorization", "").partition(" ")
+    if scheme.lower() not in ("bearer", "dpop"):
+        raise OAuthEndpointError(None, 401)
+    token = token.strip()
+    if not token:
+        raise OAuthEndpointError("invalid_token", 401, "Missing access token")
+    return token
 
 
 def _is_introspection_success(result: Any) -> bool:
@@ -200,12 +212,12 @@ def verify_introspection(bearer_token: str) -> Any:
         return jsonify({"error": "Invalid response from the introspection endpoint."}), 502
 
     if not introspection_data.get("active", False):
-        return jsonify({"error": "invalid_token"}), 401
+        return token_error_response("invalid_token", description="The access token is not active")
 
     username = introspection_data.get("username")
     if not username:
         logger.warning("Token is active but introspection returned no username.")
-        return jsonify({"error": "invalid_token"}), 401
+        return token_error_response("invalid_token")
 
     jkt = (introspection_data.get("cnf") or {}).get("jkt")
     if jkt and (error := _dpop_error(bearer_token, jkt, username)):
@@ -215,7 +227,7 @@ def verify_introspection(bearer_token: str) -> Any:
         client_status = _access_token_client_status(bearer_token)
     except (jwt.PyJWTError, OSError, ValueError) as e:
         logger.warning(f"Access token signature not verified for session tied to {safe(username, 64)}: {safe(e)}")
-        return jsonify({"error": "invalid_token"}), 401
+        return token_error_response("invalid_token")
 
     if client_status and CONFIGURATION["status_validator"]["enabled"]:
         if error := _wia_status_error(client_status, username):
@@ -255,7 +267,10 @@ def _dpop_error(bearer_token: str, jkt: str, username: str) -> Optional[HandlerR
         username: Session the token belongs to (for logging).
 
     Returns:
-        ``None`` when the proof is valid, otherwise the ``401`` error.
+        ``None`` when the proof is valid, otherwise the ``401`` error:
+        ``invalid_token`` for the token sent with another scheme (RFC 9449
+        section 7.2), ``invalid_dpop_proof`` for a missing or invalid proof
+        (section 7.1), both with a ``DPoP`` challenge.
     """
     try:
         verify_dpop_request(
@@ -266,11 +281,12 @@ def _dpop_error(bearer_token: str, jkt: str, username: str) -> Optional[HandlerR
             method=request.method,
             htu=expected_htu(request.path, request.base_url),
         )
+    except DPoPSchemeError as e:
+        logger.warning(f"DPoP check failed for session tied to {safe(username)}: {safe(e)}")
+        return token_error_response("invalid_token", description="DPoP-bound access token", scheme="DPoP")
     except DPoPError as e:
         logger.warning(f"DPoP check failed for session tied to {safe(username)}: {safe(e)}")
-        response = jsonify({"error": "invalid_dpop_proof", "error_description": "Invalid DPoP proof"})
-        response.headers["WWW-Authenticate"] = 'DPoP error="invalid_dpop_proof"'
-        return response, 401
+        return token_error_response("invalid_dpop_proof", description="Invalid DPoP proof", scheme="DPoP")
     return None
 
 
@@ -289,7 +305,7 @@ def _wia_status_error(client_status: Any, username: str) -> Optional[HandlerResu
     status_list = _client_status_list(client_status)
     if status_list is None:
         logger.error(f"Malformed WIA client_status for session tied to {safe(username, 64)}")
-        return jsonify({"error": "invalid_token", "error_description": "Malformed client_status"}), 401
+        return token_error_response("invalid_token", description="Malformed client_status")
     try:
         revoked = check_status_list_revocation(
             url=CONFIGURATION["status_validator"]["url"],
@@ -298,39 +314,59 @@ def _wia_status_error(client_status: Any, username: str) -> Optional[HandlerResu
         )
     except StatusCheckError as e:
         logger.exception(f"WIA client_status could not be checked for session tied to {safe(username)}: {safe(e)}")
-        return jsonify({"error": "invalid_token", "error_description": "Wallet status could not be verified"}), 401
+        return token_error_response("invalid_token", description="Wallet status could not be verified")
     if revoked:
         logger.error(f"WIA client_status revoked for session tied to {safe(username)}")
-        return jsonify({"error": "invalid_token"}), 401
+        return token_error_response("invalid_token")
     return None
 
 
-def verify_credential_request(credential_request: Dict[str, Any]) -> Dict[str, Any]:
-    """Checks the structure of a credential request.
+def verify_credential_request(credential_request: Dict[str, Any], stored: bool = False) -> Dict[str, Any]:
+    """Checks the structure of a credential request (OpenID4VCI 1.0 section 8.2).
 
     Args:
         credential_request: Credential request body.
+        stored: The request was validated before (deferred issuance); its
+            ``credential_configuration_id`` may then have been filled in
+            from ``credential_identifier``.
 
     Returns:
         The request itself when valid.
 
     Raises:
-        OAuthEndpointError: ``400`` with ``invalid_credential_request`` (no or
-            misspelled credential identifier) or ``invalid_proof`` (missing or
-            incomplete proof).
+        OAuthEndpointError: ``400`` with ``invalid_credential_request`` (no,
+            both or misspelled credential identifiers, or a non-string one)
+            or ``invalid_proof`` (missing, malformed or both ``proof`` and
+            ``proofs``; ``proofs`` with other than one proof type).
     """
     if "credential_indentifier" in credential_request:
         raise OAuthEndpointError("invalid_credential_request")
-    if "credential_identifier" not in credential_request and "credential_configuration_id" not in credential_request:
+    id_parameters = [p for p in ("credential_identifier", "credential_configuration_id") if p in credential_request]
+    if not id_parameters:
+        raise OAuthEndpointError("invalid_credential_request")
+    if len(id_parameters) == 2 and not stored:
+        raise OAuthEndpointError(
+            "invalid_credential_request",
+            description="credential_identifier and credential_configuration_id must not both be present",
+        )
+    if not all(isinstance(credential_request[p], str) and credential_request[p] for p in id_parameters):
         raise OAuthEndpointError("invalid_credential_request")
     if "proof" not in credential_request and "proofs" not in credential_request:
         raise OAuthEndpointError("invalid_proof")
+    if "proof" in credential_request and "proofs" in credential_request:
+        raise OAuthEndpointError("invalid_proof", description="proof and proofs must not both be present")
 
-    proof = credential_request.get("proof")
-    if proof is not None:
+    if "proof" in credential_request:
+        proof = credential_request["proof"]
+        if not isinstance(proof, dict):
+            raise OAuthEndpointError("invalid_proof")
         proof_type = proof.get("proof_type")
         if proof_type is None or (proof_type in ("attestation", "jwt") and proof_type not in proof):
             raise OAuthEndpointError("invalid_proof")
+    else:
+        proofs = credential_request["proofs"]
+        if not isinstance(proofs, dict) or len(proofs) != 1:
+            raise OAuthEndpointError("invalid_proof", description="proofs must contain exactly one proof type")
 
     if "credential_configuration_id" not in credential_request:
         # This issuer's credential identifiers are its configuration ids.
@@ -360,29 +396,39 @@ def _authorized_configuration_ids(current_session: Any) -> set:
     return authorized
 
 
-def require_authorized_configuration(session_id: str, credential_request: Dict[str, Any]) -> None:
+def require_authorized_configuration(
+    session_id: str, credential_request: Dict[str, Any], by_identifier: bool = False
+) -> None:
     """Rejects a credential the access token was not authorized for.
 
     Args:
         session_id: The access token's issuance session.
         credential_request: Validated credential request.
+        by_identifier: The wallet sent ``credential_identifier`` (the
+            identifiers it may use are those of its access token).
 
     Raises:
-        OAuthEndpointError: ``401 invalid_token`` for an unknown session,
-            ``400 unknown_credential_configuration`` for a credential that was
-            not part of the authorization (scope / authorization_details).
+        OAuthEndpointError: ``401 invalid_token`` for an unknown session;
+            ``400 unknown_credential_identifier`` for an identifier not
+            issued with the access token; ``403 insufficient_scope`` for a
+            supported credential configuration the access token does not
+            cover (OpenID4VCI 1.0 section 8.3.1.1, RFC 6750 section 3.1);
+            ``400 unknown_credential_configuration`` for an unsupported one.
     """
     current_session = session_manager.get_session(session_id=session_id)
     if current_session is None:
         raise OAuthEndpointError("invalid_token", status=401)
-    if credential_request.get("credential_configuration_id") not in _authorized_configuration_ids(current_session):
-        logger.warning(
-            f", Session ID: {safe(session_id, 64)}, Credential not authorized: "
-            f"{safe(credential_request.get('credential_configuration_id'), 100)}"
-        )
+    requested = credential_request.get("credential_configuration_id")
+    if requested in _authorized_configuration_ids(current_session):
+        return
+    logger.warning(f", Session ID: {safe(session_id, 64)}, Credential not authorized: {safe(requested, 100)}")
+    if by_identifier:
+        raise OAuthEndpointError("unknown_credential_identifier", description="Unknown credential identifier")
+    if requested in (oidc_metadata.get("credential_configurations_supported") or {}):
         raise OAuthEndpointError(
-            "unknown_credential_configuration", description="Credential not authorized for this access token"
+            "insufficient_scope", 403, "The access token does not authorize this credential configuration"
         )
+    raise OAuthEndpointError("unknown_credential_configuration", description="Unknown credential configuration")
 
 
 def require_valid_response_encryption(credential_request: Dict[str, Any]) -> None:
@@ -420,9 +466,9 @@ def encrypt_response(credential_request: Dict[str, Any], credential_response: Di
     encryption_config = credential_request.get("credential_response_encryption", {})
 
     def error(description: str) -> Response:
-        """Builds an ``invalid_credential_response_encryption`` 400 response."""
+        """Builds an ``invalid_encryption_parameters`` 400 response (OpenID4VCI 1.0 section 8.3.1.2)."""
         return make_response(
-            jsonify({"error": "invalid_credential_response_encryption", "error_description": description}),
+            jsonify(error_body("invalid_encryption_parameters", description)),
             400,
         )
 
@@ -655,14 +701,7 @@ def credential() -> HandlerResult:
         ``200`` with the credential(s), ``202`` with a ``transaction_id``
         for deferred issuance, or an error response.
     """
-    auth_header = request.headers.get("Authorization")
-    if not auth_header:
-        return make_response(jsonify({"error": "invalid_request"}), 401)
-    if not auth_header.lower().startswith(("bearer ", "dpop ")):
-        return make_response(jsonify({"error": "invalid_token"}), 401)
-    bearer_token = _bearer_token(auth_header)
-    if bearer_token is None:
-        return make_response(jsonify({"error": "invalid_token"}), 401)
+    bearer_token = _access_token()
 
     credential_request = _read_credential_request("invalid_credential_request")
 
@@ -671,21 +710,22 @@ def credential() -> HandlerResult:
         return introspection
     session_id, wia_client_status = introspection
 
+    by_identifier = "credential_configuration_id" not in credential_request
     validated_request = verify_credential_request(credential_request)
     logger.info(f", Session ID: {session_id}, Credential Request, {summarize_credential_request(validated_request)}")
-    require_authorized_configuration(session_id, validated_request)
+    require_authorized_configuration(session_id, validated_request, by_identifier=by_identifier)
     require_valid_response_encryption(validated_request)
 
     holder_keys = ProvenKeys()
     response = _issue(validated_request, session_id, wia_client_status, holder_keys)
-    _add_notification_id(session_id, response)
 
     if response.get("error", "Pending") != "Pending":
         logger.warning(
             f", Session ID: {session_id}, Credential request denied: "
             f"error={safe(response.get('error'))} description={safe(response.get('error_description'))}"
         )
-        return jsonify(response), 400
+        # OpenID4VCI 1.0 section 8.3.1.2: only error / error_description.
+        return jsonify(error_body(response["error"], response.get("error_description"))), 400
 
     is_deferred = (
         response.get("error") == "Pending"
@@ -701,6 +741,10 @@ def credential() -> HandlerResult:
             holder_keys=holder_keys,
         )
         response = {"transaction_id": transaction_id, "interval": DEFERRED_INTERVAL_SECONDS}
+    else:
+        # OpenID4VCI 1.0 section 8.3: notification_id only with issued credentials
+        # (never in error or deferred responses).
+        _add_notification_id(session_id, response)
 
     return _finish(session_id, response, is_deferred, validated_request)
 
@@ -727,29 +771,30 @@ def notification() -> HandlerResult:
     request is logged before that check.
 
     Returns:
-        ``204`` on success, ``400`` ``invalid_notification_id`` for an unknown
-        or foreign id, ``401`` for authorization errors.
+        ``204`` on success; ``400`` ``invalid_notification_request`` for a
+        malformed request (no JSON object, missing or non-string
+        ``notification_id``, unknown ``event``), ``400``
+        ``invalid_notification_id`` for an unknown or foreign id (OpenID4VCI
+        1.0 section 11.3); ``401`` / ``403`` for access token errors.
     """
-    notification_request = request.get_json(silent=True)
-    if not isinstance(notification_request, dict):
-        notification_request = {}
-
-    auth_header = request.headers.get("Authorization")
-    if not auth_header:
-        return jsonify({"error": "Authorization header is missing"}), 401
-    if not auth_header.lower().startswith(("bearer ", "dpop ")):
-        return jsonify({"error": "Authorization header must be a Bearer or DPoP token"}), 401
-    bearer_token = _bearer_token(auth_header)
-    if bearer_token is None:
-        return jsonify({"error": "Invalid Authorization header format"}), 401
+    bearer_token = _access_token()
 
     introspection = verify_introspection(bearer_token=bearer_token)
     if not _is_introspection_success(introspection):
         return introspection
     session_id, _ = introspection
 
-    notification_id = notification_request.get("notification_id")
-    owner = session_manager.get_session_by_notification_id(notification_id) if isinstance(notification_id, str) else None
+    notification_request = request.get_json(silent=True)
+    if (
+        not isinstance(notification_request, dict)
+        or not isinstance(notification_request.get("notification_id"), str)
+        or notification_request.get("event") not in NOTIFICATION_EVENTS
+    ):
+        logger.warning(f", Session ID: {safe(session_id, 64)}, Notification rejected: malformed request")
+        return jsonify({"error": "invalid_notification_request"}), 400
+
+    notification_id = notification_request["notification_id"]
+    owner = session_manager.get_session_by_notification_id(notification_id)
     if owner is None or owner.session_id != session_id:
         logger.warning(f", Session ID: {safe(session_id, 64)}, Notification rejected: unknown notification_id")
         return jsonify({"error": "invalid_notification_id"}), 400
@@ -788,25 +833,20 @@ def deferred_credential() -> HandlerResult:
         ``200`` with the credential(s), ``202`` while still pending, or an
         error response.
     """
-    deferred_request = _read_credential_request("Invalid JWT credential request")
+    bearer_token = _access_token()
+    deferred_request = _read_credential_request("invalid_credential_request")
 
-    if "transaction_id" not in deferred_request:
-        return jsonify({"error": "invalid_transaction_id"}), 401
-
-    deferred_transaction_id = deferred_request["transaction_id"]
+    deferred_transaction_id = deferred_request.get("transaction_id")
+    if not isinstance(deferred_transaction_id, str):
+        # OpenID4VCI 1.0 section 9.3 / 8.3.1.2: a missing required parameter.
+        raise OAuthEndpointError("invalid_credential_request", description="transaction_id is required")
     try:
         uuid.UUID(deferred_transaction_id, version=4)
-    except (ValueError, AttributeError):
-        return jsonify({"error": "invalid_transaction_id_format"}), 401
+    except ValueError:
+        # Never issued by this issuer (its transaction ids are UUIDs).
+        raise OAuthEndpointError("invalid_transaction_id") from None
 
     logger.debug(f"Deferred credential request received, Transaction ID: {deferred_transaction_id}")
-
-    auth_header = request.headers.get("Authorization")
-    if not auth_header:
-        return jsonify({"error": "Authorization header is missing"}), 401
-    bearer_token = _bearer_token(auth_header)
-    if bearer_token is None:
-        return jsonify({"error": "Invalid Authorization header format"}), 401
 
     introspection = verify_introspection(bearer_token=bearer_token)
     if not _is_introspection_success(introspection):
@@ -822,7 +862,7 @@ def deferred_credential() -> HandlerResult:
             "invalid_transaction_id", 400, "The transaction ID is not associated with this session."
         )
 
-    validated_request = verify_credential_request(current_session.transaction_id[deferred_transaction_id])
+    validated_request = verify_credential_request(current_session.transaction_id[deferred_transaction_id], stored=True)
     require_valid_response_encryption(deferred_request)
     holder_keys = current_session.deferred_holder_keys.get(deferred_transaction_id)
     if holder_keys is None:
@@ -836,11 +876,14 @@ def deferred_credential() -> HandlerResult:
             f", Session ID: {session_id}, Deferred credential request denied: "
             f"error={safe(response.get('error'))} description={safe(response.get('error_description'))}"
         )
-        return jsonify(response), 400
+        # OpenID4VCI 1.0 section 8.3.1.2: only error / error_description.
+        return jsonify(error_body(response["error"], response.get("error_description"))), 400
 
     if is_deferred:
         response = {"transaction_id": deferred_transaction_id, "interval": DEFERRED_INTERVAL_SECONDS}
     else:
+        # OpenID4VCI 1.0 section 9.1: the transaction_id is invalidated once the credential is obtained.
+        session_manager.remove_transaction_id(session_id, deferred_transaction_id)
         _add_notification_id(session_id, response)
 
     logger.info(

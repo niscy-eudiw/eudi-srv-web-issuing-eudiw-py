@@ -241,8 +241,10 @@ class TestCredentialEndpoint:
             "/credential", json={"credential_configuration_id": "test-cred"}
         )
 
+        # RFC 6750 section 3.1: no credentials -> 401 challenge without an error code.
         assert response.status_code == 401
-        assert response.json["error"] == "invalid_request"
+        assert "error" not in response.json
+        assert "WWW-Authenticate" in response.headers
 
     def test_credential_invalid_bearer_format(self, client):
         """Test credential endpoint with invalid bearer format"""
@@ -252,8 +254,10 @@ class TestCredentialEndpoint:
             json={"credential_configuration_id": "test-cred"},
         )
 
+        # RFC 6750 section 3.1: an unsupported scheme is treated like no credentials.
         assert response.status_code == 401
-        assert response.json["error"] == "invalid_token"
+        assert "error" not in response.json
+        assert "WWW-Authenticate" in response.headers
 
     @patch("app.routes.oidc.verify_introspection")
     def test_credential_invalid_token(self, mock_introspect, client):
@@ -447,8 +451,9 @@ class TestDeferredCredential:
             "/deferred_credential", headers={"Authorization": "Bearer token"}, json={}
         )
 
-        assert response.status_code == 401
-        assert response.json["error"] == "invalid_transaction_id"
+        # OpenID4VCI 1.0 section 9.3 / 8.3.1.2: missing parameter.
+        assert response.status_code == 400
+        assert response.json["error"] == "invalid_credential_request"
 
     def test_deferred_invalid_transaction_id_format(self, client):
         """Test deferred request with invalid UUID format"""
@@ -458,8 +463,8 @@ class TestDeferredCredential:
             json={"transaction_id": "not-a-valid-uuid"},
         )
 
-        assert response.status_code == 401
-        assert response.json["error"] == "invalid_transaction_id_format"
+        assert response.status_code == 400
+        assert response.json["error"] == "invalid_transaction_id"
 
     @patch("app.routes.oidc.verify_introspection")
     @patch("app.routes.oidc.generate_credentials")
@@ -583,7 +588,7 @@ class TestNotification:
             response = client.post(
             "/notification",
                 headers={"Authorization": "Bearer token"},
-                json={"notification_id": "test-notification"},
+                json={"notification_id": "test-notification", "event": "credential_accepted"},
             )
 
         assert response.status_code == 204
@@ -819,7 +824,7 @@ class TestEncryptResponse:
         assert "kid" not in json.loads(token.objects["protected"])
 
     def test_encrypt_response_invalid_jwk(self, app):
-        """An unusable wallet key yields invalid_credential_response_encryption"""
+        """An unusable wallet key yields invalid_encryption_parameters"""
         from app.routes.oidc import encrypt_response
 
         credential_request = {

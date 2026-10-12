@@ -2378,7 +2378,7 @@ class TestIssuingCountryCode:
 
     CONFIG = {
         "countries": {
-            "FC": {"connection_type": "form", "issuing_country": "UT"},
+            "FC": {"connection_type": "form", "issuing_country": "LU"},
             "PT": {"connection_type": "openid"},
         }
     }
@@ -2390,7 +2390,7 @@ class TestIssuingCountryCode:
     def test_configured_code_is_used(self):
         from app.services.countries import issuing_country_code
 
-        assert issuing_country_code("FC") == "UT"
+        assert issuing_country_code("FC") == "LU"
 
     def test_falls_back_to_country_key(self):
         from app.services.countries import issuing_country_code
@@ -2401,7 +2401,7 @@ class TestIssuingCountryCode:
     def test_form_formatter_writes_code(self):
         from app.services.presentation import form_formatter
 
-        assert form_formatter({"family_name": "Doe"}, issuing_country="FC")["issuing_country"] == "UT"
+        assert form_formatter({"family_name": "Doe"}, issuing_country="FC")["issuing_country"] == "LU"
 
     def test_credential_creation_writes_code(self):
         metadata = {
@@ -2419,4 +2419,4 @@ class TestIssuingCountryCode:
                 "session_123",
             )
 
-        assert formatter.call_args[0][2]["issuing_country"] == "UT"
+        assert formatter.call_args[0][2]["issuing_country"] == "LU"

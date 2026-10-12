@@ -207,9 +207,11 @@ class TestCredentialEndpoint:
             },
         )
 
+        # RFC 6750 section 3.1: no credentials -> 401 challenge without an error code.
         assert response.status_code == 401
         data = json.loads(response.data)
-        assert data["error"] == "invalid_request"
+        assert "error" not in data
+        assert response.headers["WWW-Authenticate"].startswith("Bearer")
 
     def test_invalid_authorization_header_format(self, client, mock_dependencies):
         """Test request with invalid Authorization header format"""
@@ -219,9 +221,11 @@ class TestCredentialEndpoint:
             headers={"Authorization": "Basic invalid"},
         )
 
+        # RFC 6750 section 3.1: an unsupported scheme is treated like no credentials.
         assert response.status_code == 401
         data = json.loads(response.data)
-        assert "invalid_token" in data["error"]
+        assert "error" not in data
+        assert "WWW-Authenticate" in response.headers
 
     def test_authorization_header_without_token(self, client, mock_dependencies):
         """Test request with Authorization header but no token"""
@@ -431,7 +435,7 @@ class TestCredentialEndpoint:
             mock_response = make_response(
                 jsonify(
                     {
-                        "error": "invalid_credential_response_encryption",
+                        "error": "invalid_encryption_parameters",
                         "error_description": "Missing alg field in credential_response_encryption.",
                     }
                 ),

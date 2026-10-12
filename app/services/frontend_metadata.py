@@ -23,14 +23,15 @@ templates in ``metadata_config/`` and the backend's public metadata
 (:data:`app.core.state.oidc_metadata_clean`), exactly as the frontend used to
 do at start-up:
 
-* ``credential_configurations_supported``, ``credential_request_encryption``
-  and ``issuer_info`` come from the backend metadata, optionally filtered by
-  the frontend's ``credentials_supported`` list;
+* ``credential_configurations_supported`` and ``credential_request_encryption``
+  come from the backend metadata, the former optionally filtered by the
+  frontend's ``credentials_supported`` list;
 * template URLs on ``<template domain>/oidc`` point to the authorization
   server (``oauth_url``), all other template URLs to the backend
   (``service_url``);
 * ``credential_issuer``, the OpenID ``issuer``, the PAR endpoint and the
-  display logo point to the frontend's own URL.
+  display logo point to the frontend's own URL;
+* ``issuer_info`` carries the frontend's own registration certificate.
 
 Per-frontend configuration keys:
     url (required): Public URL of the frontend (the credential issuer identifier).
@@ -38,6 +39,9 @@ Per-frontend configuration keys:
         absent for all.
     oauth_url (optional): Public authorization server URL; defaults to
         ``authorization_server.base_url``.
+    registration_certificate_path (optional): Text file holding the
+        frontend's registration certificate (``rc-wrp+jwt``), published as
+        ``issuer_info`` in the unsigned and signed metadata.
 """
 
 from __future__ import annotations
@@ -55,7 +59,7 @@ from app.services.metadata import METADATA_DIR, replace_domain, sign_issuer_meta
 from app.utils.frontend import frontend_config
 
 TEMPLATE_DIR = METADATA_DIR
-_COPIED_BACKEND_FIELDS = ("credential_request_encryption", "issuer_info")
+_COPIED_BACKEND_FIELDS = ("credential_request_encryption",)
 
 
 class UnknownFrontendError(KeyError):
@@ -186,6 +190,10 @@ def build_frontend_metadata(frontend_id: str) -> FrontendMetadata:
     openid_configuration["pushed_authorization_request_endpoint"] = f"{frontend_url}/pushed_authorization"
     issuer_metadata["credential_issuer"] = frontend_url
     issuer_metadata["display"][0]["logo"]["uri"] = f"{frontend_url}/ic-logo.png"
+    if frontend.get("registration_certificate"):
+        issuer_metadata["issuer_info"] = [
+            {"format": "registration_cert", "data": frontend["registration_certificate"]}
+        ]
 
     return FrontendMetadata(
         openid_credential_issuer=issuer_metadata,

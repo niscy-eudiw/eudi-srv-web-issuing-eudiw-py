@@ -34,6 +34,7 @@ Attributes:
 from __future__ import annotations
 
 import os
+import re
 from typing import Any
 
 import yaml
@@ -42,6 +43,86 @@ from dotenv import load_dotenv
 load_dotenv()
 
 DEFAULT_CONFIG_PATH = "/etc/issuer_config/config_issuer_backend.yaml"
+
+#: ``${name}`` placeholder of a value defined in the ``variables`` section.
+_PLACEHOLDER = re.compile(r"\$\{([A-Za-z0-9_]+)\}")
+
+
+def _substitute(text: str, variables: dict[str, str]) -> str:
+    """Replaces the ``${name}`` placeholders of ``text``.
+
+    Args:
+        text: String value of the configuration.
+        variables: Resolved variables.
+
+    Returns:
+        ``text`` with every placeholder replaced by its variable.
+
+    Raises:
+        RuntimeError: If a placeholder names an undefined variable.
+    """
+
+    def replace(match: re.Match[str]) -> str:
+        name = match.group(1)
+        if name not in variables:
+            raise RuntimeError(f"Undefined config variable: ${{{name}}}")
+        return variables[name]
+
+    return _PLACEHOLDER.sub(replace, text)
+
+
+def _interpolate(value: Any, variables: dict[str, str]) -> Any:
+    """Substitutes the variables in every string of ``value``, recursively.
+
+    Dictionaries and lists are rebuilt, so values shared through YAML aliases
+    become independent copies.
+
+    Args:
+        value: Configuration value.
+        variables: Resolved variables.
+
+    Returns:
+        The value with its placeholders replaced.
+    """
+    if isinstance(value, dict):
+        return {key: _interpolate(item, variables) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_interpolate(item, variables) for item in value]
+    if isinstance(value, str):
+        return _substitute(value, variables)
+    return value
+
+
+def resolve_variables(config: dict[str, Any]) -> dict[str, Any]:
+    """Applies the top-level ``variables`` section to the configuration.
+
+    ``variables`` maps names to strings; any string value of the
+    configuration may then use ``${name}``, e.g.
+    ``"${keys_dir}/PID-DS-0002_PT.pem"``. A variable may use the variables
+    defined before it. The section is removed from the result.
+
+    Args:
+        config: Parsed YAML configuration.
+
+    Returns:
+        A new configuration with the placeholders replaced.
+
+    Raises:
+        RuntimeError: If ``variables`` is not a mapping of strings, or a
+            placeholder names an undefined variable.
+    """
+    config = dict(config)
+    raw = config.pop("variables", None) or {}
+    if not isinstance(raw, dict):
+        raise RuntimeError("Config section 'variables' must be a mapping")
+
+    variables: dict[str, str] = {}
+    for name, value in raw.items():
+        if not isinstance(value, str):
+            raise RuntimeError(f"Config variable '{name}' must be a string")
+        variables[name] = _substitute(value, variables)
+
+    return _interpolate(config, variables)
 
 
 def _load_file(path: str) -> bytes:
@@ -60,12 +141,40 @@ def _load_file(path: str) -> bytes:
         return f.read()
 
 
+def _load_registration_certificate(frontend_id: str, path: str) -> str:
+    """Reads the registration certificate (``rc-wrp+jwt``) of a frontend.
+
+    Only the compact JWS form is checked; the signature and validity are
+    for the wallet to verify.
+
+    Args:
+        frontend_id: Frontend the certificate belongs to (for errors).
+        path: Text file holding the JWT.
+
+    Returns:
+        The JWT, surrounding whitespace removed.
+
+    Raises:
+        OSError: If the file cannot be read.
+        RuntimeError: If the file does not hold a compact JWS.
+    """
+    try:
+        token = _load_file(path).decode("ascii").strip()
+    except UnicodeDecodeError as e:
+        raise RuntimeError(f"Registration certificate of frontend {frontend_id} is not a JWT: {path}") from e
+    parts = token.split(".")
+    if len(parts) != 3 or not all(parts):
+        raise RuntimeError(f"Registration certificate of frontend {frontend_id} is not a JWT: {path}")
+    return token
+
+
 def process_config(config: dict[str, Any]) -> dict[str, Any]:
     """Loads all key/certificate files referenced by the configuration.
 
     For every frontend, the global ``keys`` section and every country key
     entry, the ``*_path`` value is read and the bytes are stored under the
-    matching key without the ``_path`` suffix.
+    matching key without the ``_path`` suffix. A frontend's optional
+    ``registration_certificate_path`` is stored as a string (the JWT).
 
     Args:
         config: Parsed YAML configuration. Mutated in place.
@@ -76,12 +185,17 @@ def process_config(config: dict[str, Any]) -> dict[str, Any]:
     Raises:
         OSError: If a referenced key or certificate file cannot be read.
         KeyError: If a mandatory section is missing.
+        RuntimeError: If a registration certificate is not a JWT.
     """
-    for frontend in config["frontend"]["frontends_config"].values():
+    for frontend_id, frontend in config["frontend"]["frontends_config"].items():
         frontend["metadata_signing_key"] = _load_file(frontend["metadata_signing_key_path"])
         frontend["metadata_access_certificate"] = _load_file(
             frontend["metadata_access_certificate_path"]
         )
+        if frontend.get("registration_certificate_path"):
+            frontend["registration_certificate"] = _load_registration_certificate(
+                frontend_id, frontend["registration_certificate_path"]
+            )
 
     keys = config["keys"]
     keys["nonce_key"] = _load_file(keys["nonce_path"])
@@ -107,7 +221,8 @@ def load_config(path: str | None = None) -> dict[str, Any]:
         The processed configuration dictionary.
 
     Raises:
-        RuntimeError: If the file is missing, empty or not valid YAML.
+        RuntimeError: If the file is missing, empty or not valid YAML, or
+            uses an undefined variable.
     """
     config_path = path or os.environ.get("ISSUER_CONFIG_PATH", DEFAULT_CONFIG_PATH)
     try:
@@ -121,7 +236,7 @@ def load_config(path: str | None = None) -> dict[str, Any]:
     if not config:
         raise RuntimeError(f"Config file is empty: {config_path}")
 
-    return process_config(config)
+    return process_config(resolve_variables(config))
 
 
 def mock_config() -> dict[str, Any]:
