@@ -31,7 +31,6 @@ from __future__ import annotations
 import base64
 import copy
 import datetime
-import hashlib
 import json
 import logging
 import os
@@ -48,8 +47,7 @@ from cryptography.hazmat.primitives.serialization import load_pem_private_key
 from app.core import state
 from app.core.config import CONFIGURATION
 from app.services.trust import TRUST_PURPOSES
-from app.utils.crypto import certificate_validity
-from app.utils.encoding import b64url_uint, urlsafe_b64encode_nopad
+from app.utils.crypto import certificate_validity, ec_public_jwk
 from app.utils.frontend import frontend_config
 
 logger = logging.getLogger(__name__)
@@ -161,21 +159,21 @@ def _build_credential_encryption_metadata(key_bytes: bytes) -> Dict[str, Any]:
     if not isinstance(private_key, ec.EllipticCurvePrivateKey):
         raise ValueError("credential_encryption_key must be a P-256 EC private key")
 
-    nums = private_key.public_key().public_numbers()
-    key_size = (private_key.key_size + 7) // 8
-    x_b64 = b64url_uint(nums.x, key_size)
-    y_b64 = b64url_uint(nums.y, key_size)
+    jwk = ec_public_jwk(private_key)
 
-    thumbprint_json = json.dumps(
-        {"crv": "P-256", "kty": "EC", "x": x_b64, "y": y_b64}, separators=(",", ":"), sort_keys=True
-    ).encode()
-    kid = urlsafe_b64encode_nopad(hashlib.sha256(thumbprint_json).digest())
-
-    logger.debug("credential_request_encryption metadata built (kid=%s, crv=P-256)", kid)
+    logger.debug("credential_request_encryption metadata built (kid=%s, crv=%s)", jwk["kid"], jwk["crv"])
     return {
         "jwks": {
             "keys": [
-                {"kty": "EC", "use": "enc", "alg": "ECDH-ES", "crv": "P-256", "x": x_b64, "y": y_b64, "kid": kid}
+                {
+                    "kty": "EC",
+                    "use": "enc",
+                    "alg": "ECDH-ES",
+                    "crv": jwk["crv"],
+                    "x": jwk["x"],
+                    "y": jwk["y"],
+                    "kid": jwk["kid"],
+                }
             ]
         },
         "enc_values_supported": list(ENCRYPTION_ENC_VALUES),

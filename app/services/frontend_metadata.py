@@ -36,7 +36,10 @@ do at start-up:
   point to the frontend's own URL (the credential issuer is its own
   authorization server: RFC 8414 requires ``issuer`` to match the URL the
   metadata is served under);
-* ``issuer_info`` carries the frontend's own registration certificate.
+* ``issuer_info`` carries the frontend's own registration certificate;
+* the SD-JWT VC issuer metadata (``/.well-known/jwt-vc-issuer``) has the
+  frontend URL as ``issuer`` (the ``iss`` of the SD-JWT VCs it issues) and
+  the public keys of the country ``_default`` certificates that sign them.
 
 Per-frontend configuration keys:
     url (required): Public URL of the frontend (the credential issuer identifier).
@@ -53,6 +56,7 @@ from __future__ import annotations
 
 import copy
 import json
+import logging
 from dataclasses import asdict, dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -61,7 +65,10 @@ from typing import Any, Dict, Optional
 from app.core.config import CONFIGURATION
 from app.core.state import oidc_metadata_clean
 from app.services.metadata import METADATA_DIR, replace_domain, sign_issuer_metadata
+from app.utils.crypto import ec_signing_jwk_from_cert
 from app.utils.frontend import frontend_config
+
+logger = logging.getLogger(__name__)
 
 TEMPLATE_DIR = METADATA_DIR
 _COPIED_BACKEND_FIELDS = ("credential_request_encryption",)
@@ -79,11 +86,13 @@ class FrontendMetadata:
         openid_credential_issuer: ``/.well-known/openid-credential-issuer``.
         openid_configuration: ``/.well-known/openid-configuration``.
         oauth_authorization_server: ``/.well-known/oauth-authorization-server``.
+        jwt_vc_issuer: ``/.well-known/jwt-vc-issuer`` (SD-JWT VC issuer metadata).
     """
 
     openid_credential_issuer: Dict[str, Any]
     openid_configuration: Dict[str, Any]
     oauth_authorization_server: Dict[str, Any]
+    jwt_vc_issuer: Dict[str, Any]
 
     def to_dict(self) -> Dict[str, Dict[str, Any]]:
         """Returns the documents keyed by attribute name."""
@@ -160,6 +169,34 @@ def _supported_credentials(allowed: Optional[Any]) -> Dict[str, Any]:
     return {cid: cfg for cid, cfg in credentials.items() if cid in allowed_ids}
 
 
+def _sd_jwt_signing_jwks() -> Dict[str, Any]:
+    """Returns the JWKS of the keys that sign SD-JWT VCs.
+
+    SD-JWT VCs are signed with the ``_default`` key of the issuing country
+    (:func:`app.services.formatters.sdjwtFormatter`), whatever the frontend,
+    so every country's ``_default`` certificate is published. Certificates
+    shared between countries are listed once.
+
+    Returns:
+        ``{"keys": [...]}`` (see :func:`app.utils.crypto.ec_signing_jwk_from_cert`).
+    """
+    keys = []
+    seen = set()
+    for country_code, country in (CONFIGURATION.get("countries") or {}).items():
+        cert_der = (country.get("keys") or {}).get("_default", {}).get("certificate")
+        if not cert_der:
+            continue
+        try:
+            jwk = ec_signing_jwk_from_cert(cert_der)
+        except ValueError as e:
+            logger.warning("jwt-vc-issuer: skipping the %s signing certificate: %s", country_code, e)
+            continue
+        if jwk["kid"] not in seen:
+            seen.add(jwk["kid"])
+            keys.append(jwk)
+    return {"keys": keys}
+
+
 def build_frontend_metadata(frontend_id: str) -> FrontendMetadata:
     """Builds the unsigned metadata documents of a frontend.
 
@@ -206,6 +243,8 @@ def build_frontend_metadata(frontend_id: str) -> FrontendMetadata:
         openid_credential_issuer=issuer_metadata,
         openid_configuration=openid_configuration,
         oauth_authorization_server=oauth_authorization_server,
+        # Must be identical to the iss of the SD-JWT VCs (formatters.credential_issuer_url).
+        jwt_vc_issuer={"issuer": frontend_url, "jwks": _sd_jwt_signing_jwks()},
     )
 
 

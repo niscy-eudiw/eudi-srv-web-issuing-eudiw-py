@@ -1,6 +1,8 @@
 """Tests for per-frontend issuer metadata (unsigned + signed) and its endpoints."""
 
+import base64
 import copy
+import hashlib
 import json
 
 import jwt
@@ -18,6 +20,7 @@ from app.services.frontend_metadata import (
     sign_frontend_metadata,
 )
 from app.services.metadata import replace_domain
+from app.utils.encoding import urlsafe_b64encode_nopad
 from config_helpers import patch_configuration
 from pki_helpers import make_cert
 
@@ -257,6 +260,60 @@ class TestRegistrationCertificate:
         assert "issuer_info" not in issuer
 
 
+def _country_cert_der(name):
+    key = ec.generate_private_key(ec.SECP256R1())
+    cert = make_cert(name, name, key.public_key(), key, ca=False)
+    return cert.public_bytes(serialization.Encoding.DER)
+
+
+class TestJwtVcIssuer:
+    @pytest.fixture(scope="class")
+    def certs(self):
+        return {"EU": _country_cert_der("EU DS"), "LU": _country_cert_der("LU DS"), "fe": _country_cert_der("FE DS")}
+
+    def _config(self, signing_material, certs):
+        cfg = _config(signing_material)
+        cfg["frontend"]["frontends_config"]["fe-2"] = {
+            **cfg["frontend"]["frontends_config"][FRONTEND_ID],
+            "url": "https://other-frontend.test",
+        }
+        cfg["countries"] = {
+            "EU": {"keys": {"_default": {"certificate": certs["EU"]}}},
+            # Countries sharing a certificate (FC, AV... reuse LU's).
+            "LU": {"keys": {"_default": {"certificate": certs["LU"]}, FRONTEND_ID: {"certificate": certs["fe"]}}},
+            "FC": {"keys": {"_default": {"certificate": certs["LU"]}}},
+            "XX": {"keys": {"_default": {"certificate": b"not a certificate"}}},
+        }
+        return cfg
+
+    def test_issuer_is_each_frontend_url(self, signing_material, certs):
+        with patch_configuration(self._config(signing_material, certs)):
+            first = build_frontend_metadata(FRONTEND_ID).jwt_vc_issuer
+            second = build_frontend_metadata("fe-2").jwt_vc_issuer
+
+        assert first["issuer"] == FRONTEND_URL
+        assert second["issuer"] == "https://other-frontend.test"
+        assert first["jwks"] == second["jwks"]
+
+    def test_default_country_keys_once(self, signing_material, certs):
+        with patch_configuration(self._config(signing_material, certs)):
+            keys = build_frontend_metadata(FRONTEND_ID).jwt_vc_issuer["jwks"]["keys"]
+
+        # EU and LU (shared by FC) only: frontend-keyed entries do not sign
+        # SD-JWTs and the unparsable certificate is skipped.
+        assert [k["x5c"] for k in keys] == [
+            [base64.b64encode(certs["EU"]).decode()],
+            [base64.b64encode(certs["LU"]).decode()],
+        ]
+        for key in keys:
+            assert key["use"] == "sig" and key["alg"] == "ES256" and key["crv"] == "P-256"
+            assert "d" not in key
+            thumbprint = json.dumps(
+                {"crv": key["crv"], "kty": "EC", "x": key["x"], "y": key["y"]}, separators=(",", ":"), sort_keys=True
+            )
+            assert key["kid"] == urlsafe_b64encode_nopad(hashlib.sha256(thumbprint.encode()).digest())
+
+
 class TestEndpoints:
     PATHS = [
         ("get", f"/metadata/{FRONTEND_ID}"),
@@ -279,8 +336,14 @@ class TestEndpoints:
 
         assert response.status_code == 200
         body = response.get_json()
-        assert set(body) == {"openid_credential_issuer", "openid_configuration", "oauth_authorization_server"}
+        assert set(body) == {
+            "openid_credential_issuer",
+            "openid_configuration",
+            "oauth_authorization_server",
+            "jwt_vc_issuer",
+        }
         assert body["openid_credential_issuer"]["credential_issuer"] == FRONTEND_URL
+        assert body["jwt_vc_issuer"] == {"issuer": FRONTEND_URL, "jwks": {"keys": []}}
 
     def test_signed_document(self, client, config, signing_material):
         response = client.get(f"/metadata/{FRONTEND_ID}/signed", headers=HEADERS)

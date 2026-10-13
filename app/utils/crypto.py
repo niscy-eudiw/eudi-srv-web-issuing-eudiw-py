@@ -19,19 +19,29 @@
 
 from __future__ import annotations
 
+import base64
 import datetime
-from typing import Optional, Tuple, Union
+import hashlib
+import json
+from typing import Any, Dict, Optional, Tuple, Union
 
 from cryptography import x509
 from cryptography.hazmat.primitives.asymmetric import ec
 
-from app.utils.encoding import int_to_bytes
+from app.utils.encoding import b64url_uint, int_to_bytes, urlsafe_b64encode_nopad
 
 #: Mapping of ``cryptography`` curve names to JOSE ``crv`` identifiers.
 CURVE_TO_JWK = {
     "secp256r1": "P-256",
     "secp384r1": "P-384",
     "secp521r1": "P-521",
+}
+
+#: JWS ``alg`` of each JOSE curve.
+JWK_CURVE_TO_ALG = {
+    "P-256": "ES256",
+    "P-384": "ES384",
+    "P-521": "ES512",
 }
 
 EcKey = Union[ec.EllipticCurvePublicKey, ec.EllipticCurvePrivateKey]
@@ -111,3 +121,53 @@ def certificate_validity(certificate: x509.Certificate) -> Tuple[datetime.dateti
         return getattr(certificate, naive_name).replace(tzinfo=datetime.timezone.utc)
 
     return utc("not_valid_before_utc", "not_valid_before"), utc("not_valid_after_utc", "not_valid_after")
+
+
+def ec_public_jwk(key: EcKey) -> Dict[str, str]:
+    """Builds the public JWK of an EC key.
+
+    The coordinates are sized to the curve and the ``kid`` is the RFC 7638
+    JWK thumbprint (SHA-256).
+
+    Args:
+        key: EC public or private key (only the public part is exported).
+
+    Returns:
+        ``{"kty", "crv", "x", "y", "kid"}``.
+
+    Raises:
+        ValueError: If the key is not an EC key on a supported curve.
+    """
+    if not isinstance(key, (ec.EllipticCurvePublicKey, ec.EllipticCurvePrivateKey)):
+        raise ValueError("Only EC keys are supported")
+    crv = jwk_curve(key)
+    if crv is None:
+        raise ValueError(f"Unsupported EC curve: {key.curve.name}")
+
+    numbers = ec_public_numbers(key)
+    size = (key.curve.key_size + 7) // 8
+    jwk = {"kty": "EC", "crv": crv, "x": b64url_uint(numbers.x, size), "y": b64url_uint(numbers.y, size)}
+    thumbprint_json = json.dumps(jwk, separators=(",", ":"), sort_keys=True).encode()
+    jwk["kid"] = urlsafe_b64encode_nopad(hashlib.sha256(thumbprint_json).digest())
+    return jwk
+
+
+def ec_signing_jwk_from_cert(cert_der: bytes) -> Dict[str, Any]:
+    """Builds the signing JWK of a DER encoded EC certificate.
+
+    Args:
+        cert_der: DER encoded X.509 certificate.
+
+    Returns:
+        :func:`ec_public_jwk` plus ``use``, ``alg``, ``x5c`` and ``x5t#S256``.
+
+    Raises:
+        ValueError: If the certificate cannot be parsed or its key is not a
+            supported EC key.
+    """
+    jwk: Dict[str, Any] = ec_public_jwk(x509.load_der_x509_certificate(cert_der).public_key())
+    jwk["use"] = "sig"
+    jwk["alg"] = JWK_CURVE_TO_ALG[jwk["crv"]]
+    jwk["x5c"] = [base64.b64encode(cert_der).decode("utf-8")]
+    jwk["x5t#S256"] = urlsafe_b64encode_nopad(hashlib.sha256(cert_der).digest())
+    return jwk

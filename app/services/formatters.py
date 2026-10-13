@@ -49,7 +49,7 @@ from app.core.config import CONFIGURATION
 from app.core.state import session_manager
 from app.repositories.status_store import record_issued_status
 from app.services.revocation_status import reserve_status_entry
-from app.utils.crypto import ec_coordinates, jwk_curve, private_value_bytes
+from app.utils.crypto import ec_coordinates, ec_public_jwk, jwk_curve, private_value_bytes
 from app.utils.dates import date_to_timestamp, format_date
 from app.utils.encoding import urlsafe_b64encode_nopad
 from app.utils.frontend import frontend_url
@@ -392,9 +392,10 @@ def sdjwtFormatter(PID: Dict[str, Any], country: str, scope: Optional[str], sess
     claims.update(sdjwtNestedClaims(pid_data["claims"], PID["credential_metadata"]))
 
     certificate_base64 = base64.b64encode(_country_key_entry(country)["certificate"]).decode("utf-8")
-    x5c = {"x5c": [certificate_base64]}
-
     private_key = load_country_signing_key(country)
+    # kid selects the key in the issuer's /.well-known/jwt-vc-issuer JWKS.
+    header_parameters = {"x5c": [certificate_base64], "kid": ec_public_jwk(private_key)["kid"]}
+
     private_key_curve, private_key_x, private_key_y = KeyData(private_key, "private")
 
     public_key = serialization.load_pem_public_key(base64.urlsafe_b64decode(device_key.encode("utf-8")))
@@ -421,7 +422,7 @@ def sdjwtFormatter(PID: Dict[str, Any], country: str, scope: Optional[str], sess
         keys["issuer_key"],
         keys["holder_key"],
         add_decoy_claims=False,
-        extra_header_parameters=x5c,
+        extra_header_parameters=header_parameters,
     )
     logger.debug(
         f", Session ID: {session_id}, Signed SD-JWT {vct} (country={country}, exp={exp}, "

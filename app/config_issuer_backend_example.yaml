@@ -142,6 +142,9 @@ frontend:
     "5d725b3c-6d42-448e-8bfd-1eff1fcf152d":
       # Public URL of the frontend: the credential issuer identifier, so the
       # expected aud of proofs. Browser origin allowed by CORS / CSRF checks.
+      # It is also the iss of SD-JWT VCs: verifiers fetch the signing keys from
+      # <host>/.well-known/jwt-vc-issuer<path>, so a URL with a path needs a
+      # reverse-proxy rewrite to the frontend's /.well-known/jwt-vc-issuer.
       url: "${frontend_url}"
       # Private key (PEM) and certificate that sign this frontend's
       # signed_metadata. The key is a SECRET; password is null when the key

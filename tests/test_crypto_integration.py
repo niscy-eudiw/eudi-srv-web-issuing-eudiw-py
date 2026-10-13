@@ -18,6 +18,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 
 from app.services.formatters import cbor2elems, mdocFormatter, sdjwtFormatter
+from app.services.frontend_metadata import _sd_jwt_signing_jwks
 from app.services.revocation_status import is_issuer_certificate
 from app.services.trust import verify_and_decode_sdjwt
 from app.services.vp_validation import validate_certificate
@@ -133,6 +134,25 @@ def test_sdjwt_issued_and_verified(issuer_config, device_key):
     assert payload["exp"] > datetime.datetime.now().timestamp()
     assert "cnf" in payload and payload["cnf"]["jwk"]["kty"] == "EC"
     assert payload["_sd"]  # claims are selectively disclosable
+
+
+def test_sdjwt_verifies_with_jwt_vc_issuer_metadata(issuer_config, device_key):
+    """A verifier resolving the key via /.well-known/jwt-vc-issuer finds it by kid."""
+    pid = {
+        "credential_metadata": {"vct": VCT, "issuer_config": {"validity": 30}},
+        "data": {"claims": {"family_name": "Doe"}},
+        "device_publickey": device_key,
+    }
+    issuer_jwt = sdjwtFormatter(pid, "FC", scope=None, session_id=None).split("~")[0]
+
+    jwks = _sd_jwt_signing_jwks()
+
+    kid = jwt.get_unverified_header(issuer_jwt)["kid"]
+    (jwk,) = [k for k in jwks["keys"] if k["kid"] == kid]
+    public_key = jwt.PyJWK(jwk).key
+    payload = jwt.decode(issuer_jwt, public_key, algorithms=[jwk["alg"]], options={"verify_aud": False})
+    # build_frontend_metadata publishes the frontend URL as the issuer.
+    assert payload["iss"] == "https://issuer.test"
 
 
 def test_sdjwt_issuance_does_not_reseed_the_global_prng(issuer_config, device_key):

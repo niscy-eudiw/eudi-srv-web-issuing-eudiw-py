@@ -524,6 +524,7 @@ class TestSDJWTFormatter:
         "app.services.formatters.KeyData",
         side_effect=lambda key, t: ("crv", b"x_bytes", b"y_bytes"),
     )
+    @patch("app.services.formatters.ec_public_jwk", new=lambda key: {"kid": "country-kid"})
     @patch("app.services.formatters.JWK")
     @patch("app.services.formatters.SDJWTIssuer")
     @patch(
@@ -603,6 +604,10 @@ class TestSDJWTFormatter:
         assert claims["vct"] == "vct_value"
         assert "jti" in claims  # learning credential scope
         assert "status" not in claims
+        assert mock_SDJWTIssuer.call_args.kwargs["extra_header_parameters"] == {
+            "x5c": ["encoded_cert"],
+            "kid": "country-kid",
+        }
         mock_load_private_key.assert_called_once()
         mock_load_public_key.assert_called_once()
         mock_sdjwtNestedClaims.assert_called_once_with(
@@ -623,6 +628,7 @@ class TestSDJWTFormatter:
         "app.services.formatters.KeyData",
         side_effect=lambda key, t: ("crv", b"x_bytes", b"y_bytes"),
     )
+    @patch("app.services.formatters.ec_public_jwk", new=lambda key: {"kid": "country-kid"})
     @patch("app.services.formatters.JWK")
     @patch("app.services.formatters.SDJWTIssuer")
     @patch(
