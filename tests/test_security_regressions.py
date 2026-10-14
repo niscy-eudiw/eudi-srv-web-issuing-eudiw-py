@@ -1147,6 +1147,15 @@ class TestDpopAtResourceEndpoints:
         assert response.status_code == 401
         generate.assert_not_called()
 
+    @pytest.mark.parametrize("offset, status", [(30, 200), (-200, 200), (120, 401), (-400, 401)])
+    def test_iat_window(self, credential_client, wallet_key, offset, status):
+        """A wallet clock slightly ahead was rejected: PyJWT allowed no skew on iat."""
+        import time
+
+        client, _ = credential_client
+        proof = self._proof(wallet_key, iat=int(time.time()) + offset)
+        assert self._post(client, {"Authorization": f"DPoP {self.TOKEN}", "DPoP": proof}).status_code == status
+
     def test_introspection_sends_api_key(self):
         from app.services import auth_server
 

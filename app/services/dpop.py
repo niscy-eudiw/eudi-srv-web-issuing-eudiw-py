@@ -139,7 +139,14 @@ def verify_dpop_request(
         raise DPoPError("DPoP proof key is not the key bound to the token")
     try:
         key = jwt.PyJWK.from_dict(jwk).key
-        claims = jwt.decode(proof, key, algorithms=[header["alg"]], options={"require": ["jti", "htm", "htu", "iat", "ath"]})
+        # iat is checked below against the MAX_PROOF_AGE / MAX_CLOCK_SKEW window;
+        # PyJWT's own check allows no skew and would reject proofs first.
+        claims = jwt.decode(
+            proof,
+            key,
+            algorithms=[header["alg"]],
+            options={"require": ["jti", "htm", "htu", "iat", "ath"], "verify_iat": False},
+        )
     except jwt.PyJWTError as e:
         raise DPoPError(f"DPoP proof invalid: {e}") from e
 
