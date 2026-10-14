@@ -33,6 +33,7 @@ import jwt
 from flask import Blueprint, Response, jsonify, request, session
 
 from app.core.config import CONFIGURATION, feature_enabled
+from app.core.constants import IMAGE_ATTRIBUTES
 from app.core.log_utils import safe
 from app.core.security import require_frontend_origin
 from app.core.state import oidc_metadata, session_manager
@@ -213,6 +214,7 @@ def preauth_form() -> str:
         target_url=f"{frontend_url(current_session.frontend_id)}/display_authorization",
         data_payload={
             "presentation_data": presentation_data,
+            "image_attributes": list(IMAGE_ATTRIBUTES),
             "redirect_url": f"{CONFIGURATION['service_url']}/form_authorize_generate",
             "session_id": session_id,
         },

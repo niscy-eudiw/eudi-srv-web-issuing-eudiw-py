@@ -31,7 +31,7 @@ import json
 import re
 from typing import Any, Collection, Dict, FrozenSet, Iterable, List, Mapping, Set, Tuple
 
-from app.core.constants import ConfService as cfgserv
+from app.core.constants import IMAGE_ATTRIBUTES, ConfService as cfgserv
 from app.core.state import oidc_metadata
 from app.services.attributes import getAttributesForm, getAttributesForm2
 from app.services.countries import issuing_country_code
@@ -39,21 +39,6 @@ from app.utils.dates import calculate_age, format_date, to_rfc3339
 
 _KEY_PARTS = re.compile(r"([^\[\]]+)")
 _SKIPPED_FORM_KEYS = ("proceed", "Cancelled", "NumberCategories")
-_IMAGE_FIELDS = (
-    "portrait",
-    "image",
-    "picture",
-    "signature_usual_mark",
-    "signature_usual_mark_issuing_officer",
-)
-#: Fields stored as base64url and shown to the user as standard base64.
-_DISPLAY_DECODED_FIELDS = (
-    "portrait",
-    "image",
-    "signature_usual_mark",
-    "signature_usual_mark_issuing_officer",
-    "picture",
-)
 _SAMPLE_IMAGES = {"Port1": cfgserv.portrait1, "Port2": cfgserv.portrait2}
 EHIC_CONFIGURATION = "eu.europa.ec.eudi.ehic_sd_jwt_vc"
 SEAFARER_CONFIGURATION = "eu.europa.ec.eudi.seafarer_mdoc"
@@ -241,7 +226,7 @@ def form_formatter(form_data: Dict[str, Any], issuing_country: str) -> Dict[str,
 
     # Sample image choices; anything else is the uploaded base64url image.
     final_data = {
-        item: _SAMPLE_IMAGES.get(value, value) if item in _IMAGE_FIELDS and isinstance(value, str) else value
+        item: _SAMPLE_IMAGES.get(value, value) if item in IMAGE_ATTRIBUTES and isinstance(value, str) else value
         for item, value in cleaned_data.items()
     }
     final_data["issuing_country"] = issuing_country_code(issuing_country)
@@ -358,7 +343,7 @@ def _add_issuer_fields(
     data["issuing_country"] = issuing_country_code(country)
 
     if credential_requested == SEAFARER_CONFIGURATION:
-        data["issuing_authority_logo"] = _to_display_base64(cfgserv.issuing_authority_logo)
+        data["issuing_authority_logo"] = cfgserv.issuing_authority_logo
 
     if credential_requested == EHIC_CONFIGURATION:
         data["issuing_authority"] = {
@@ -388,7 +373,7 @@ def _to_display_values(data: Dict[str, Any], scope: str) -> None:
     if isinstance(data.get("driving_privileges"), str):
         data["driving_privileges"] = json.loads(data["driving_privileges"])
 
-    for field in _DISPLAY_DECODED_FIELDS:
+    for field in IMAGE_ATTRIBUTES:
         if field in data:
             data[field] = _to_display_base64(data[field])
 

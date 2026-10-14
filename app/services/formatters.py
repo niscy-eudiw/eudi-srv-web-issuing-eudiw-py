@@ -46,6 +46,7 @@ from sd_jwt.common import SDObj
 from sd_jwt.issuer import SDJWTIssuer
 
 from app.core.config import CONFIGURATION
+from app.core.constants import IMAGE_ATTRIBUTES
 from app.core.state import session_manager
 from app.repositories.status_store import record_issued_status
 from app.services.revocation_status import reserve_status_entry
@@ -56,15 +57,6 @@ from app.utils.frontend import frontend_url
 
 logger = logging.getLogger(__name__)
 
-#: mdoc elements carried as base64url text that must be embedded as bytes.
-MDOC_BINARY_ELEMENTS = (
-    "image",
-    "portrait",
-    "issuing_authority_logo",
-    "signature_usual_mark_issuing_officer",
-    "picture",
-    "signature_usual_mark",
-)
 #: mdoc elements whose value is a CBOR tagged date.
 MDOC_DATE_ELEMENTS = ("birth_date", "expiry_date", "issuance_date", "issue_date")
 #: Countries for which no status list entry is reserved (mdoc).
@@ -171,7 +163,7 @@ def mdocFormatter(
 
     namespace = credential_metadata["issuer_config"]["namespace"]
     namespace_data = data[namespace]
-    for element in MDOC_BINARY_ELEMENTS:
+    for element in IMAGE_ATTRIBUTES:
         if element in namespace_data:
             namespace_data[element] = base64.urlsafe_b64decode(namespace_data[element])
     if "user_pseudonym" in namespace_data:

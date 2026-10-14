@@ -116,6 +116,7 @@ class TestDynamicFlows:
         assert present.call_args.kwargs == {"cleaned_data": stored, "credentials_requested": ["pid"], "country": "FC"}
         assert page.call_args.kwargs["target_url"] == "https://fe.test/display_authorization"
         assert page.call_args.kwargs["data_payload"]["redirect_url"] == "https://backend.test/dynamic/redirect_wallet"
+        assert "signature_usual_mark" in page.call_args.kwargs["data_payload"]["image_attributes"]
 
 
 class TestGetPidOid4vp:

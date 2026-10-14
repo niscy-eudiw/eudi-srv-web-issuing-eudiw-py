@@ -26,6 +26,18 @@ Deployment-specific settings live in :mod:`app.core.config`.
 NOTE: You should only change it if you understand what you're doing.
 """
 
+#: Attributes whose value is a JPEG image, held as base64 text: mdoc issuance
+#: embeds them as bytes and the consent page shows them as images. It must
+#: cover every ``"value_type": "jpeg"`` claim of the credential metadata.
+IMAGE_ATTRIBUTES = (
+    "portrait",
+    "picture",
+    "image",
+    "signature_usual_mark",
+    "signature_usual_mark_issuing_officer",
+    "issuing_authority_logo",
+)
+
 
 class ConfService:
     """Namespace of static issuer constants.

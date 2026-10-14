@@ -36,7 +36,7 @@ from flask import Blueprint, Response, abort, redirect, request, session
 
 from app.core.config import CONFIGURATION, feature_enabled
 from app.core.security import require_frontend_origin
-from app.core.constants import ConfService as cfgserv
+from app.core.constants import IMAGE_ATTRIBUTES, ConfService as cfgserv
 from app.core.log_utils import safe
 from app.core.state import session_manager
 from app.repositories.session_store import Session
@@ -119,6 +119,7 @@ def _display_authorization(current_session: Session, presentation_data: Dict[str
         target_url=f"{frontend_url(current_session.frontend_id)}/display_authorization",
         data_payload={
             "presentation_data": presentation_data,
+            "image_attributes": list(IMAGE_ATTRIBUTES),
             "redirect_url": f"{CONFIGURATION['service_url']}/dynamic/redirect_wallet",
             "session_id": current_session.session_id,
         },
