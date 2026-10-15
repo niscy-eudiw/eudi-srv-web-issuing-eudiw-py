@@ -626,6 +626,18 @@ class TestNonce:
         assert claims["aud"] == [f"{service_url}/credential"]
         assert claims["exp"] - claims["iat"] == 3600
 
+    def test_nonce_does_not_purge_expired_entries(self, client, mock_cfgservice):
+        """Purging is the scheduler's job, not the nonce endpoint's"""
+        from app.repositories import offer_store
+
+        mock_cfgservice["keys"]["nonce_key"] = nonce_key_pem()
+        expired = {"old": {"expires": datetime.now() - timedelta(seconds=1)}}
+
+        with patch.dict(offer_store.credential_offer_references, expired, clear=True):
+            response = client.post("/nonce")
+            assert response.status_code == 200
+            assert list(offer_store.credential_offer_references) == ["old"]
+
 
 class TestCredentialOffer:
     """Test credential offer endpoints"""
@@ -703,7 +715,7 @@ class TestHelperFunctions:
         """Test public key extraction with unsupported curve"""
         from app.services.credential_issuance import pKfromJWK
 
-        jwk_data = {"kty": "EC", "crv": "P-384", "x": "test", "y": "test"}
+        jwk_data = {"kty": "EC", "crv": "secp256k1", "x": "test", "y": "test"}
 
         result = pKfromJWK(jwk_data)
 

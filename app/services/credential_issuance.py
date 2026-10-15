@@ -69,9 +69,12 @@ DEFERRED_ONLY_CONFIGURATION = "eu.europa.ec.eudi.pid_mdoc_deferred"
 NONCE_LIFETIME_SECONDS = 3600
 
 
-#: OpenID4VCI JWT proof type header and accepted algorithms (holder keys are P-256).
+#: OpenID4VCI JWT proof type header. TS3 2.6: proofs and key attestations are
+#: signed with ES256, ES384 or ES512, each only on its own curve.
 PROOF_JWT_TYP = "openid4vci-proof+jwt"
-PROOF_ALGORITHMS = ("ES256",)
+ALGORITHM_CURVES = {"ES256": "P-256", "ES384": "P-384", "ES512": "P-521"}
+PROOF_ALGORITHMS = tuple(ALGORITHM_CURVES)
+_HOLDER_KEY_CURVES = {"P-256": ec.SECP256R1, "P-384": ec.SECP384R1, "P-521": ec.SECP521R1}
 #: Accepted clock skew for ``iat`` and maximum proof age.
 PROOF_IAT_LEEWAY_SECONDS = 60
 PROOF_MAX_AGE_SECONDS = 3600
@@ -130,25 +133,26 @@ class KARevokedError(KeyAttestationStatusError):
 
 
 def pKfromJWK(jwk_dict: Dict[str, Any]) -> Any:
-    """Converts a P-256 JWK into the base64url PEM device key format.
+    """Converts a P-256 / P-384 / P-521 JWK into the base64url PEM device key format.
 
     Args:
         jwk_dict: Public JWK.
 
     Returns:
         Base64url encoded PEM ``SubjectPublicKeyInfo``, or an
-        ``invalid_proof`` error dict when the curve is not P-256.
+        ``invalid_proof`` error dict when the curve is not supported.
     """
-    if jwk_dict.get("crv") != "P-256":
+    curve = _HOLDER_KEY_CURVES.get(jwk_dict.get("crv"))
+    if curve is None:
         return {
             "error": "invalid_proof",
-            "error_description": "Credential Issuer only supports P-256 curves",
+            "error_description": "Credential Issuer only supports P-256, P-384 and P-521 curves",
         }
 
     public_key = ec.EllipticCurvePublicNumbers(
         x=int.from_bytes(b64url_decode(jwk_dict["x"]), "big"),
         y=int.from_bytes(b64url_decode(jwk_dict["y"]), "big"),
-        curve=ec.SECP256R1(),
+        curve=curve(),
     ).public_key()
 
     public_key_pem = public_key.public_bytes(
@@ -326,6 +330,10 @@ def verify_proof_jwt(
         raise InvalidProofError("Proof JWT alg is not supported")
 
     candidates = signing_jwks if signing_jwks is not None else [header.get("jwk")]
+    # TS3 2.6: each algorithm only on its own curve (ES256 / P-256, ...).
+    candidates = [c for c in candidates if not isinstance(c, dict) or c.get("crv") == ALGORITHM_CURVES[alg]]
+    if not candidates:
+        raise InvalidProofError(f"Proof JWT alg {alg} requires a {ALGORITHM_CURVES[alg]} key")
     audiences = _proof_audiences(session_id)
     claims: Optional[Dict[str, Any]] = None
     for candidate in candidates:
@@ -356,7 +364,7 @@ def verify_proof_jwt(
 
 
 def _holder_key(jwk_dict: Dict[str, Any]) -> str:
-    """Converts a verified P-256 JWK to the device key format.
+    """Converts a verified P-256 / P-384 / P-521 JWK to the device key format.
 
     Args:
         jwk_dict: Public JWK.
@@ -365,11 +373,11 @@ def _holder_key(jwk_dict: Dict[str, Any]) -> str:
         Base64url encoded PEM public key.
 
     Raises:
-        InvalidProofError: If the key is not on P-256.
+        InvalidProofError: If the key is on another curve.
     """
     device_key = pKfromJWK(jwk_dict)
     if not isinstance(device_key, str):
-        raise InvalidProofError("Credential Issuer only supports P-256 holder keys")
+        raise InvalidProofError("Credential Issuer only supports P-256, P-384 and P-521 holder keys")
     return device_key
 
 
@@ -388,6 +396,39 @@ def _key_attestation_max_age() -> int:
     return int(configured) if configured else KEY_ATTESTATION_MAX_AGE_SECONDS
 
 
+def _key_storage_status_list(claims: Dict[str, Any]) -> Dict[str, Any]:
+    """Returns the status list reference of a key attestation's ``key_storage_status``.
+
+    TS3 2.3.2 / 2.4.1: every key attestation carries ``key_storage_status``
+    with a ``status`` status list reference and a numeric ``exp``.
+
+    Args:
+        claims: Key attestation claims.
+
+    Returns:
+        The ``key_storage_status.status.status_list`` object.
+
+    Raises:
+        ValueError: If ``key_storage_status`` is missing or malformed.
+    """
+    key_storage_status = claims.get("key_storage_status")
+    if not isinstance(key_storage_status, dict):
+        raise ValueError("Key attestation has no key_storage_status")
+    exp = key_storage_status.get("exp")
+    if isinstance(exp, bool) or not isinstance(exp, (int, float)):
+        raise ValueError("Key attestation key_storage_status.exp is missing or not a number")
+    status = key_storage_status.get("status")
+    status_list = status.get("status_list") if isinstance(status, dict) else None
+    if (
+        not isinstance(status_list, dict)
+        or isinstance(status_list.get("idx"), bool)
+        or not isinstance(status_list.get("idx"), int)
+        or not isinstance(status_list.get("uri"), str)
+    ):
+        raise ValueError("Key attestation key_storage_status.status is malformed")
+    return status_list
+
+
 def decode_verify_attestation(jwt_raw: str) -> Dict[str, Any]:
     """Verifies a key attestation JWT and checks its revocation status.
 
@@ -399,14 +440,16 @@ def decode_verify_attestation(jwt_raw: str) -> Dict[str, Any]:
 
     The signing chain is trusted via the trust validator (when enabled) or
     the local trusted CAs; see :func:`app.services.trust.verify_x5c_chain`.
-    ``iat`` and ``exp`` are required, ``iat`` may be at most
-    :func:`_key_attestation_max_age` old, and ``typ`` must be
-    :data:`KEY_ATTESTATION_TYP` when present.
+    It must be signed with ES256, ES384 or ES512 (TS3 2.6). ``iat`` and
+    ``exp`` are required, ``iat`` may be at most
+    :func:`_key_attestation_max_age` old, ``typ`` must be
+    :data:`KEY_ATTESTATION_TYP` when present, and ``key_storage_status``
+    must be well-formed (:func:`_key_storage_status_list`).
 
     Raises:
         KARevokedError: If the attestation's status list entry is revoked.
         KeyAttestationStatusError: If its status cannot be verified.
-        ValueError, CertificateVerificationError, jwt.InvalidTokenError:
+        ValueError, CertificateVerificationError, jwt.PyJWTError:
             If verification fails.
     """
     claims = verify_jwt_with_x5c(
@@ -414,14 +457,14 @@ def decode_verify_attestation(jwt_raw: str) -> Dict[str, Any]:
         verification_context=trust_context("key_attestation", KEY_ATTESTATION_CONTEXT),
         use_case=trust_use_case("key_attestation"),
         purpose=PURPOSE_KEY_ATTESTATION,
+        allowed_algorithms=list(PROOF_ALGORITHMS),
         required_claims=("iat", "exp"),
         max_age_seconds=_key_attestation_max_age(),
         expected_typ=KEY_ATTESTATION_TYP,
     )
 
-    key_storage_status = claims.get("key_storage_status")
-    if key_storage_status and CONFIGURATION["status_validator"]["enabled"]:
-        status_list = key_storage_status["status"]["status_list"]
+    status_list = _key_storage_status_list(claims)
+    if CONFIGURATION["status_validator"]["enabled"]:
         try:
             revoked = check_status_list_revocation(
                 url=CONFIGURATION["status_validator"]["url"],
@@ -498,7 +541,7 @@ def _verified_attestation(
     except KeyAttestationStatusError as e:
         logger.warning(f", Session ID: {session_id}, Key attestation rejected ({origin}): {safe(e)}")
         raise InvalidProofError(str(e)) from e
-    except (CertificateVerificationError, ValueError, jwt.InvalidTokenError) as e:
+    except (CertificateVerificationError, ValueError, jwt.PyJWTError) as e:
         logger.warning(f", Session ID: {session_id}, Key attestation rejected ({origin}): {safe(e)}")
         raise InvalidProofError("Key attestation is not valid") from e
     if not isinstance(claims.get("attested_keys"), list) or not claims["attested_keys"]:

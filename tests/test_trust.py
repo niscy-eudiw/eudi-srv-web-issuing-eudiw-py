@@ -311,16 +311,19 @@ class TestKeyAttestationTrust:
     def test_context(self, config, expected):
         from app.services.credential_issuance import decode_verify_attestation
 
+        claims = {"attested_keys": [], "key_storage_status": {"exp": 4102444800, "status": {"status_list": {"idx": 1, "uri": "u"}}}}
+
         with patch_configuration(config), patch(
-            "app.services.credential_issuance.verify_jwt_with_x5c", return_value={"attested_keys": []}
+            "app.services.credential_issuance.verify_jwt_with_x5c", return_value=claims
         ) as verify:
-            assert decode_verify_attestation("ka.jwt") == {"attested_keys": []}
+            assert decode_verify_attestation("ka.jwt") == claims
 
         verify.assert_called_once_with(
             jwt_raw="ka.jwt",
             verification_context=expected,
             use_case=None,
             purpose="key_attestation",
+            allowed_algorithms=["ES256", "ES384", "ES512"],
             required_claims=("iat", "exp"),
             max_age_seconds=24 * 3600,
             expected_typ="key-attestation+jwt",

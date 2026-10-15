@@ -455,8 +455,15 @@ def DatestringFormatter(date: str) -> int:
     return date_to_timestamp(date)
 
 
+#: Byte length of an EC JWK ``x`` / ``y`` coordinate per curve.
+_JWK_COORDINATE_LENGTHS = {"P-256": 32, "P-384": 48, "P-521": 66}
+
+
 def KeyData(key: Any, type: str) -> Tuple[Optional[str], bytes, bytes]:
-    """Returns the JOSE curve and 32-byte padded x / y coordinates of an EC key.
+    """Returns the JOSE curve and x / y coordinates of an EC key.
+
+    The coordinates are left-padded to the curve's field size (32, 48 or 66
+    bytes for P-256, P-384, P-521), as JWK requires (RFC 7518 section 6.2.1.2).
 
     Args:
         key: EC public or private key.
@@ -466,5 +473,6 @@ def KeyData(key: Any, type: str) -> Tuple[Optional[str], bytes, bytes]:
     Returns:
         ``(crv, x, y)``.
     """
-    x, y = ec_coordinates(key)
-    return (jwk_curve(key), x, y)
+    crv = jwk_curve(key)
+    x, y = ec_coordinates(key, min_length=_JWK_COORDINATE_LENGTHS.get(crv, 32))
+    return (crv, x, y)

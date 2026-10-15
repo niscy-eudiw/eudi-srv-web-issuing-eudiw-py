@@ -1,9 +1,11 @@
 """Tests for the nightly revocation sweep and its scheduler (fake database)."""
 
+import datetime
 from unittest.mock import MagicMock, patch
 
 import pytest
 
+from app.repositories import offer_store
 from app.services import nightly_sweep, scheduler
 from config_helpers import patch_configuration
 from fake_status_db import FakeStatusDB
@@ -159,19 +161,38 @@ class TestScheduler:
         yield
         scheduler._scheduler = saved
 
-    def test_starts_once_with_nightly_job(self):
+    def test_starts_once_with_nightly_job_and_purge(self):
         instance = MagicMock()
-        with patch("app.services.scheduler.BackgroundScheduler", return_value=instance) as cls:
+        with patch("app.services.scheduler.BackgroundScheduler", return_value=instance) as cls, patch(
+            "app.services.scheduler.atexit.register"
+        ) as register, patch.dict(scheduler.CONFIGURATION, {"expiry": {"session": 30}}):
             first = scheduler.start_scheduler()
             second = scheduler.start_scheduler()
 
         assert first is second is instance
         cls.assert_called_once()
         instance.start.assert_called_once()
-        func = instance.add_job.call_args.args[0]
-        kwargs = instance.add_job.call_args.kwargs
-        assert func is nightly_sweep.run_sweep
-        assert kwargs["id"] == "nightly_status_sweep"
-        assert (kwargs["max_instances"], kwargs["coalesce"]) == (1, True)
-        trigger = str(kwargs["trigger"])
+        register.assert_called_once_with(instance.shutdown, wait=False)
+        jobs = {call.kwargs["id"]: call for call in instance.add_job.call_args_list}
+        assert set(jobs) == {"nightly_status_sweep", "purge_expired"}
+
+        nightly = jobs["nightly_status_sweep"]
+        assert nightly.args[0] is nightly_sweep.run_sweep
+        assert (nightly.kwargs["max_instances"], nightly.kwargs["coalesce"]) == (1, True)
+        trigger = str(nightly.kwargs["trigger"])
         assert "hour='2'" in trigger and "minute='0'" in trigger
+
+        purge = jobs["purge_expired"]
+        assert purge.args[0] is offer_store.purge_expired
+        assert (purge.kwargs["max_instances"], purge.kwargs["coalesce"]) == (1, True)
+        assert purge.kwargs["trigger"].interval == datetime.timedelta(minutes=scheduler.DEFAULT_CLEANUP_INTERVAL)
+
+    def test_purge_interval_comes_from_config(self):
+        instance = MagicMock()
+        with patch("app.services.scheduler.BackgroundScheduler", return_value=instance), patch(
+            "app.services.scheduler.atexit.register"
+        ), patch.dict(scheduler.CONFIGURATION, {"expiry": {"session": 30, "cleanup_interval": 5}}):
+            scheduler.start_scheduler()
+
+        purge = next(c for c in instance.add_job.call_args_list if c.kwargs["id"] == "purge_expired")
+        assert purge.kwargs["trigger"].interval == datetime.timedelta(minutes=5)

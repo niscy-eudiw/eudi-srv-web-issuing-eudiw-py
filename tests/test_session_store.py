@@ -245,7 +245,7 @@ def test_concurrent_updates_are_consistent(manager):
 
 
 class TestOfferStore:
-    def test_clear_par_purges_only_expired(self):
+    def test_purge_expired_purges_only_expired(self):
         now = datetime.datetime.now()
         offers = {"old": {"expires": now - datetime.timedelta(seconds=1)}, "live": {"expires": now + datetime.timedelta(minutes=5)}}
         revocations = {"old": {"expires": now - datetime.timedelta(seconds=1)}, "live": {"expires": now + datetime.timedelta(minutes=5)}}
@@ -253,7 +253,7 @@ class TestOfferStore:
         with patch.dict(offer_store.credential_offer_references, offers, clear=True), patch.dict(
             offer_store.revocation_requests, revocations, clear=True
         ), patch.object(offer_store, "session_manager") as sessions:
-            offer_store.clear_par()
+            offer_store.purge_expired()
             assert list(offer_store.credential_offer_references) == ["live"]
             assert list(offer_store.revocation_requests) == ["live"]
         sessions.clean_expired_sessions.assert_called_once()

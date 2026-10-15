@@ -44,7 +44,7 @@ from app.core.errors import OAuthEndpointError, error_body, oauth_error_response
 from app.core.log_utils import safe, summarize_credential_request
 from app.core.security import require_admin_api_key, require_frontend_origin
 from app.core.state import oidc_metadata, session_manager
-from app.repositories.offer_store import clear_par, credential_offer_references
+from app.repositories.offer_store import credential_offer_references
 from app.repositories.status_store import persist_client_status
 from app.services.attributes import (
     credential_display_names,
@@ -842,12 +842,11 @@ def notification() -> HandlerResult:
 
 @oidc.route("/nonce", methods=["POST"])
 def nonce() -> HandlerResult:
-    """OpenID4VCI nonce endpoint; also purges expired in-memory data.
+    """OpenID4VCI nonce endpoint.
 
     Returns:
         ``({"c_nonce": ...}, 200)`` with ``DPoP-Nonce`` and no-store headers.
     """
-    clear_par()
     c_nonce = create_c_nonce()
     response = jsonify({"c_nonce": c_nonce})
     response.headers["Cache-Control"] = "no-store"

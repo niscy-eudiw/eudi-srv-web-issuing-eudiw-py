@@ -775,14 +775,14 @@ class TestDatestringFormatter:
 class TestKeyData:
 
     @pytest.mark.parametrize(
-        "curve_name,expected_identifier",
+        "curve_name,expected_identifier,expected_length",
         [
-            ("secp256r1", "P-256"),
-            ("secp384r1", "P-384"),
-            ("secp521r1", "P-521"),
+            ("secp256r1", "P-256", 32),
+            ("secp384r1", "P-384", 48),
+            ("secp521r1", "P-521", 66),
         ],
     )
-    def test_public_key(self, curve_name, expected_identifier):
+    def test_public_key(self, curve_name, expected_identifier, expected_length):
         # Mock key
         mock_key = MagicMock()
         mock_key.curve.name = curve_name
@@ -796,19 +796,19 @@ class TestKeyData:
         assert curve_id == expected_identifier
         assert isinstance(x_bytes, bytes)
         assert isinstance(y_bytes, bytes)
-        # Check that x and y are padded correctly
-        assert len(x_bytes) == 32
-        assert len(y_bytes) == 32
+        # x and y are padded to the curve's coordinate length
+        assert len(x_bytes) == expected_length
+        assert len(y_bytes) == expected_length
 
     @pytest.mark.parametrize(
-        "curve_name,expected_identifier",
+        "curve_name,expected_identifier,expected_length",
         [
-            ("secp256r1", "P-256"),
-            ("secp384r1", "P-384"),
-            ("secp521r1", "P-521"),
+            ("secp256r1", "P-256", 32),
+            ("secp384r1", "P-384", 48),
+            ("secp521r1", "P-521", 66),
         ],
     )
-    def test_private_key(self, curve_name, expected_identifier):
+    def test_private_key(self, curve_name, expected_identifier, expected_length):
         # Mock key
         # spec= so the key is detected as a private key (KeyData no longer
         # relies on the "type" argument)
@@ -827,8 +827,8 @@ class TestKeyData:
         assert curve_id == expected_identifier
         assert isinstance(x_bytes, bytes)
         assert isinstance(y_bytes, bytes)
-        assert len(x_bytes) == 32
-        assert len(y_bytes) == 32
+        assert len(x_bytes) == expected_length
+        assert len(y_bytes) == expected_length
 
 
 class TestCredentialIssuerUrl:

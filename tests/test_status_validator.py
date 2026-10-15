@@ -139,7 +139,10 @@ class TestIssuanceFailsClosed:
         assert response.get_json()["error_description"] == "Wallet status could not be verified"
 
     def _attestation_claims(self):
-        return {"attested_keys": [], "key_storage_status": {"status": {"status_list": {"idx": 1, "uri": STATUS_URI}}}}
+        return {
+            "attested_keys": [],
+            "key_storage_status": {"exp": 4102444800, "status": {"status_list": {"idx": 1, "uri": STATUS_URI}}},
+        }
 
     def test_key_attestation_status_unverifiable(self, status_config):
         from app.services import credential_issuance

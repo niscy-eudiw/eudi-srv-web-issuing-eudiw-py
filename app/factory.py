@@ -68,7 +68,7 @@ def _register_blueprints(app: Flask) -> None:
 
 
 def _start_background_services(app: Flask) -> None:
-    """Initializes the status persistence pool and starts the nightly sweep.
+    """Initializes the status persistence pool and starts the scheduler.
 
     Args:
         app: The application (for logging).
@@ -78,7 +78,7 @@ def _start_background_services(app: Flask) -> None:
 
     init_db_status(app_config.CONFIGURATION["postgres"])
     start_scheduler()
-    app.logger.info("Background services started (status DB pool, nightly sweep).")
+    app.logger.info("Background services started (status DB pool, scheduler).")
 
 
 #: Defaults of ``session_file_threshold`` (server-side session files kept)

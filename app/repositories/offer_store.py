@@ -18,14 +18,14 @@
 """In-memory stores for short-lived credential offer and revocation requests.
 
 Entries are dictionaries holding at least an ``expires`` :class:`datetime`
-and are purged by :func:`clear_par`.
+and are purged by :func:`purge_expired`, which the scheduler runs every
+``expiry.cleanup_interval`` minutes.
 
 Attributes:
     credential_offer_references: Credential offers referenced by
         ``credential_offer_uri`` (``reference_id -> {credential_offer, expires}``).
     revocation_requests: Pending revocation requests
         (``revocation_identifier -> {status_lists, expires}``).
-    scheduler_call: Housekeeping period in seconds.
 """
 
 from __future__ import annotations
@@ -41,8 +41,6 @@ logger = logging.getLogger(__name__)
 credential_offer_references: Dict[str, Dict[str, Any]] = {}
 revocation_requests: Dict[str, Dict[str, Any]] = {}
 
-scheduler_call = 300  # seconds (should be 300; 30 for debug)
-
 
 def _purge_expired(store: Dict[str, Dict[str, Any]], label: str) -> None:
     """Removes entries whose ``expires`` timestamp is in the past.
@@ -52,12 +50,13 @@ def _purge_expired(store: Dict[str, Dict[str, Any]], label: str) -> None:
         label: Entry kind, used in log messages.
     """
     now = datetime.now()
-    for entry_id in [k for k, v in store.items() if now > v["expires"]]:
+    # list() snapshots the items so request threads may insert meanwhile.
+    for entry_id in [k for k, v in list(store.items()) if now > v["expires"]]:
         logger.debug(f"Removing expired {label} reference id: {entry_id}")
         store.pop(entry_id, None)
 
 
-def clear_par() -> None:
+def purge_expired() -> None:
     """Purges expired offers, revocation requests and sessions."""
     _purge_expired(credential_offer_references, "credential")
     _purge_expired(revocation_requests, "revocation")

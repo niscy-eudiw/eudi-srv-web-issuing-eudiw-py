@@ -298,12 +298,15 @@ logging:
 # ============================================================================
 # EXPIRY TIMES (minutes)
 # ============================================================================
-# All required. revocation_code: a pending revocation request; form: a
-# stored credential offer reference; session: an issuance session.
+# revocation_code, form and session are required. revocation_code: a
+# pending revocation request; form: a stored credential offer reference;
+# session: an issuance session. cleanup_interval (optional, default 60):
+# how often expired entries of all three are removed from memory.
 expiry:
   revocation_code: 60
   form: 60
   session: 60
+  cleanup_interval: 60
 
 # ============================================================================
 # KEY PATHS

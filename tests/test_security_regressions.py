@@ -1731,7 +1731,13 @@ class TestKeyAttestationFreshness:
             from proof_helpers import c_nonce
 
             now = int(time.time())
-            claims = {"attested_keys": [attested_jwk], "iat": now - age, "exp": now + 3600, "nonce": c_nonce()}
+            claims = {
+                "attested_keys": [attested_jwk],
+                "iat": now - age,
+                "exp": now + 3600,
+                "nonce": c_nonce(),
+                "key_storage_status": {"exp": now + 3600, "status": {"status_list": {"idx": 1, "uri": "u"}}},
+            }
             for name in drop:
                 claims.pop(name)
             # typ None: PyJWT then leaves the header out (it adds "JWT" otherwise).

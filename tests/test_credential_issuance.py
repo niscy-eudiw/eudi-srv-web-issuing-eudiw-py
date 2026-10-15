@@ -69,14 +69,22 @@ class TestHolderKeys:
         loaded = serialization.load_pem_public_key(pem)
         assert loaded.public_numbers() == key.public_key().public_numbers()
 
+    @pytest.mark.parametrize("curve", [ec.SECP384R1, ec.SECP521R1])
+    def test_pk_from_jwk_accepts_p384_and_p521(self, curve):
+        # TS3 2.6: ES384 / ES512 attested keys are bound like P-256 ones.
+        key = ec.generate_private_key(curve())
+        public_jwk = json.loads(jwt.algorithms.ECAlgorithm.to_jwk(key.public_key()))
+        loaded = serialization.load_pem_public_key(base64.urlsafe_b64decode(ci.pKfromJWK(public_jwk)))
+        assert loaded.public_numbers() == key.public_key().public_numbers()
+
     def test_pk_from_jwk_rejects_other_curves(self):
-        key = ec.generate_private_key(ec.SECP384R1())
+        key = ec.generate_private_key(ec.SECP256K1())
         public_jwk = json.loads(jwt.algorithms.ECAlgorithm.to_jwk(key.public_key()))
         assert ci.pKfromJWK(public_jwk)["error"] == "invalid_proof"
 
     def test_holder_key_rejects_other_curves(self):
-        key = ec.generate_private_key(ec.SECP384R1())
-        with pytest.raises(ci.InvalidProofError, match="P-256"):
+        key = ec.generate_private_key(ec.SECP256K1())
+        with pytest.raises(ci.InvalidProofError, match="P-256, P-384 and P-521"):
             ci._holder_key(json.loads(jwt.algorithms.ECAlgorithm.to_jwk(key.public_key())))
 
 
@@ -141,6 +149,19 @@ class TestVerifyProofJwt:
     def test_rejected(self, kwargs, message):
         token, _ = proof_jwt(**kwargs)
         with pytest.raises(ci.InvalidProofError, match=message):
+            ci.verify_proof_jwt(token, "s1")
+
+    @pytest.mark.parametrize("curve, algorithm", [(ec.SECP384R1, "ES384"), (ec.SECP521R1, "ES512")])
+    def test_es384_and_es512_accepted(self, curve, algorithm):
+        # TS3 2.6: issuers support ES256, ES384 and ES512.
+        token, _ = proof_jwt(ec.generate_private_key(curve()), algorithm=algorithm)
+        assert ci.verify_proof_jwt(token, "s1")["aud"] == FRONTEND_URL
+
+    def test_algorithm_on_other_curve_rejected(self):
+        # TS3 2.6: no other curve-algorithm combinations (ES256 header, P-384 key).
+        other_jwk = json.loads(jwt.algorithms.ECAlgorithm.to_jwk(ec.generate_private_key(ec.SECP384R1()).public_key()))
+        token, _ = proof_jwt(include_jwk=False, header_extra={"jwk": other_jwk})
+        with pytest.raises(ci.InvalidProofError, match="requires a P-256 key"):
             ci.verify_proof_jwt(token, "s1")
 
     def test_signature_by_other_key(self):
@@ -319,13 +340,35 @@ class TestGenerateCredentials:
 
 class TestDecodeVerifyAttestation:
     def test_status_checked_when_validator_enabled(self):
-        claims = {"key_storage_status": {"status": {"status_list": {"idx": 1, "uri": "u"}}}}
+        claims = {"key_storage_status": {"exp": int(time.time()) + 3600, "status": {"status_list": {"idx": 1, "uri": "u"}}}}
         cfg = {"status_validator": {"enabled": True, "url": "https://validator.test"}}
         with patch_configuration(cfg), patch.object(ci, "verify_jwt_with_x5c", return_value=claims), patch.object(
             ci, "check_status_list_revocation", return_value=False
         ) as check:
             assert ci.decode_verify_attestation("ka") == claims
         check.assert_called_once_with(url="https://validator.test", status_idx=1, status_uri="u")
+
+    @pytest.mark.parametrize(
+        "key_storage_status, message",
+        [
+            (None, "no key_storage_status"),
+            ({"status": {"status_list": {"idx": 1, "uri": "u"}}}, "exp is missing"),
+            ({"exp": "soon", "status": {"status_list": {"idx": 1, "uri": "u"}}}, "exp is missing"),
+            ({"exp": 4102444800}, "status is malformed"),
+            ({"exp": 4102444800, "status": {"status_list": {"idx": "1", "uri": "u"}}}, "status is malformed"),
+            ({"exp": 4102444800, "status": {"status_list": {"idx": 1}}}, "status is malformed"),
+        ],
+    )
+    def test_key_storage_status_required(self, key_storage_status, message):
+        # TS3 2.3.2 / 2.4.1: rejected even with the status validator switched off.
+        claims = {"attested_keys": []}
+        if key_storage_status is not None:
+            claims["key_storage_status"] = key_storage_status
+        with patch_configuration({"status_validator": {"enabled": False}}), patch.object(
+            ci, "verify_jwt_with_x5c", return_value=claims
+        ):
+            with pytest.raises(ValueError, match=message):
+                ci.decode_verify_attestation("ka")
 
 
 class TestJwe:

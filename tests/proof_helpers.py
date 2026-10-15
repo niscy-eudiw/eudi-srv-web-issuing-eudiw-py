@@ -59,6 +59,7 @@ def proof_jwt(
     typ: str = "openid4vci-proof+jwt",
     header_extra: Optional[Dict[str, Any]] = None,
     include_jwk: bool = True,
+    algorithm: str = "ES256",
 ) -> Tuple[str, ec.EllipticCurvePrivateKey]:
     """Builds a signed proof JWT.
 
@@ -70,6 +71,7 @@ def proof_jwt(
         typ: ``typ`` header.
         header_extra: Extra header entries.
         include_jwk: Put the public key in the ``jwk`` header.
+        algorithm: Signing algorithm (must match the key's curve).
 
     Returns:
         (proof JWT, signing key).
@@ -84,4 +86,4 @@ def proof_jwt(
     headers: Dict[str, Any] = {"typ": typ, **(header_extra or {})}
     if include_jwk:
         headers["jwk"] = json.loads(jwt.algorithms.ECAlgorithm.to_jwk(key.public_key()))
-    return jwt.encode(claims, key, algorithm="ES256", headers=headers), key
+    return jwt.encode(claims, key, algorithm=algorithm, headers=headers), key
