@@ -110,7 +110,7 @@ def mock_oidc_metadata():
                 "vct": "test_vct",
                 "credential_metadata": {
                     "display": [{"name": "Test SD-JWT Credential"}],
-                    "claims": [{"path": ["claim1"]}, {"path": ["claim2"]}],
+                    "claims": [{"path": ["claim1"]}, {"path": ["claim2"], "mandatory": True}],
                 },
             },
             "test_mdoc_credential": {
@@ -121,7 +121,7 @@ def mock_oidc_metadata():
                     "display": [{"name": "Test mDoc Credential"}],
                     "claims": [
                         {"path": ["namespace", "claim1"]},
-                        {"path": ["namespace", "claim2"]},
+                        {"path": ["namespace", "claim2"], "mandatory": True},
                     ],
                 },
             },
@@ -1047,7 +1047,8 @@ class TestDataStructures:
             assert cred["format"] == "dc+sd-jwt"
             assert "meta" in cred
             assert "vct_values" in cred["meta"]
-            assert "claims" in cred
+            # Only the first mandatory claim; SD-JWT omits intent_to_retain.
+            assert cred["claims"] == [{"path": ["claim2"]}]
 
     def test_dcql_query_structure_mdoc(
         self, client, mock_config, mock_oidc_metadata
@@ -1077,6 +1078,7 @@ class TestDataStructures:
             assert cred["format"] == "mso_mdoc"
             assert "meta" in cred
             assert "doctype_value" in cred["meta"]
+            assert cred["claims"] == [{"path": ["namespace", "claim2"], "intent_to_retain": False}]
 
     def test_display_list_parsing(self, client, mock_config):
         """Status list URIs are parsed into the doctype / list identifier display list."""

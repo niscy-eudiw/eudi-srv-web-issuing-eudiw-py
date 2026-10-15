@@ -99,7 +99,7 @@ class TestOid4vpRouteSuccess:
                     "format": "mso_mdoc",
                     "doctype": "eu.europa.ec.eudi.pid.1",
                     "credential_metadata": {
-                        "claims": [{"path": ["family_name"]}, {"path": ["given_name"]}]
+                        "claims": [{"path": ["family_name"], "mandatory": True}, {"path": ["given_name"]}]
                     },
                 }
             }
@@ -138,7 +138,12 @@ class TestOid4vpRouteSuccess:
         # A fresh random nonce, sent to the verifier in both requests.
         assert len(stored["nonce"]) >= 43
         for call in mock_requests.call_args_list:
-            assert json.loads(call.kwargs["data"])["nonce"] == stored["nonce"]
+            body = json.loads(call.kwargs["data"])
+            assert body["nonce"] == stored["nonce"]
+            # Only the mandatory PID claims are requested.
+            assert body["dcql_query"]["credentials"][0]["claims"] == [
+                {"path": ["family_name"], "intent_to_retain": False}
+            ]
         mock_segno.assert_called_once()
 
 

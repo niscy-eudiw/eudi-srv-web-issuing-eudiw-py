@@ -82,14 +82,20 @@ def build_dcql_query(
     credential_ids: Iterable[str],
     credentials_supported: Mapping[str, Dict[str, Any]],
     sdjwt_intent_to_retain: bool = True,
+    first_mandatory_only: bool = False,
+    mandatory_only: bool = False,
 ) -> Tuple[Dict[str, Any], Dict[str, str]]:
-    """Builds a DCQL query requesting every claim of the given credentials.
+    """Builds a DCQL query requesting the claims of the given credentials.
 
     Args:
         credential_ids: Credential configuration ids to request.
         credentials_supported: Issuer credential configurations.
         sdjwt_intent_to_retain: Whether SD-JWT claims carry
             ``intent_to_retain: false`` (mdoc claims always do).
+        first_mandatory_only: Request only the first mandatory claim (the
+            first claim if none is mandatory) instead of every claim, for
+            flows that only need the issuer-signed part of the credential.
+        mandatory_only: Request only the mandatory claims.
 
     Returns:
         ``(dcql_query, {query_id: format})``.
@@ -114,9 +120,14 @@ def build_dcql_query(
             case _:
                 with_intent = True
 
+        claims = config["credential_metadata"]["claims"]
+        if first_mandatory_only:
+            claims = [next((claim for claim in claims if claim.get("mandatory")), claims[0])]
+        elif mandatory_only:
+            claims = [claim for claim in claims if claim.get("mandatory")]
         dcql_credential["claims"] = [
             {"path": claim["path"], "intent_to_retain": False} if with_intent else {"path": claim["path"]}
-            for claim in config["credential_metadata"]["claims"]
+            for claim in claims
         ]
         credentials.append(dcql_credential)
 

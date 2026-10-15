@@ -112,8 +112,13 @@ def oid4vp_call() -> str:
     session_id = str(uuid.uuid4())
     session["session_id"] = session_id
 
+    # Only the issuer-signed status is used; one claim keeps the query valid
+    # without disclosing the rest of the credential.
     dcql_query, formats = build_dcql_query(
-        selected, oidc_metadata["credential_configurations_supported"], sdjwt_intent_to_retain=False
+        selected,
+        oidc_metadata["credential_configurations_supported"],
+        sdjwt_intent_to_retain=False,
+        first_mandatory_only=True,
     )
     session.update(formats)  # query_id -> format, read back in oid4vp_get
 

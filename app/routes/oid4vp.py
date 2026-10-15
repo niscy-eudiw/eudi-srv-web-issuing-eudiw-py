@@ -63,7 +63,9 @@ def openid4vp() -> str:
     session_id = session["session_id"]
     logger.info(f", Session ID: {session_id}, Authorization selection, Type: oid4vp")
 
-    dcql_query, _ = build_dcql_query([PID_CREDENTIAL], oidc_metadata["credential_configurations_supported"])
+    dcql_query, _ = build_dcql_query(
+        [PID_CREDENTIAL], oidc_metadata["credential_configurations_supported"], mandatory_only=True
+    )
     response_redirect_uri = (
         f"{CONFIGURATION['service_url']}/getpidoid4vp?response_code={{RESPONSE_CODE}}&session_id={session_id}"
     )
