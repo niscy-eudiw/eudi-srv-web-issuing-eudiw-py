@@ -60,7 +60,7 @@ import logging
 from dataclasses import asdict, dataclass
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, FrozenSet, Optional
 
 from app.core.config import CONFIGURATION
 from app.core.state import oidc_metadata_clean
@@ -163,10 +163,44 @@ def _supported_credentials(allowed: Optional[Any]) -> Dict[str, Any]:
         A copy of the (filtered) ``credential_configurations_supported``.
     """
     credentials = copy.deepcopy(oidc_metadata_clean.get("credential_configurations_supported", {}))
-    if not allowed or allowed == "*" or allowed == ["*"]:
+    allowed_ids = _allowed_ids(allowed)
+    if allowed_ids is None:
         return credentials
-    allowed_ids = set(allowed)
     return {cid: cfg for cid, cfg in credentials.items() if cid in allowed_ids}
+
+
+def _allowed_ids(allowed: Optional[Any]) -> Optional[FrozenSet[str]]:
+    """Normalizes a frontend's ``credentials_supported`` setting.
+
+    Args:
+        allowed: The frontend's ``credentials_supported`` (list, ``"*"`` or ``None``).
+
+    Returns:
+        The allowed configuration ids, or ``None`` for all.
+    """
+    if not allowed or allowed == "*" or allowed == ["*"]:
+        return None
+    return frozenset(allowed)
+
+
+def frontend_publishes(frontend_id: Optional[str]) -> Callable[[str], bool]:
+    """Tells which backend credential configurations a frontend publishes.
+
+    Applies the same filter as the frontend's (unsigned and signed)
+    ``credential_configurations_supported``.
+
+    Args:
+        frontend_id: Frontend identifier; the default frontend when falsy.
+
+    Returns:
+        A predicate on configuration ids; ``True`` when the frontend's
+        metadata lists that (backend-supported) configuration.
+
+    Raises:
+        UnknownFrontendError: If the frontend is not configured.
+    """
+    allowed_ids = _allowed_ids(_frontend(frontend_id or CONFIGURATION["frontend"]["default"]).get("credentials_supported"))
+    return lambda cid: allowed_ids is None or cid in allowed_ids
 
 
 def _sd_jwt_signing_jwks() -> Dict[str, Any]:

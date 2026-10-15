@@ -540,6 +540,96 @@ class TestRevocationChoice:
             assert "sd-jwt vc format" in call_args[1]["data_payload"]["cred"]
             assert "mdoc format" in call_args[1]["data_payload"]["cred"]
 
+    @pytest.fixture
+    def two_frontends(self, mock_config, mock_oidc_metadata):
+        """A default frontend listing everything and one listing only the SD-JWT credential."""
+        mock_config["frontend"]["frontends_config"]["sdjwt_only"] = {
+            "url": "http://sdjwt.frontend.test",
+            "credentials_supported": ["test_sdjwt_credential"],
+        }
+
+    def _choice(self, client, **query):
+        with patch("app.routes.revocation.post_redirect_with_payload", return_value="ok") as mock_redirect:
+            response = client.get("/revocation/revocation_choice", query_string=query)
+        return response, mock_redirect.call_args
+
+    def test_lists_only_credentials_published_by_the_frontend(self, client, two_frontends):
+        _, call_args = self._choice(client, frontend_id="sdjwt_only")
+
+        assert call_args[1]["target_url"] == "http://sdjwt.frontend.test/display_revocation_choice"
+        assert call_args[1]["data_payload"]["cred"] == {
+            "sd-jwt vc format": {"test_sdjwt_credential": "Test SD-JWT Credential"},
+            "mdoc format": {},
+        }
+
+    def test_without_frontend_id_uses_the_default_frontend(self, client, two_frontends):
+        _, call_args = self._choice(client)
+
+        assert call_args[1]["target_url"] == "http://frontend.test.com/display_revocation_choice"
+        assert call_args[1]["data_payload"]["cred"]["mdoc format"] == {"test_mdoc_credential": "Test mDoc Credential"}
+
+    def test_unknown_frontend_is_rejected(self, client, two_frontends):
+        response, call_args = self._choice(client, frontend_id="nope")
+
+        assert response.status_code == 404
+        assert call_args is None
+
+    def test_later_pages_go_to_the_starting_frontend(self, client, two_frontends):
+        self._choice(client, frontend_id="sdjwt_only")
+
+        with client.application.test_request_context(), client.session_transaction() as sess:
+            from flask import session
+
+            session.update(sess)
+            assert revocation._flow_frontend_url() == "http://sdjwt.frontend.test"
+
+    def _call(self, client, *selected):
+        with patch("app.routes.revocation.start_presentation") as start, patch(
+            "app.routes.revocation.qr_data_uri", return_value="data:"
+        ), patch("app.routes.revocation.post_redirect_with_payload", return_value="ok"):
+            start.return_value = Mock(
+                same_device_id="sd", cross_device_id="cd", nonce="n", deeplink_url="d", qr_code_url="q",
+                cross_device={"transaction_id": "t"},
+            )
+            response = client.post("/revocation/oid4vp_call", data={**dict.fromkeys(selected, "on"), "proceed": "true"})
+        return response, start
+
+    def test_call_rejects_credentials_the_frontend_does_not_publish(self, client, two_frontends):
+        self._choice(client, frontend_id="sdjwt_only")
+
+        response, start = self._call(client, "test_sdjwt_credential", "test_mdoc_credential")
+
+        assert response.status_code == 400
+        assert response.get_json()["error_description"] == "Unsupported credential"
+        assert not start.called
+
+    def test_call_accepts_published_credentials(self, client, two_frontends):
+        self._choice(client, frontend_id="sdjwt_only")
+
+        response, start = self._call(client, "test_sdjwt_credential")
+
+        assert response.status_code == 200
+        assert start.called
+
+    def test_call_rejects_unknown_credentials(self, client, two_frontends):
+        response, start = self._call(client, "nope")
+
+        assert response.status_code == 400
+        assert not start.called
+
+    def test_call_rejects_non_revocable_credentials(self, client, two_frontends):
+        state.oidc_metadata["credential_configurations_supported"]["age"] = {
+            "format": "mso_mdoc",
+            "doctype": "age.doctype",
+            "scope": revocation.NON_REVOCABLE_MDOC_SCOPES[0],
+            "credential_metadata": {"display": [{"name": "Age"}], "claims": [{"path": ["ns", "over_18"]}]},
+        }
+
+        response, start = self._call(client, "age")
+
+        assert response.status_code == 400
+        assert not start.called
+
 
 class TestOid4vpCall:
     """Test /oid4vp_call endpoint."""

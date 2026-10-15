@@ -338,6 +338,41 @@ class TestCredentialOffers:
             response = client.post("/credential_offer", data=self._form(unknown="on"))
         assert response.status_code == 400
 
+    @staticmethod
+    def _display(name):
+        return {"format": "mso_mdoc", "credential_metadata": {"display": [{"name": name}]}}
+
+    def test_choice_lists_only_credentials_the_frontend_publishes(self, client, config):
+        config["frontend"]["frontends_config"]["fe2"]["credentials_supported"] = ["pid"]
+        configs = {"pid": self._display("PID"), "mdl": self._display("mDL")}
+        with patch.dict("app.core.state.oidc_metadata", {"credential_configurations_supported": configs}, clear=True), patch.object(
+            oidc_routes, "post_redirect_with_payload", return_value="page"
+        ) as page:
+            client.get("/credential_offer_choice?frontend_id=fe2")
+            restricted = page.call_args.kwargs["data_payload"]["cred"]["mdoc format"]
+            client.get("/credential_offer_choice")
+            default = page.call_args.kwargs["data_payload"]["cred"]["mdoc format"]
+
+        assert restricted == {"pid": "PID"}
+        assert default == {"pid": "PID", "mdl": "mDL"}
+
+    @pytest.mark.parametrize("selected, status", [("mdl", 400), ("pid", 200)])
+    def test_offer_rejects_credentials_the_frontend_does_not_publish(self, client, config, selected, status):
+        config["frontend"]["frontends_config"]["fe2"]["credentials_supported"] = ["pid"]
+        with client.session_transaction() as s:
+            s["frontend_id"] = "fe2"
+        form = {k: v for k, v in self._form(**{selected: "on"}).items() if k != "pid" or selected == "pid"}
+        with patch.dict("app.core.state.oidc_metadata", {"credential_configurations_supported": {"pid": {}, "mdl": {}}}, clear=True), patch.object(
+            oidc_routes, "post_redirect_with_payload", return_value="page"
+        ):
+            response = client.post("/credential_offer", data=form)
+        assert response.status_code == status
+
+    def test_offer_create_rejects_credentials_the_default_frontend_does_not_publish(self, client, config):
+        config["frontend"]["frontends_config"]["fe"]["credentials_supported"] = ["pid"]
+        assert client.get("/credential_offer_create?credential_configuration_id=mdl").status_code == 400
+        assert client.get("/credential_offer_create?credential_configuration_id=pid").status_code == 200
+
     def test_pre_authorized_redirect(self, client, config):
         with patch.dict("app.core.state.oidc_metadata", {"credential_configurations_supported": {"pid": {}}}, clear=True):
             app_ctx = client.application

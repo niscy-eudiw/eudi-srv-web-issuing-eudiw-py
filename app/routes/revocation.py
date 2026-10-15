@@ -41,6 +41,7 @@ from app.core.state import oidc_metadata
 from app.repositories.offer_store import revocation_requests
 from app.repositories.status_store import batch_status_entries
 from app.services.attributes import credential_display_names
+from app.services.frontend_metadata import frontend_publishes
 from app.services.oid4vp import (
     build_dcql_query,
     fetch_presentation_result,
@@ -68,6 +69,8 @@ NON_REVOCABLE_MDOC_SCOPES = (
     "eu.europa.ec.eudi.age_verification_mdoc",
 )
 FORMATS = ("dc+sd-jwt", "mso_mdoc")
+#: Browser session key of the frontend the revocation flow started from.
+SESSION_FRONTEND_KEY = "revocation_frontend_id"
 
 
 def _revocable(cid: str, cfg: Dict[str, Any]) -> bool:
@@ -83,18 +86,39 @@ def _revocable(cid: str, cfg: Dict[str, Any]) -> bool:
     return not (cfg["format"] == "mso_mdoc" and cfg["scope"] in NON_REVOCABLE_MDOC_SCOPES)
 
 
-# TODO finish revocation pages.
-@revocation.route("revocation_choice", methods=["GET"])
-def revocation_choice() -> str:
-    """Page for selecting the credential types to revoke.
+def _flow_frontend_url() -> str:
+    """Returns the URL of the frontend the revocation flow started from.
 
     Returns:
-        The frontend selection page.
+        That frontend's base URL (the default frontend when none was recorded).
     """
+    return frontend_url(session.get(SESSION_FRONTEND_KEY))
+
+
+# TODO finish revocation pages.
+@revocation.route("revocation_choice", methods=["GET"])
+def revocation_choice() -> Any:
+    """Page for selecting the credential types to revoke.
+
+    Only the credentials published in the requesting frontend's metadata
+    (``frontends_config.<frontend_id>.credentials_supported``) are listed.
+    Without ``frontend_id`` the default frontend is used. An unknown
+    ``frontend_id`` gets ``404`` before the browser session is touched.
+
+    Returns:
+        The frontend selection page, or ``404`` for an unknown frontend.
+    """
+    frontend_id = request.args.get("frontend_id")
+    if frontend_id is not None and frontend_id not in (CONFIGURATION["frontend"].get("frontends_config") or {}):
+        logger.warning(f"revocation_choice: unknown frontend_id {safe(frontend_id, 64)}")
+        return jsonify({"error": "unknown_frontend"}), 404
+    session[SESSION_FRONTEND_KEY] = frontend_id
+
+    published = frontend_publishes(frontend_id)
     return post_redirect_with_payload(
-        target_url=f"{frontend_url()}/display_revocation_choice",
+        target_url=f"{frontend_url(frontend_id)}/display_revocation_choice",
         data_payload={
-            "cred": credential_display_names(_revocable),
+            "cred": credential_display_names(lambda cid, cfg: published(cid) and _revocable(cid, cfg)),
             "redirect_url": f"{CONFIGURATION['service_url']}/revocation/oid4vp_call",
         },
     )
@@ -102,13 +126,24 @@ def revocation_choice() -> str:
 
 @revocation.route("oid4vp_call", methods=["GET", "POST"])
 @require_frontend_origin
-def oid4vp_call() -> str:
+def oid4vp_call() -> Any:
     """Requests a presentation of the selected credentials.
 
+    Only credentials the flow's frontend publishes and that can be revoked
+    may be selected.
+
     Returns:
-        The frontend page showing the deeplink and QR code.
+        The frontend page showing the deeplink and QR code, or ``400`` for
+        any other credential.
     """
     selected = [key for key in request.form.keys() if key != "proceed"]
+    credentials_supported = oidc_metadata["credential_configurations_supported"]
+    published = frontend_publishes(session.get(SESSION_FRONTEND_KEY))
+    if not all(
+        published(cid) and cid in credentials_supported and _revocable(cid, credentials_supported[cid])
+        for cid in selected
+    ):
+        return jsonify({"error": "invalid_request", "error_description": "Unsupported credential"}), 400
     session_id = str(uuid.uuid4())
     session["session_id"] = session_id
 
@@ -116,7 +151,7 @@ def oid4vp_call() -> str:
     # without disclosing the rest of the credential.
     dcql_query, formats = build_dcql_query(
         selected,
-        oidc_metadata["credential_configurations_supported"],
+        credentials_supported,
         sdjwt_intent_to_retain=False,
         first_mandatory_only=True,
     )
@@ -133,7 +168,7 @@ def oid4vp_call() -> str:
     session["oid4vp_nonce"] = presentation.nonce
 
     return post_redirect_with_payload(
-        target_url=f"{frontend_url()}/display_revocation_qr_code",
+        target_url=f"{_flow_frontend_url()}/display_revocation_qr_code",
         data_payload={
             "url_data": presentation.deeplink_url,
             "redirect_url": f"{CONFIGURATION['service_url']}/",
@@ -209,7 +244,7 @@ def oid4vp_get() -> Any:
     session["revocation_id"] = revocation_id
 
     return post_redirect_with_payload(
-        target_url=f"{frontend_url()}/display_revocation_authorization",
+        target_url=f"{_flow_frontend_url()}/display_revocation_authorization",
         data_payload={
             "display_list": display_list,
             "redirect_url": f"{CONFIGURATION['service_url']}/revocation/revoke",
@@ -282,6 +317,6 @@ def revoke() -> str:
     logger.info(f"Revocation request {safe(revocation_identifier, 64)} processed: {revoked} status entr(y/ies) revoked")
 
     return post_redirect_with_payload(
-        target_url=f"{frontend_url()}/display_revocation_success",
+        target_url=f"{_flow_frontend_url()}/display_revocation_success",
         data_payload={"redirect_url": f"{CONFIGURATION['service_url']}/"},
     )

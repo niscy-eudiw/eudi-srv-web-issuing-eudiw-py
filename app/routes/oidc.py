@@ -74,6 +74,7 @@ from app.services.credential_issuance import (
     generate_credentials,
 )
 from app.services.credential_offer import authorization_code_offer, credential_offer_uri, is_valid_offer_prefix, offer_link
+from app.services.frontend_metadata import frontend_publishes
 from app.services.oid4vp import fetch_presentation_result, presentation_result_url, validate_presentation_id
 from app.utils.frontend import frontend_url
 from app.utils.http import post_redirect_with_payload
@@ -942,6 +943,25 @@ def _offer_choice_filter(cid: str, cfg: Dict[str, Any]) -> bool:
     return cid in methods["PID_login"] or cid in methods["country_selection"]
 
 
+def _unpublished_credential(frontend_id: Optional[str], credentials_id: List[str]) -> Optional[HandlerResult]:
+    """Rejects credentials the offering frontend does not publish.
+
+    A wallet resolves the offered configuration ids in the metadata of the
+    frontend (the credential issuer), so it can only use ids listed there.
+
+    Args:
+        frontend_id: Offering frontend; the default frontend when falsy.
+        credentials_id: Requested configuration ids.
+
+    Returns:
+        ``400`` when one is not published, else ``None``.
+    """
+    published = frontend_publishes(frontend_id)
+    if all(published(cid) for cid in credentials_id):
+        return None
+    return jsonify({"error": "invalid_request", "error_description": "Unsupported credential"}), 400
+
+
 @oidc.route("credential_offer_choice", methods=["GET"])
 def credential_offer() -> HandlerResult:
     """Shows the credential selection page for building a credential offer.
@@ -958,10 +978,11 @@ def credential_offer() -> HandlerResult:
         return jsonify({"error": "unknown_frontend"}), 404
     session["frontend_id"] = frontend_id
 
+    published = frontend_publishes(frontend_id)
     return post_redirect_with_payload(
         target_url=f"{frontend_url(frontend_id)}/display_credential_offer",
         data_payload={
-            "cred": credential_display_names(_offer_choice_filter),
+            "cred": credential_display_names(lambda cid, cfg: published(cid) and _offer_choice_filter(cid, cfg)),
             "redirect_url": f"{CONFIGURATION['service_url']}/",
             "credential_offer_URI": CONFIGURATION["credential_offer_scheme"],
         },
@@ -1049,6 +1070,9 @@ def credentialOfferCreate() -> HandlerResult:
             "error": "invalid_request",
             "error_description": "Missing required parameter: credential_configuration_id",
         }, 400
+    rejected = _unpublished_credential(None, [configuration_id])
+    if rejected:
+        return rejected
     return authorization_code_offer(frontend_url(), [configuration_id], generate_unique_id())
 
 
@@ -1078,6 +1102,9 @@ def credentialOffer() -> HandlerResult:
 
     if not all(credential in credentials_supported for credential in credentials_id):
         return jsonify({"error": "invalid_request", "error_description": "Unsupported credential"}), 400
+    rejected = _unpublished_credential(session.get("frontend_id"), credentials_id)
+    if rejected:
+        return rejected
 
     if not is_valid_offer_prefix(credential_offer_URI):
         return jsonify({"error": "invalid_request", "error_description": "Invalid credential offer URI"}), 400
