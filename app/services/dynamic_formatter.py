@@ -317,8 +317,10 @@ def _coerce_numeric_fields(data: Dict[str, Any]) -> None:
     for field in ("age_in_years", "age_birth_year"):
         if isinstance(data.get(field), str):
             data[field] = int(data[field])
-    if isinstance(data.get("gender"), str) and data["gender"].isdigit():
-        data["gender"] = int(data["gender"])
+    # PID Rulebook: sex is a uint (mdoc) / JSON number (SD-JWT VC).
+    for field in ("gender", "sex"):
+        if isinstance(data.get(field), str) and data[field].isdigit():
+            data[field] = int(data[field])
 
 
 def populate_pdata(

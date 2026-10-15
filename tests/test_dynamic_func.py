@@ -524,6 +524,16 @@ class TestNormalizeListAndTypeFields:
         assert data["age_birth_year"] == 1995
         assert data["gender"] == 1
 
+    def test_sex_converted_to_int(self):
+        """PID sex is a uint / JSON number, so the form string becomes an int."""
+        data = {"sex": "2"}
+
+        normalize_list_and_type_fields(
+            data, self.MOCK_ATTRIBUTES_REQ, self.MOCK_ATTRIBUTES_OPT
+        )
+
+        assert data["sex"] == 2
+
     def test_non_list_or_numeric_fields_ignored(self):
         """Tests that fields not in the list or numeric conversion logic are left alone."""
         data = {

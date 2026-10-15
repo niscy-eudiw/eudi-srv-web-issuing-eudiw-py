@@ -16,13 +16,14 @@
 # limitations under the License.
 #
 ###############################################################################
+import base64
 import cbor2
 import pytest
 import datetime
 from unittest.mock import patch, MagicMock, mock_open
 from cryptography.hazmat.primitives.asymmetric import ec
 from config_helpers import patch_configuration, set_configuration
-from app.services.formatters import DatestringFormatter, KeyData, cbor2elems, mdocFormatter, sdjwtFormatter, sdjwtNestedClaims, SDObj
+from app.services.formatters import DatestringFormatter, KeyData, cbor2elems, mdocFormatter, picture_data_url, sdjwtFormatter, sdjwtNestedClaims, SDObj
 
 
 @pytest.fixture
@@ -509,6 +510,24 @@ class TestSDJWTNestedClaims:
         assert isinstance(sub, list)
         assert sub[0][SDObj("name")] == "A"
         assert sub[1][SDObj("name")] == "B"
+
+
+class TestPictureDataUrl:
+
+    def test_base64url_picture_becomes_jpeg_data_url(self):
+        jpeg = b"\xff\xd8\xff\xe0\xfb\xff"
+        claims = {"picture": base64.urlsafe_b64encode(jpeg).decode().rstrip("="), "family_name": "Doe"}
+
+        result = picture_data_url(claims)
+
+        assert result["picture"] == "data:image/jpeg;base64," + base64.b64encode(jpeg).decode()
+        assert result["family_name"] == "Doe"
+        assert claims["picture"] != result["picture"]  # input not mutated
+
+    def test_data_url_and_missing_picture_unchanged(self):
+        claims = {"picture": "data:image/jpeg;base64,AAAA"}
+        assert picture_data_url(claims) is claims
+        assert picture_data_url({"family_name": "Doe"}) == {"family_name": "Doe"}
 
 
 class TestSDJWTFormatter:

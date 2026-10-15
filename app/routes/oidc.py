@@ -658,6 +658,35 @@ def auth_choice() -> HandlerResult:
         frontend_id=frontend_id,
     )
 
+    return _show_auth_methods(session_id, credentials_requested, frontend_id)
+
+
+@oidc.route("/auth_method_choice", methods=["GET"])
+def auth_method_choice() -> HandlerResult:
+    """Shows the authentication method choice again (the PID login page's Back).
+
+    Returns:
+        A redirect or the frontend POST-redirect page, or ``400`` when the
+        browser has no active issuance session.
+    """
+    session_id = session.get("session_id")
+    current_session = session_manager.get_session(session_id=session_id) if session_id else None
+    if current_session is None:
+        return jsonify({"error": "invalid_request", "error_description": "No active issuance session"}), 400
+    return _show_auth_methods(session_id, current_session.credentials_requested, current_session.frontend_id)
+
+
+def _show_auth_methods(session_id: str, credentials_requested: List[str], frontend_id: str) -> HandlerResult:
+    """Redirects to the only authentication method that fits, or shows the choice.
+
+    Args:
+        session_id: Issuance session.
+        credentials_requested: Credential configuration ids.
+        frontend_id: Frontend the session's pages are shown on.
+
+    Returns:
+        A redirect, or the frontend POST-redirect page.
+    """
     pid_auth, country_selection = _auth_methods(credentials_requested)
 
     if pid_auth and not country_selection:

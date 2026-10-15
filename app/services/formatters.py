@@ -52,7 +52,7 @@ from app.repositories.status_store import record_issued_status
 from app.services.revocation_status import reserve_status_entry
 from app.utils.crypto import ec_coordinates, ec_public_jwk, jwk_curve, private_value_bytes
 from app.utils.dates import date_to_timestamp, format_date
-from app.utils.encoding import urlsafe_b64encode_nopad
+from app.utils.encoding import b64url_decode, urlsafe_b64encode_nopad
 from app.utils.frontend import frontend_url
 
 logger = logging.getLogger(__name__)
@@ -304,6 +304,26 @@ def sdjwtNestedClaims(claims: Dict[str, Any], credential_metadata: Dict[str, Any
     return nested
 
 
+def picture_data_url(claims: Dict[str, Any]) -> Dict[str, Any]:
+    """Encodes the ``picture`` claim as a JPEG data URL.
+
+    The PID Rulebook (section 4.1) requires the SD-JWT VC ``picture`` to be a
+    data URL with the base64-encoded JPEG; the form holds it as base64url.
+
+    Args:
+        claims: ``{claim_name: value}``.
+
+    Returns:
+        A copy of ``claims`` with ``picture`` as a data URL (``claims`` itself
+        when there is no picture or it already is a data URL).
+    """
+    picture = claims.get("picture")
+    if not isinstance(picture, str) or picture.startswith("data:"):
+        return claims
+    encoded = base64.b64encode(b64url_decode(picture)).decode("ascii")
+    return {**claims, "picture": "data:image/jpeg;base64," + encoded}
+
+
 def credential_issuer_url(current_session: Any) -> str:
     """Returns the Credential Issuer Identifier used as the SD-JWT VC ``iss``.
 
@@ -381,7 +401,7 @@ def sdjwtFormatter(PID: Dict[str, Any], country: str, scope: Optional[str], sess
         claims["jti"] = str(uuid4())
     if revocation_json:
         claims["status"] = revocation_json
-    claims.update(sdjwtNestedClaims(pid_data["claims"], PID["credential_metadata"]))
+    claims.update(sdjwtNestedClaims(picture_data_url(pid_data["claims"]), PID["credential_metadata"]))
 
     certificate_base64 = base64.b64encode(_country_key_entry(country)["certificate"]).decode("utf-8")
     private_key = load_country_signing_key(country)

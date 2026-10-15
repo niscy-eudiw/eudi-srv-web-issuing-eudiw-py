@@ -1032,6 +1032,26 @@ class TestAuthChoiceFlow:
             # Should handle the request
             assert response.status_code in [200, 302, 307]
 
+    def test_auth_method_choice_shows_the_choice_again(self, client, mock_session_manager):
+        """The PID login page's Back reopens the choice from the browser session."""
+        mock_session_manager.get_session.return_value = Mock(
+            credentials_requested=["pid"], frontend_id="test-frontend"
+        )
+        with client.session_transaction() as sess:
+            sess["session_id"] = "test-session"
+        with patch("app.routes.oidc._show_auth_methods", return_value="page") as show:
+            response = client.get("/auth_method_choice")
+        assert response.status_code == 200
+        show.assert_called_once_with("test-session", ["pid"], "test-frontend")
+
+    def test_auth_method_choice_without_session(self, client, mock_session_manager):
+        """Without an issuance session there is no choice to show."""
+        mock_session_manager.get_session.return_value = None
+        assert client.get("/auth_method_choice").status_code == 400
+        with client.session_transaction() as sess:
+            sess["session_id"] = "expired-session"
+        assert client.get("/auth_method_choice").status_code == 400
+
 
 class TestPidAuthorization:
     """Test PID authorization endpoint"""
